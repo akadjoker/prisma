@@ -32,7 +32,20 @@ Regra: cada camada só conhece a de baixo. O render nunca inclui código de um b
 
 ## 2. RHI (src/rhi)
 
-**Modelo:** handles opacos gerados por `ct::SlotMap` (índice + geração, valida handles velhos); (`BufferHandle`, `TextureHandle`, `PipelineHandle`, ...) e um `Device` com recursos e um `CommandList` por frame. Origem: Filament `filament/backend/include/backend/Handle.h`, `DriverEnums.h`, `DriverApi` (`CommandStream.cpp`, `HandleAllocator.cpp`).
+**Modelo: classes, como no Ogre-Next.** A RHI é um conjunto de classes abstratas com uma implementação por backend (`GLRenderSystem`, `VulkanRenderSystem`, ...), sem handles na API pública.
+
+| Classe | Papel | Origem (Ogre-Next, `OgreMain/include`) |
+|---|---|---|
+| `RenderSystem` | Interface do backend: janela, estados, passes, draw, capabilities | `OgreRenderSystem.h` |
+| `VaoManager` | Cria e gere buffers (vertex/index/uniform/storage) e VAOs | `Vao/OgreVaoManager.h` |
+| `TextureGpu` / `TextureGpuManager` | Texturas (2D, array, cube, 3D, render targets) e o seu ciclo de vida | `OgreTextureGpu.h`, `OgreTextureGpuManager.h` |
+| `RenderPassDescriptor` | Anexos, load/store, clear de um passe | `OgreRenderPassDescriptor.h` |
+| `HlmsPso` | Estado de pipeline compilado (shaders + blend + depth + raster) | `OgreHlmsPso.h` |
+| `Root` | Ponto de entrada, cria o RenderSystem e os managers | `OgreRoot.h` |
+
+Um objeto é uma instância da classe; o dono (o manager) destrói-o. Para posse partilhada onde for mesmo preciso usa-se `ct::Rc`/`ct::Unique`, e para ligações que não podem ficar penduradas `ct::Weak`.
+
+**Onde os handles ainda fazem sentido (interno, nunca na API):** índices de recursos dentro de um manager (`ct::SlotMap`) para guardar referências baratas e seguras em listas de draw ou no frame graph. O utilizador nunca os vê.
 
 **Duas decisões que valem para os 3 backends**
 1. **Estilo de comandos explícito** (render pass com anexos, load/store, barreiras implícitas pela RHI). É o que o Vulkan exige; o GL traduz para framebuffers e `glInvalidateFramebuffer`. Origem: Filament `RenderPassParams` / `beginRenderPass`.
@@ -146,7 +159,7 @@ prisma/
 
 | Necessidade | `ct` |
 |---|---|
-| Handles da RHI (buffers, texturas, pipelines) | `SlotMap` (generation-checked) e `Handle<T>` |
+| Armazenamento interno dos recursos de cada manager (índices estáveis) | `SlotMap` |
 | Listas (comandos, draw items, luzes) | `Vector`, `Array`, `Span` |
 | Nomes, caminhos, fontes de shader | `String`, `StringView` |
 | Caches de shader e de pipelines, tabelas de variantes | `HashMap` / `HashSet` (`hash_combine` para a chave de variante) |
