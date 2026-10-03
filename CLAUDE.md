@@ -22,3 +22,4 @@ Alvo: render moderno e realista (luzes dinâmicas, fog, bloom/HDR, sombras, IBL,
 - Loaders OpenGL: `prisma/opengl/OpenGL.*` (GL 4.6) e `OpenGLES3.*` (GLES 3). Se faltar uma função (ex.: `glSpecializeShader`), acrescenta-se ao loader e regista-se em `docs/PORTING.md`.
 - Backend escolhido na compilação por plataforma: desktop = GL 4.6, Android e web = GLES 3. Vulkan reservado, não implementado por agora.
 - Linguagem do projeto: C++14.
+- Imagens: `stb_image` (PNG/JPG/HDR) + DDS com `/media/projectos/projects/cpp/Radion/docs/dds.h` (Wicked Engine, header-only; mips, cubemaps, arrays, BC1-7, floats; manter aviso de autor e confirmar licença MIT). Decodificador `Nord/external/stb/Dds.cpp` (BC1-3 -> RGBA8, nível 0) só como fallback em CPU.
