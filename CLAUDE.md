@@ -15,3 +15,10 @@ Alvo: render moderno e realista (luzes dinâmicas, fog, bloom/HDR, sombras, IBL,
 - Se faltar um contentor na `ct`, perguntar ao utilizador em vez de usar `std` ou inventar.
 - Estilo da `ct`: **sem comentários no código-fonte**. A origem das técnicas portadas (ficheiro:linhas do Filament/Ogre-Next) regista-se em `docs/PORTING.md`, não em comentários.
 - **Só escrever código quando o utilizador pedir.** Planos e documentos não incluem código novo.
+
+## Libs do utilizador (nossas, podem ser alteradas quando for preciso)
+- `ct` (contentores, streams, threads): /media/projectos/projects/cpp/containers
+- `mathc` (Vec/Mat/Quaternion/Ray/Plane/Box/Frustum, `namespace Math`, column-major como GLM): /media/projectos/projects/cpp/math. Compila em C++14 sem alterações.
+- Loaders OpenGL: `prisma/opengl/OpenGL.*` (GL 4.6) e `OpenGLES3.*` (GLES 3). Se faltar uma função (ex.: `glSpecializeShader`), acrescenta-se ao loader e regista-se em `docs/PORTING.md`.
+- Backend escolhido na compilação por plataforma: desktop = GL 4.6, Android e web = GLES 3. Vulkan reservado, não implementado por agora.
+- Linguagem do projeto: C++14.
