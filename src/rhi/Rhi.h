@@ -1,9 +1,8 @@
 // prisma RHI - v0 (minimal). Grows with the renderer; every addition must come
 // from a concrete need of a ported technique (see CLAUDE.md).
 //
-// Design references: Filament backend (filament/backend/include/backend/
-// DriverEnums.h, Handle.h, DriverApi) for handle-based resources, and the
-// user's previous GPU RHI (gpu/include/gpu/GPU.h) for the Device shape.
+// Design reference: Filament backend (filament/backend/include/backend/
+// DriverEnums.h, Handle.h, DriverApi) for handle-based resources.
 #pragma once
 
 #include <cstddef>
