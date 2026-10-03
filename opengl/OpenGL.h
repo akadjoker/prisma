@@ -50,10 +50,47 @@ namespace glExt
 	extern bool KHR_texture_compression_astc;
 	extern bool KHR_debug;
 
+	// Extensoes avancadas (ver initAdvancedExtensions)
+	extern bool ARB_bindless_texture;
+	extern bool ARB_sparse_texture;
+	extern bool ARB_sparse_buffer;
+	extern bool ARB_compute_variable_group_size;
+	extern bool NV_mesh_shader;
+	extern bool NV_conservative_raster;
+	extern bool ARB_direct_state_access;
+	extern bool ARB_buffer_storage;
+	extern bool ARB_clip_control;
+	extern bool ARB_multi_draw_indirect;
+	extern bool ARB_indirect_parameters;
+	extern bool ARB_gl_spirv;
+	extern bool ARB_shader_draw_parameters;
+	extern bool ARB_texture_cube_map_array;
+	extern bool ARB_texture_compression_rgtc;
+	extern bool ARB_shader_atomic_counter_ops;
+	extern bool ARB_pipeline_statistics_query;
+	extern bool ARB_sparse_texture2;
+	extern bool KHR_shader_subgroup;
+	extern bool ARB_shader_ballot;
+	extern bool ARB_shader_group_vote;
+	extern bool ARB_shader_viewport_layer_array;
+	extern bool AMD_vertex_shader_layer;
+	extern bool ARB_gpu_shader_int64;
+	extern bool NV_shader_atomic_int64;
+	extern bool INTEL_conservative_rasterization;
+	extern bool EXT_texture_sRGB_decode;
+	extern bool EXT_texture_compression_s3tc_srgb;
+	extern bool NV_shader_thread_group;
+	extern bool AMD_shader_ballot;
+	extern bool ARB_fragment_shader_interlock;
+	extern bool KHR_parallel_shader_compile;
+	extern int  subgroupSize;
+	extern unsigned int subgroupFeatures, subgroupStages;
+
 	extern int  majorVersion, minorVersion;
 }
 
 bool initOpenGLExtensions( bool forceLegacyFuncs );
+bool isExtensionSupported( const char *extName );
 
 
 // =================================================================================================
@@ -3352,6 +3389,101 @@ extern PFNGLDEBUGMESSAGECALLBACKKHRPROC glDebugMessageCallbackKHR;
 extern PFNGLGETDEBUGMESSAGELOGKHRPROC glGetDebugMessageLogKHR;
 
 #endif
+// =================================================================================================
+// Extensoes avancadas (bindless, sparse, mesh shader, conservative raster, subgroup, compile paralelo...)
+// Tipos e constantes copiados do glext.h; as funcoes so ficam carregadas se o flag glExt::<ext> for true
+// =================================================================================================
+
+#define GL_UNSIGNED_INT64_ARB                                0x140F
+#define GL_TEXTURE_SPARSE_ARB                                0x91A6
+#define GL_VIRTUAL_PAGE_SIZE_INDEX_ARB                       0x91A7
+#define GL_NUM_SPARSE_LEVELS_ARB                             0x91AA
+#define GL_NUM_VIRTUAL_PAGE_SIZES_ARB                        0x91A8
+#define GL_VIRTUAL_PAGE_SIZE_X_ARB                           0x9195
+#define GL_VIRTUAL_PAGE_SIZE_Y_ARB                           0x9196
+#define GL_VIRTUAL_PAGE_SIZE_Z_ARB                           0x9197
+#define GL_MAX_SPARSE_TEXTURE_SIZE_ARB                       0x9198
+#define GL_MAX_SPARSE_3D_TEXTURE_SIZE_ARB                    0x9199
+#define GL_MAX_SPARSE_ARRAY_TEXTURE_LAYERS_ARB               0x919A
+#define GL_SPARSE_TEXTURE_FULL_ARRAY_CUBE_MIPMAPS_ARB        0x91A9
+#define GL_SPARSE_STORAGE_BIT_ARB                            0x0400
+#define GL_SPARSE_BUFFER_PAGE_SIZE_ARB                       0x82F8
+#define GL_MAX_SHADER_COMPILER_THREADS_KHR                   0x91B0
+#define GL_COMPLETION_STATUS_KHR                             0x91B1
+#define GL_MAX_COMPUTE_VARIABLE_GROUP_INVOCATIONS_ARB        0x9344
+#define GL_MAX_COMPUTE_FIXED_GROUP_INVOCATIONS_ARB           0x90EB
+#define GL_MAX_COMPUTE_VARIABLE_GROUP_SIZE_ARB               0x9345
+#define GL_MAX_COMPUTE_FIXED_GROUP_SIZE_ARB                  0x91BF
+#define GL_MESH_SHADER_NV                                    0x9559
+#define GL_TASK_SHADER_NV                                    0x955A
+#define GL_CONSERVATIVE_RASTERIZATION_NV                     0x9346
+#define GL_SUBPIXEL_PRECISION_BIAS_X_BITS_NV                 0x9347
+#define GL_SUBPIXEL_PRECISION_BIAS_Y_BITS_NV                 0x9348
+#define GL_MAX_SUBPIXEL_PRECISION_BIAS_BITS_NV               0x9349
+#define GL_SUBGROUP_SIZE_KHR                                 0x9532
+#define GL_SUBGROUP_SUPPORTED_STAGES_KHR                     0x9533
+#define GL_SUBGROUP_SUPPORTED_FEATURES_KHR                   0x9534
+#define GL_SUBGROUP_QUAD_ALL_STAGES_KHR                      0x9535
+#define GL_SUBGROUP_FEATURE_BASIC_BIT_KHR                    0x00000001
+#define GL_SUBGROUP_FEATURE_VOTE_BIT_KHR                     0x00000002
+#define GL_SUBGROUP_FEATURE_ARITHMETIC_BIT_KHR               0x00000004
+#define GL_SUBGROUP_FEATURE_BALLOT_BIT_KHR                   0x00000008
+#define GL_SUBGROUP_FEATURE_SHUFFLE_BIT_KHR                  0x00000010
+#define GL_SUBGROUP_FEATURE_SHUFFLE_RELATIVE_BIT_KHR         0x00000020
+#define GL_SUBGROUP_FEATURE_CLUSTERED_BIT_KHR                0x00000040
+#define GL_SUBGROUP_FEATURE_QUAD_BIT_KHR                     0x00000080
+
+typedef GLuint64 (GLAPIENTRYP PFNGLGETTEXTUREHANDLEARBPROC) (GLuint texture);
+typedef GLuint64 (GLAPIENTRYP PFNGLGETTEXTURESAMPLERHANDLEARBPROC) (GLuint texture, GLuint sampler);
+typedef void (GLAPIENTRYP PFNGLMAKETEXTUREHANDLERESIDENTARBPROC) (GLuint64 handle);
+typedef void (GLAPIENTRYP PFNGLMAKETEXTUREHANDLENONRESIDENTARBPROC) (GLuint64 handle);
+typedef GLuint64 (GLAPIENTRYP PFNGLGETIMAGEHANDLEARBPROC) (GLuint texture, GLint level, GLboolean layered, GLint layer, GLenum format);
+typedef void (GLAPIENTRYP PFNGLMAKEIMAGEHANDLERESIDENTARBPROC) (GLuint64 handle, GLenum access);
+typedef void (GLAPIENTRYP PFNGLMAKEIMAGEHANDLENONRESIDENTARBPROC) (GLuint64 handle);
+typedef void (GLAPIENTRYP PFNGLUNIFORMHANDLEUI64ARBPROC) (GLint location, GLuint64 value);
+typedef void (GLAPIENTRYP PFNGLUNIFORMHANDLEUI64VARBPROC) (GLint location, GLsizei count, const GLuint64 *value);
+typedef void (GLAPIENTRYP PFNGLPROGRAMUNIFORMHANDLEUI64ARBPROC) (GLuint program, GLint location, GLuint64 value);
+typedef void (GLAPIENTRYP PFNGLPROGRAMUNIFORMHANDLEUI64VARBPROC) (GLuint program, GLint location, GLsizei count, const GLuint64 *values);
+typedef GLboolean (GLAPIENTRYP PFNGLISTEXTUREHANDLERESIDENTARBPROC) (GLuint64 handle);
+typedef GLboolean (GLAPIENTRYP PFNGLISIMAGEHANDLERESIDENTARBPROC) (GLuint64 handle);
+typedef void (GLAPIENTRYP PFNGLTEXPAGECOMMITMENTARBPROC) (GLenum target, GLint level, GLint xoffset, GLint yoffset, GLint zoffset, GLsizei width, GLsizei height, GLsizei depth, GLboolean commit);
+typedef void (GLAPIENTRYP PFNGLBUFFERPAGECOMMITMENTARBPROC) (GLenum target, GLintptr offset, GLsizeiptr size, GLboolean commit);
+typedef void (GLAPIENTRYP PFNGLNAMEDBUFFERPAGECOMMITMENTARBPROC) (GLuint buffer, GLintptr offset, GLsizeiptr size, GLboolean commit);
+typedef void (GLAPIENTRYP PFNGLDISPATCHCOMPUTEGROUPSIZEARBPROC) (GLuint num_groups_x, GLuint num_groups_y, GLuint num_groups_z, GLuint group_size_x, GLuint group_size_y, GLuint group_size_z);
+typedef void (GLAPIENTRYP PFNGLDRAWMESHTASKSNVPROC) (GLuint first, GLuint count);
+typedef void (GLAPIENTRYP PFNGLDRAWMESHTASKSINDIRECTNVPROC) (GLintptr indirect);
+typedef void (GLAPIENTRYP PFNGLMULTIDRAWMESHTASKSINDIRECTNVPROC) (GLintptr indirect, GLsizei drawcount, GLsizei stride);
+typedef void (GLAPIENTRYP PFNGLMULTIDRAWMESHTASKSINDIRECTCOUNTNVPROC) (GLintptr indirect, GLintptr drawcount, GLsizei maxdrawcount, GLsizei stride);
+typedef void (GLAPIENTRYP PFNGLSUBPIXELPRECISIONBIASNVPROC) (GLuint xbits, GLuint ybits);
+typedef void (GLAPIENTRYP PFNGLMAXSHADERCOMPILERTHREADSKHRPROC) (GLuint count);
+typedef void (GLAPIENTRYP PFNGLSPECIALIZESHADERARBPROC) (GLuint shader, const GLchar *pEntryPoint, GLuint numSpecializationConstants, const GLuint *pConstantIndex, const GLuint *pConstantValue);
+
+extern PFNGLGETTEXTUREHANDLEARBPROC glGetTextureHandleARB;
+extern PFNGLGETTEXTURESAMPLERHANDLEARBPROC glGetTextureSamplerHandleARB;
+extern PFNGLMAKETEXTUREHANDLERESIDENTARBPROC glMakeTextureHandleResidentARB;
+extern PFNGLMAKETEXTUREHANDLENONRESIDENTARBPROC glMakeTextureHandleNonResidentARB;
+extern PFNGLGETIMAGEHANDLEARBPROC glGetImageHandleARB;
+extern PFNGLMAKEIMAGEHANDLERESIDENTARBPROC glMakeImageHandleResidentARB;
+extern PFNGLMAKEIMAGEHANDLENONRESIDENTARBPROC glMakeImageHandleNonResidentARB;
+extern PFNGLUNIFORMHANDLEUI64ARBPROC glUniformHandleui64ARB;
+extern PFNGLUNIFORMHANDLEUI64VARBPROC glUniformHandleui64vARB;
+extern PFNGLPROGRAMUNIFORMHANDLEUI64ARBPROC glProgramUniformHandleui64ARB;
+extern PFNGLPROGRAMUNIFORMHANDLEUI64VARBPROC glProgramUniformHandleui64vARB;
+extern PFNGLISTEXTUREHANDLERESIDENTARBPROC glIsTextureHandleResidentARB;
+extern PFNGLISIMAGEHANDLERESIDENTARBPROC glIsImageHandleResidentARB;
+extern PFNGLTEXPAGECOMMITMENTARBPROC glTexPageCommitmentARB;
+extern PFNGLBUFFERPAGECOMMITMENTARBPROC glBufferPageCommitmentARB;
+extern PFNGLNAMEDBUFFERPAGECOMMITMENTARBPROC glNamedBufferPageCommitmentARB;
+extern PFNGLDISPATCHCOMPUTEGROUPSIZEARBPROC glDispatchComputeGroupSizeARB;
+extern PFNGLDRAWMESHTASKSNVPROC glDrawMeshTasksNV;
+extern PFNGLDRAWMESHTASKSINDIRECTNVPROC glDrawMeshTasksIndirectNV;
+extern PFNGLMULTIDRAWMESHTASKSINDIRECTNVPROC glMultiDrawMeshTasksIndirectNV;
+extern PFNGLMULTIDRAWMESHTASKSINDIRECTCOUNTNVPROC glMultiDrawMeshTasksIndirectCountNV;
+extern PFNGLSUBPIXELPRECISIONBIASNVPROC glSubpixelPrecisionBiasNV;
+extern PFNGLMAXSHADERCOMPILERTHREADSKHRPROC glMaxShaderCompilerThreadsKHR;
+extern PFNGLSPECIALIZESHADERARBPROC glSpecializeShaderARB;
+
+
 }  // namespace gl
 
 using namespace gl;

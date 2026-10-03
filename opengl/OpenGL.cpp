@@ -37,6 +37,41 @@ namespace glExt
 	bool KHR_texture_compression_astc = false;
 	bool KHR_debug = false;
 
+	bool ARB_bindless_texture = false;
+	bool ARB_sparse_texture = false;
+	bool ARB_sparse_buffer = false;
+	bool ARB_compute_variable_group_size = false;
+	bool NV_mesh_shader = false;
+	bool NV_conservative_raster = false;
+	bool ARB_direct_state_access = false;
+	bool ARB_buffer_storage = false;
+	bool ARB_clip_control = false;
+	bool ARB_multi_draw_indirect = false;
+	bool ARB_indirect_parameters = false;
+	bool ARB_gl_spirv = false;
+	bool ARB_shader_draw_parameters = false;
+	bool ARB_texture_cube_map_array = false;
+	bool ARB_texture_compression_rgtc = false;
+	bool ARB_shader_atomic_counter_ops = false;
+	bool ARB_pipeline_statistics_query = false;
+	bool ARB_sparse_texture2 = false;
+	bool KHR_shader_subgroup = false;
+	bool ARB_shader_ballot = false;
+	bool ARB_shader_group_vote = false;
+	bool ARB_shader_viewport_layer_array = false;
+	bool AMD_vertex_shader_layer = false;
+	bool ARB_gpu_shader_int64 = false;
+	bool NV_shader_atomic_int64 = false;
+	bool INTEL_conservative_rasterization = false;
+	bool EXT_texture_sRGB_decode = false;
+	bool EXT_texture_compression_s3tc_srgb = false;
+	bool NV_shader_thread_group = false;
+	bool AMD_shader_ballot = false;
+	bool ARB_fragment_shader_interlock = false;
+	bool KHR_parallel_shader_compile = false;
+	int subgroupSize = 0;
+	unsigned int subgroupFeatures = 0, subgroupStages = 0;
+
 	int	majorVersion = 1, minorVersion = 0;
 }
 
@@ -562,7 +597,7 @@ PFNGLVERTEXATTRIBBINDINGPROC glVertexAttribBinding = 0;
 PFNGLVERTEXBINDINGDIVISORPROC glVertexBindingDivisor = 0;
 PFNGLDEBUGMESSAGECONTROLPROC glDebugMessageControl = 0;
 PFNGLDEBUGMESSAGEINSERTPROC glDebugMessageInsert = 0;
-//PFNGLDEBUGMESSAGECALLBACKPROC glDebugMessageCallback = 0;
+PFNGLDEBUGMESSAGECALLBACKPROC glDebugMessageCallback = 0;
 PFNGLGETDEBUGMESSAGELOGPROC glGetDebugMessageLog = 0;
 PFNGLPUSHDEBUGGROUPPROC glPushDebugGroup = 0;
 PFNGLPOPDEBUGGROUPPROC glPopDebugGroup = 0;
@@ -755,6 +790,32 @@ PFNGLSPECIALIZESHADERPROC glSpecializeShader = 0x0;
 PFNGLMULTIDRAWARRAYSINDIRECTCOUNTPROC glMultiDrawArraysIndirectCount = 0x0;
 PFNGLMULTIDRAWELEMENTSINDIRECTCOUNTPROC glMultiDrawElementsIndirectCount = 0x0;
 PFNGLPOLYGONOFFSETCLAMPPROC glPolygonOffsetClamp = 0x0;
+
+// Extensoes avancadas
+PFNGLGETTEXTUREHANDLEARBPROC glGetTextureHandleARB = 0x0;
+PFNGLGETTEXTURESAMPLERHANDLEARBPROC glGetTextureSamplerHandleARB = 0x0;
+PFNGLMAKETEXTUREHANDLERESIDENTARBPROC glMakeTextureHandleResidentARB = 0x0;
+PFNGLMAKETEXTUREHANDLENONRESIDENTARBPROC glMakeTextureHandleNonResidentARB = 0x0;
+PFNGLGETIMAGEHANDLEARBPROC glGetImageHandleARB = 0x0;
+PFNGLMAKEIMAGEHANDLERESIDENTARBPROC glMakeImageHandleResidentARB = 0x0;
+PFNGLMAKEIMAGEHANDLENONRESIDENTARBPROC glMakeImageHandleNonResidentARB = 0x0;
+PFNGLUNIFORMHANDLEUI64ARBPROC glUniformHandleui64ARB = 0x0;
+PFNGLUNIFORMHANDLEUI64VARBPROC glUniformHandleui64vARB = 0x0;
+PFNGLPROGRAMUNIFORMHANDLEUI64ARBPROC glProgramUniformHandleui64ARB = 0x0;
+PFNGLPROGRAMUNIFORMHANDLEUI64VARBPROC glProgramUniformHandleui64vARB = 0x0;
+PFNGLISTEXTUREHANDLERESIDENTARBPROC glIsTextureHandleResidentARB = 0x0;
+PFNGLISIMAGEHANDLERESIDENTARBPROC glIsImageHandleResidentARB = 0x0;
+PFNGLTEXPAGECOMMITMENTARBPROC glTexPageCommitmentARB = 0x0;
+PFNGLBUFFERPAGECOMMITMENTARBPROC glBufferPageCommitmentARB = 0x0;
+PFNGLNAMEDBUFFERPAGECOMMITMENTARBPROC glNamedBufferPageCommitmentARB = 0x0;
+PFNGLDISPATCHCOMPUTEGROUPSIZEARBPROC glDispatchComputeGroupSizeARB = 0x0;
+PFNGLDRAWMESHTASKSNVPROC glDrawMeshTasksNV = 0x0;
+PFNGLDRAWMESHTASKSINDIRECTNVPROC glDrawMeshTasksIndirectNV = 0x0;
+PFNGLMULTIDRAWMESHTASKSINDIRECTNVPROC glMultiDrawMeshTasksIndirectNV = 0x0;
+PFNGLMULTIDRAWMESHTASKSINDIRECTCOUNTNVPROC glMultiDrawMeshTasksIndirectCountNV = 0x0;
+PFNGLSUBPIXELPRECISIONBIASNVPROC glSubpixelPrecisionBiasNV = 0x0;
+PFNGLMAXSHADERCOMPILERTHREADSKHRPROC glMaxShaderCompilerThreadsKHR = 0x0;
+PFNGLSPECIALIZESHADERARBPROC glSpecializeShaderARB = 0x0;
 }  // namespace gl
 
 
@@ -970,6 +1031,15 @@ void initLegacyExtensions( bool &r )
 
 void initModernExtensions()
 {
+	// Estas extensoes sao core em GL 3.x; antes ficavam a false em contextos modernos
+	glExt::EXT_framebuffer_object = true;
+	glExt::EXT_framebuffer_multisample = true;
+	glExt::ARB_texture_float = true;
+	glExt::ARB_texture_non_power_of_two = true;
+	glExt::EXT_texture_sRGB = true;
+	glExt::ARB_texture_rg = true;
+	glExt::ARB_timer_query = glExt::majorVersion > 3 || ( glExt::majorVersion == 3 && glExt::minorVersion >= 3 ) || isExtensionSupported( "GL_ARB_timer_query" );
+
 	glExt::ARB_ES3_compatibility = isExtensionSupported( "GL_ARB_ES3_compatibility" );
 	glExt::ARB_texture_compression_bptc = isExtensionSupported( "GL_ARB_texture_compression_bptc" );
 	glExt::KHR_texture_compression_astc = isExtensionSupported( "GL_KHR_texture_compression_astc_ldr" );
@@ -982,6 +1052,131 @@ void initModernExtensions()
 		glDebugMessageInsertKHR = ( PFNGLDEBUGMESSAGEINSERTKHRPROC ) platGetProcAddressAny( "glDebugMessageInsert", "glDebugMessageInsertKHR" );
 		glGetDebugMessageLogKHR = ( PFNGLGETDEBUGMESSAGELOGKHRPROC ) platGetProcAddressAny( "glGetDebugMessageLog", "glGetDebugMessageLogKHR" );
 		glExt::KHR_debug = glDebugMessageCallbackKHR && glDebugMessageControlKHR && glDebugMessageInsertKHR && glGetDebugMessageLogKHR;
+	}
+}
+
+static bool hasCore( int major, int minor )
+{
+	return glExt::majorVersion > major || ( glExt::majorVersion == major && glExt::minorVersion >= minor );
+}
+static void initAdvancedExtensions()
+{
+	using namespace gl;
+	glExt::ARB_direct_state_access = hasCore( 4, 5 ) || isExtensionSupported( "GL_ARB_direct_state_access" );
+	glExt::ARB_buffer_storage = hasCore( 4, 4 ) || isExtensionSupported( "GL_ARB_buffer_storage" );
+	glExt::ARB_clip_control = hasCore( 4, 5 ) || isExtensionSupported( "GL_ARB_clip_control" );
+	glExt::ARB_multi_draw_indirect = hasCore( 4, 3 ) || isExtensionSupported( "GL_ARB_multi_draw_indirect" );
+	glExt::ARB_indirect_parameters = hasCore( 4, 6 ) || isExtensionSupported( "GL_ARB_indirect_parameters" );
+	glExt::ARB_gl_spirv = hasCore( 4, 6 ) || isExtensionSupported( "GL_ARB_gl_spirv" );
+	glExt::ARB_shader_draw_parameters = hasCore( 4, 6 ) || isExtensionSupported( "GL_ARB_shader_draw_parameters" );
+	glExt::ARB_texture_cube_map_array = hasCore( 4, 0 ) || isExtensionSupported( "GL_ARB_texture_cube_map_array" );
+	glExt::ARB_texture_compression_rgtc = hasCore( 3, 0 ) || isExtensionSupported( "GL_ARB_texture_compression_rgtc" );
+	glExt::ARB_shader_atomic_counter_ops = hasCore( 4, 6 ) || isExtensionSupported( "GL_ARB_shader_atomic_counter_ops" );
+	glExt::ARB_pipeline_statistics_query = hasCore( 4, 6 ) || isExtensionSupported( "GL_ARB_pipeline_statistics_query" );
+	glExt::ARB_sparse_texture2 = isExtensionSupported( "GL_ARB_sparse_texture2" );
+	glExt::KHR_shader_subgroup = isExtensionSupported( "GL_KHR_shader_subgroup" );
+	glExt::ARB_shader_ballot = isExtensionSupported( "GL_ARB_shader_ballot" );
+	glExt::ARB_shader_group_vote = hasCore( 4, 6 ) || isExtensionSupported( "GL_ARB_shader_group_vote" );
+	glExt::ARB_shader_viewport_layer_array = hasCore( 4, 6 ) || isExtensionSupported( "GL_ARB_shader_viewport_layer_array" );
+	glExt::AMD_vertex_shader_layer = isExtensionSupported( "GL_AMD_vertex_shader_layer" );
+	glExt::ARB_gpu_shader_int64 = isExtensionSupported( "GL_ARB_gpu_shader_int64" );
+	glExt::NV_shader_atomic_int64 = isExtensionSupported( "GL_NV_shader_atomic_int64" );
+	glExt::INTEL_conservative_rasterization = isExtensionSupported( "GL_INTEL_conservative_rasterization" );
+	glExt::EXT_texture_sRGB_decode = isExtensionSupported( "GL_EXT_texture_sRGB_decode" );
+	glExt::EXT_texture_compression_s3tc_srgb = isExtensionSupported( "GL_EXT_texture_compression_s3tc_srgb" );
+	glExt::NV_shader_thread_group = isExtensionSupported( "GL_NV_shader_thread_group" );
+	glExt::AMD_shader_ballot = isExtensionSupported( "GL_AMD_shader_ballot" );
+	glExt::ARB_fragment_shader_interlock = isExtensionSupported( "GL_ARB_fragment_shader_interlock" );
+
+	if( isExtensionSupported( "GL_ARB_bindless_texture" ) )
+	{
+		bool ok = true;
+		ok &= ( glGetTextureHandleARB = ( PFNGLGETTEXTUREHANDLEARBPROC ) platGetProcAddress( "glGetTextureHandleARB" ) ) != 0;
+		ok &= ( glGetTextureSamplerHandleARB = ( PFNGLGETTEXTURESAMPLERHANDLEARBPROC ) platGetProcAddress( "glGetTextureSamplerHandleARB" ) ) != 0;
+		ok &= ( glMakeTextureHandleResidentARB = ( PFNGLMAKETEXTUREHANDLERESIDENTARBPROC ) platGetProcAddress( "glMakeTextureHandleResidentARB" ) ) != 0;
+		ok &= ( glMakeTextureHandleNonResidentARB = ( PFNGLMAKETEXTUREHANDLENONRESIDENTARBPROC ) platGetProcAddress( "glMakeTextureHandleNonResidentARB" ) ) != 0;
+		ok &= ( glGetImageHandleARB = ( PFNGLGETIMAGEHANDLEARBPROC ) platGetProcAddress( "glGetImageHandleARB" ) ) != 0;
+		ok &= ( glMakeImageHandleResidentARB = ( PFNGLMAKEIMAGEHANDLERESIDENTARBPROC ) platGetProcAddress( "glMakeImageHandleResidentARB" ) ) != 0;
+		ok &= ( glMakeImageHandleNonResidentARB = ( PFNGLMAKEIMAGEHANDLENONRESIDENTARBPROC ) platGetProcAddress( "glMakeImageHandleNonResidentARB" ) ) != 0;
+		ok &= ( glUniformHandleui64ARB = ( PFNGLUNIFORMHANDLEUI64ARBPROC ) platGetProcAddress( "glUniformHandleui64ARB" ) ) != 0;
+		ok &= ( glUniformHandleui64vARB = ( PFNGLUNIFORMHANDLEUI64VARBPROC ) platGetProcAddress( "glUniformHandleui64vARB" ) ) != 0;
+		ok &= ( glProgramUniformHandleui64ARB = ( PFNGLPROGRAMUNIFORMHANDLEUI64ARBPROC ) platGetProcAddress( "glProgramUniformHandleui64ARB" ) ) != 0;
+		ok &= ( glProgramUniformHandleui64vARB = ( PFNGLPROGRAMUNIFORMHANDLEUI64VARBPROC ) platGetProcAddress( "glProgramUniformHandleui64vARB" ) ) != 0;
+		ok &= ( glIsTextureHandleResidentARB = ( PFNGLISTEXTUREHANDLERESIDENTARBPROC ) platGetProcAddress( "glIsTextureHandleResidentARB" ) ) != 0;
+		ok &= ( glIsImageHandleResidentARB = ( PFNGLISIMAGEHANDLERESIDENTARBPROC ) platGetProcAddress( "glIsImageHandleResidentARB" ) ) != 0;
+		glExt::ARB_bindless_texture = ok;
+	}
+	if( isExtensionSupported( "GL_ARB_sparse_texture" ) )
+	{
+		bool ok = true;
+		ok &= ( glTexPageCommitmentARB = ( PFNGLTEXPAGECOMMITMENTARBPROC ) platGetProcAddress( "glTexPageCommitmentARB" ) ) != 0;
+		glExt::ARB_sparse_texture = ok;
+	}
+	if( isExtensionSupported( "GL_ARB_sparse_buffer" ) )
+	{
+		bool ok = true;
+		ok &= ( glBufferPageCommitmentARB = ( PFNGLBUFFERPAGECOMMITMENTARBPROC ) platGetProcAddress( "glBufferPageCommitmentARB" ) ) != 0;
+		ok &= ( glNamedBufferPageCommitmentARB = ( PFNGLNAMEDBUFFERPAGECOMMITMENTARBPROC ) platGetProcAddress( "glNamedBufferPageCommitmentARB" ) ) != 0;
+		glExt::ARB_sparse_buffer = ok;
+	}
+	if( isExtensionSupported( "GL_ARB_compute_variable_group_size" ) )
+	{
+		bool ok = true;
+		ok &= ( glDispatchComputeGroupSizeARB = ( PFNGLDISPATCHCOMPUTEGROUPSIZEARBPROC ) platGetProcAddress( "glDispatchComputeGroupSizeARB" ) ) != 0;
+		glExt::ARB_compute_variable_group_size = ok;
+	}
+	if( isExtensionSupported( "GL_NV_mesh_shader" ) )
+	{
+		bool ok = true;
+		ok &= ( glDrawMeshTasksNV = ( PFNGLDRAWMESHTASKSNVPROC ) platGetProcAddress( "glDrawMeshTasksNV" ) ) != 0;
+		ok &= ( glDrawMeshTasksIndirectNV = ( PFNGLDRAWMESHTASKSINDIRECTNVPROC ) platGetProcAddress( "glDrawMeshTasksIndirectNV" ) ) != 0;
+		ok &= ( glMultiDrawMeshTasksIndirectNV = ( PFNGLMULTIDRAWMESHTASKSINDIRECTNVPROC ) platGetProcAddress( "glMultiDrawMeshTasksIndirectNV" ) ) != 0;
+		ok &= ( glMultiDrawMeshTasksIndirectCountNV = ( PFNGLMULTIDRAWMESHTASKSINDIRECTCOUNTNVPROC ) platGetProcAddress( "glMultiDrawMeshTasksIndirectCountNV" ) ) != 0;
+		glExt::NV_mesh_shader = ok;
+	}
+	if( isExtensionSupported( "GL_NV_conservative_raster" ) )
+	{
+		bool ok = true;
+		ok &= ( glSubpixelPrecisionBiasNV = ( PFNGLSUBPIXELPRECISIONBIASNVPROC ) platGetProcAddress( "glSubpixelPrecisionBiasNV" ) ) != 0;
+		glExt::NV_conservative_raster = ok;
+	}
+
+	if( isExtensionSupported( "GL_KHR_parallel_shader_compile" ) || isExtensionSupported( "GL_ARB_parallel_shader_compile" ) )
+	{
+		glMaxShaderCompilerThreadsKHR = ( PFNGLMAXSHADERCOMPILERTHREADSKHRPROC ) platGetProcAddressAny( "glMaxShaderCompilerThreadsKHR", "glMaxShaderCompilerThreadsARB" );
+		glExt::KHR_parallel_shader_compile = glMaxShaderCompilerThreadsKHR != 0;
+	}
+
+	// SPIR-V em GL < 4.6 com a extensao ARB_gl_spirv: mesma assinatura, usa-se como glSpecializeShader
+	if( !glSpecializeShader && isExtensionSupported( "GL_ARB_gl_spirv" ) )
+	{
+		glSpecializeShaderARB = ( PFNGLSPECIALIZESHADERARBPROC ) platGetProcAddress( "glSpecializeShaderARB" );
+		if( glSpecializeShaderARB )
+		{
+			glSpecializeShader = ( PFNGLSPECIALIZESHADERPROC ) glSpecializeShaderARB;
+			glExt::ARB_gl_spirv = true;
+		}
+		else glExt::ARB_gl_spirv = false;
+	}
+
+	// Contagem indirecta com a extensao ARB_indirect_parameters em GL 4.3 a 4.5
+	if( !glMultiDrawArraysIndirectCount && isExtensionSupported( "GL_ARB_indirect_parameters" ) )
+	{
+		glMultiDrawArraysIndirectCount = ( PFNGLMULTIDRAWARRAYSINDIRECTCOUNTPROC ) platGetProcAddress( "glMultiDrawArraysIndirectCountARB" );
+		glMultiDrawElementsIndirectCount = ( PFNGLMULTIDRAWELEMENTSINDIRECTCOUNTPROC ) platGetProcAddress( "glMultiDrawElementsIndirectCountARB" );
+		glExt::ARB_indirect_parameters = glMultiDrawArraysIndirectCount && glMultiDrawElementsIndirectCount;
+	}
+
+	// Propriedades de subgroup (KHR_shader_subgroup)
+	if( glExt::KHR_shader_subgroup )
+	{
+		GLint v = 0;
+		glGetIntegerv( GL_SUBGROUP_SIZE_KHR, &v );
+		glExt::subgroupSize = v;
+		glGetIntegerv( GL_SUBGROUP_SUPPORTED_FEATURES_KHR, &v );
+		glExt::subgroupFeatures = ( unsigned int ) v;
+		glGetIntegerv( GL_SUBGROUP_SUPPORTED_STAGES_KHR, &v );
+		glExt::subgroupStages = ( unsigned int ) v;
 	}
 }
 
@@ -1560,7 +1755,7 @@ bool initOpenGLExtensions( bool forceLegacyFuncs )
 			r &= ( glVertexBindingDivisor = ( PFNGLVERTEXBINDINGDIVISORPROC ) platGetProcAddress( "glVertexBindingDivisor" ) ) != 0;
 			r &= ( glDebugMessageControl = ( PFNGLDEBUGMESSAGECONTROLPROC ) platGetProcAddress( "glDebugMessageControl" ) ) != 0;
 			r &= ( glDebugMessageInsert = ( PFNGLDEBUGMESSAGEINSERTPROC ) platGetProcAddress( "glDebugMessageInsert" ) ) != 0;
-//			r &= ( glDebugMessageCallback = ( PFNGLDEBUGMESSAGECALLBACKPROC ) platGetProcAddress( "glDebugMessageCallback" ) ) != 0;
+			r &= ( glDebugMessageCallback = ( PFNGLDEBUGMESSAGECALLBACKPROC ) platGetProcAddress( "glDebugMessageCallback" ) ) != 0;
 			r &= ( glGetDebugMessageLog = ( PFNGLGETDEBUGMESSAGELOGPROC ) platGetProcAddress( "glGetDebugMessageLog" ) ) != 0;
 			r &= ( glPushDebugGroup = ( PFNGLPUSHDEBUGGROUPPROC ) platGetProcAddress( "glPushDebugGroup" ) ) != 0;
 			r &= ( glPopDebugGroup = ( PFNGLPOPDEBUGGROUPPROC ) platGetProcAddress( "glPopDebugGroup" ) ) != 0;
@@ -1739,6 +1934,8 @@ bool initOpenGLExtensions( bool forceLegacyFuncs )
 	glExt::EXT_texture_filter_anisotropic = isExtensionSupported( "GL_EXT_texture_filter_anisotropic" );
 
 	glExt::EXT_texture_compression_s3tc = isExtensionSupported( "GL_EXT_texture_compression_s3tc" ) || isExtensionSupported( "GL_S3_s3tc" );
+
+	initAdvancedExtensions();
 
 	return r;
 }

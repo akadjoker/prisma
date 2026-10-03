@@ -124,3 +124,11 @@ Conclusão: "quase Unreal" cobre-se por camadas. Com GL 4.6 chega-se a um aspeto
 - Qual GI como primeiro (SDFGI do Godot vs irradiance field do Ogre-Next).
 - Se o Forward+ clustered usa o caminho GPU do Godot (subgroup) ou o CPU do Filament, conforme o hardware.
 - Não verificado nos relatórios: o corpo das shaders de LTC, do Physical Sky e do FXAA; WBOIT do Filament; detalhes de D3D12/Metal.
+
+## 8. Medido nesta máquina (Radeon Renoir, Mesa, GL 4.6) com o loader melhorado
+
+Todas as seguintes extensões dão `true` e as funções carregam: `ARB_bindless_texture`, `ARB_sparse_texture` (+2), `ARB_sparse_buffer`, `KHR_shader_subgroup` (tamanho 64, todas as features: basic, vote, arithmetic, ballot, shuffle, shuffle relative, clustered, quad), `ARB_shader_ballot`, `ARB_gpu_shader_int64`, `NV_shader_atomic_int64`, `ARB_gl_spirv`, `ARB_indirect_parameters`, `KHR_parallel_shader_compile`, `ARB_compute_variable_group_size`, `ARB_direct_state_access`, `ARB_buffer_storage`, `ARB_clip_control`, `ARB_multi_draw_indirect`, `ARB_shader_viewport_layer_array`.
+
+Não existem aqui: `NV_mesh_shader`, `NV_conservative_raster`, `INTEL_conservative_rasterization`, `ARB_fragment_shader_interlock`, `AMD_shader_ballot`.
+
+Consequência para o Nível 3: culling na GPU com multi-draw indirect count, bindless, sparse (virtual shadow maps) e atomics de 64 bits (rasterização por compute de meshlets) são possíveis em GL 4.6 nesta máquina. Mesh shaders não.
