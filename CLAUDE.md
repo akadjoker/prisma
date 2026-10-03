@@ -4,7 +4,7 @@ Alvo: render moderno e realista (luzes dinâmicas, fog, bloom/HDR, sombras, IBL,
 
 ## Regra principal: NÃO inventar, reaproveitar
 - Toda a técnica (BRDF, IBL, sombras, luzes, fog, bloom, tonemap, materiais) é **adaptada de código existente** nas referências, nunca desenhada de memória.
-- Referências (só leitura): `/media/projectos/projects/cpp/engines/ogre/tmp/filament` (Apache-2.0) e `/media/projectos/projects/cpp/engines/ogre/tmp/Ogre-Next` (MIT).
+- Referências (só leitura): `prisma/tmp/filament` (Apache-2.0), `prisma/tmp/Ogre-Next` (MIT) e `/media/projectos/projects/cpp/engines/godot` (MPL/MIT; outros engines em `engines/`: skylicht-engine, LumixEngine, Lumos, Horde3D, ...).
 - Para cada técnica: indicar ficheiro e linhas de origem no comentário do código. Se não existir nas referências, dizer e perguntar.
 - Respeitar licenças e manter avisos de copyright.
 - Não apagar pastas de referência nem media sem o utilizador decidir.
