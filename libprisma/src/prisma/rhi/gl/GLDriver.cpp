@@ -88,6 +88,8 @@ GLenum toGLTarget(TextureType type)
             return GL_TEXTURE_CUBE_MAP;
         case TextureType::Texture3D:
             return GL_TEXTURE_3D;
+        case TextureType::TextureCubeArray:
+            return GL_TEXTURE_CUBE_MAP_ARRAY;
     }
     return GL_TEXTURE_2D;
 }
@@ -104,6 +106,8 @@ std::uint32_t layerCount(const GLTexture& texture, std::uint32_t mip)
             return 6;
         case TextureType::Texture3D:
             return mipSize(texture.depth, mip);
+        case TextureType::TextureCubeArray:
+            return texture.depth * 6;
     }
     return 1;
 }
@@ -120,6 +124,11 @@ bool sameTargets(const TargetFormats& a, const TargetFormats& b)
     for (std::uint32_t i = 0; i < a.colorCount; ++i)
         if (a.colors[i] != b.colors[i]) return false;
     return true;
+}
+
+bool isCube(TextureType type)
+{
+    return type == TextureType::TextureCube || type == TextureType::TextureCubeArray;
 }
 
 bool validSamples(const TextureDesc& desc, std::uint32_t maxSamples)
@@ -534,6 +543,14 @@ public:
         caps_.textureASTC = hasExtension("KHR_texture_compression_astc_ldr");
 #endif
 #ifdef PRISMA_GLES
+        caps_.cubeArrays = major > 3 || (major == 3 && minor >= 2);
+        copyImage_ = caps_.cubeArrays && glCopyImageSubData != nullptr;
+#else
+        caps_.cubeArrays = true;
+        copyImage_ = true;
+#endif
+        caps_.compressedTextureCopy = copyImage_;
+#ifdef PRISMA_GLES
         caps_.timerQueries = glESExt::EXT_disjoint_timer_query;
 #else
         caps_.timerQueries = true;
@@ -568,6 +585,7 @@ public:
             glDeleteFramebuffers(1, &framebuffers_[i].id);
         for (GLTexture& texture: textures_) glDeleteTextures(1, &texture.id);
         for (GLSampler& sampler: samplers_) glDeleteSamplers(1, &sampler.id);
+        if (copyFramebuffers_[0]) glDeleteFramebuffers(2, copyFramebuffers_);
         for (GLQuery& query: queries_) glDeleteQueries(kQuerySlots * 2, &query.ids[0][0]);
         for (GLBuffer& buffer: buffers_) glDeleteBuffers(1, &buffer.id);
         glDeleteVertexArrays(1, &scratchVertexArray_);
@@ -661,9 +679,10 @@ public:
         const std::uint32_t largest = desc.width > desc.height ? desc.width : desc.height;
         if (desc.format == TextureFormat::None || desc.width == 0 || desc.height == 0 ||
                 desc.depth == 0 || largest > caps_.maxTextureSize ||
-                (desc.type == TextureType::TextureCube && desc.width != desc.height))
+                (isCube(desc.type) && desc.width != desc.height) ||
+                (desc.type == TextureType::TextureCubeArray && !caps_.cubeArrays))
         {
-            log("createTexture: invalid format or size");
+            log("createTexture: invalid format or size, or cube map arrays are not supported");
             return TextureHandle();
         }
         if (!supportedFormat(desc))
@@ -684,10 +703,9 @@ public:
         texture.target = toGLTarget(desc.type);
         texture.width = desc.width;
         texture.height = desc.height;
-        texture.depth =
-                desc.type == TextureType::Texture2DArray || desc.type == TextureType::Texture3D
-                        ? desc.depth
-                        : 1;
+        texture.depth = desc.type == TextureType::Texture2D || desc.type == TextureType::TextureCube
+                                ? 1
+                                : desc.depth;
         texture.format = desc.format;
         texture.usage = desc.usage;
 
@@ -718,10 +736,12 @@ public:
         }
         glGenTextures(1, &texture.id);
         state_.bindTexture(0, texture.target, texture.id);
-        if (desc.type == TextureType::Texture2DArray || desc.type == TextureType::Texture3D)
+        if (desc.type != TextureType::Texture2D && desc.type != TextureType::TextureCube)
             glTexStorage3D(texture.target, static_cast<GLsizei>(texture.mipLevels), format.internal,
                     static_cast<GLsizei>(desc.width), static_cast<GLsizei>(desc.height),
-                    static_cast<GLsizei>(texture.depth));
+                    static_cast<GLsizei>(desc.type == TextureType::TextureCubeArray
+                                                 ? texture.depth * 6
+                                                 : texture.depth));
         else
             glTexStorage2D(texture.target, static_cast<GLsizei>(texture.mipLevels), format.internal,
                     static_cast<GLsizei>(desc.width), static_cast<GLsizei>(desc.height));
@@ -784,6 +804,90 @@ public:
         if (texture->mipLevels < 2) return;
         state_.bindTexture(0, texture->target, texture->id);
         glGenerateMipmap(texture->target);
+    }
+
+    void copyTexture(const TextureCopy& copy) override
+    {
+        const GLTexture* source = textures_.get(handleCast<TextureSlot>(copy.source));
+        const GLTexture* destination = textures_.get(handleCast<TextureSlot>(copy.destination));
+        if (passActive_ || !validCopy(source, destination, copy,
+                                   source ? layerCount(*source, copy.sourceMip) : 0,
+                                   destination ? layerCount(*destination, copy.destinationMip) : 0))
+        {
+            log("copyTexture: invalid textures, formats or rectangles, or called inside a render "
+                "pass");
+            return;
+        }
+        const GLint sourceX = static_cast<GLint>(copy.sourceX);
+        const GLint sourceY = static_cast<GLint>(copy.sourceY);
+        const GLint destinationX = static_cast<GLint>(copy.destinationX);
+        const GLint destinationY = static_cast<GLint>(copy.destinationY);
+        const GLsizei width = static_cast<GLsizei>(copy.width);
+        const GLsizei height = static_cast<GLsizei>(copy.height);
+        if (copyImage_)
+        {
+            glCopyImageSubData(source->id, source->target, static_cast<GLint>(copy.sourceMip),
+                    sourceX, sourceY, static_cast<GLint>(copy.sourceLayer), destination->id,
+                    destination->target, static_cast<GLint>(copy.destinationMip), destinationX,
+                    destinationY, static_cast<GLint>(copy.destinationLayer), width, height, 1);
+            return;
+        }
+        if (isCompressedFormat(source->format))
+        {
+            log("copyTexture: compressed textures cannot be copied on this OpenGL ES version");
+            return;
+        }
+
+        const bool depth = isDepthFormat(source->format);
+        const bool stencil = source->format == TextureFormat::Depth24Stencil8;
+        const GLenum point = stencil ? GL_DEPTH_STENCIL_ATTACHMENT
+                             : depth ? GL_DEPTH_ATTACHMENT
+                                     : GL_COLOR_ATTACHMENT0;
+        const GLbitfield mask = stencil ? GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT
+                                : depth ? GL_DEPTH_BUFFER_BIT
+                                        : GL_COLOR_BUFFER_BIT;
+        RenderTarget from;
+        from.mip = copy.sourceMip;
+        from.layer = copy.sourceLayer;
+        RenderTarget to;
+        to.mip = copy.destinationMip;
+        to.layer = copy.destinationLayer;
+        if (!copyFramebuffers_[0]) glGenFramebuffers(2, copyFramebuffers_);
+        state_.bindFramebuffer(copyFramebuffers_[0]);
+        attach(point, *source, from);
+        state_.bindFramebuffer(copyFramebuffers_[1]);
+        attach(point, *destination, to);
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, copyFramebuffers_[0]);
+        state_.scissorTest(false);
+        state_.colorMask(kColorAll);
+        state_.depthMask(true);
+        state_.stencilWriteMask(0xFF);
+        glBlitFramebuffer(sourceX, sourceY, sourceX + width, sourceY + height, destinationX,
+                destinationY, destinationX + width, destinationY + height, mask, GL_NEAREST);
+        glFramebufferTexture2D(GL_READ_FRAMEBUFFER, point, GL_TEXTURE_2D, 0, 0);
+        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, point, GL_TEXTURE_2D, 0, 0);
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, copyFramebuffers_[1]);
+    }
+
+    void copyBuffer(BufferHandle sourceHandle, std::uint32_t sourceOffset,
+            BufferHandle destinationHandle, std::uint32_t destinationOffset,
+            std::uint32_t size) override
+    {
+        const GLBuffer* source = buffers_.get(handleCast<BufferSlot>(sourceHandle));
+        const GLBuffer* destination = buffers_.get(handleCast<BufferSlot>(destinationHandle));
+        if (passActive_ || !source || !destination ||
+                !validBufferCopy(true, source == destination, source->usage == BufferUsage::Index,
+                        destination->usage == BufferUsage::Index, source->size, sourceOffset,
+                        destination->size, destinationOffset, size))
+        {
+            log("copyBuffer: invalid buffers or ranges, index and other buffers mixed, or called "
+                "inside a render pass");
+            return;
+        }
+        glBindBuffer(GL_COPY_READ_BUFFER, source->id);
+        glBindBuffer(GL_COPY_WRITE_BUFFER, destination->id);
+        glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, sourceOffset,
+                destinationOffset, size);
     }
 
     SamplerHandle createSampler(const SamplerDesc& desc) override
@@ -1597,6 +1701,7 @@ private:
                 break;
             case TextureType::Texture2DArray:
             case TextureType::Texture3D:
+            case TextureType::TextureCubeArray:
                 glFramebufferTextureLayer(GL_FRAMEBUFFER, point, texture.id, mip,
                         static_cast<GLint>(target.layer));
                 break;
@@ -1813,6 +1918,8 @@ private:
     bool occlusionActive_ = false;
     ct::Vector<GLFramebuffer> framebuffers_;
     GLuint colorResolves_[RenderPassDesc::kMaxColorTargets] = {};
+    GLuint copyFramebuffers_[2] = { 0, 0 };
+    bool copyImage_ = false;
     GLuint depthResolve_ = 0;
     GLuint passFramebuffer_ = 0;
 

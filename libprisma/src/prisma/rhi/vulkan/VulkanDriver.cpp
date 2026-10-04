@@ -54,6 +54,7 @@ struct VulkanBuffer
     std::uint32_t current = 0;
     std::uint32_t size = 0;
     VkBufferUsageFlags vkUsage = 0;
+    bool gpuWritten = false;
     BufferUsage usage = BufferUsage::Vertex;
     IndexFormat indexFormat = IndexFormat::UInt16;
 };
@@ -110,6 +111,7 @@ struct VulkanTexture
     std::uint32_t depth = 1;
     std::uint32_t mipLevels = 1;
     std::uint32_t samples = 1;
+    bool copyDestination = false;
     TextureFormat format = TextureFormat::RGBA8;
     std::uint32_t usage = 0;
     AttachmentView attachmentViews[kMaxAttachmentViews];
@@ -174,6 +176,7 @@ std::uint32_t mipSize(std::uint32_t size, std::uint32_t mip)
 std::uint32_t imageLayers(const VulkanTexture& texture)
 {
     if (texture.type == TextureType::TextureCube) return 6;
+    if (texture.type == TextureType::TextureCubeArray) return texture.depth * 6;
     if (texture.type == TextureType::Texture2DArray) return texture.depth;
     return 1;
 }
@@ -265,6 +268,11 @@ bool sameTargets(const TargetFormats& a, const TargetFormats& b)
     for (std::uint32_t i = 0; i < a.colorCount; ++i)
         if (a.colors[i] != b.colors[i]) return false;
     return true;
+}
+
+bool isCube(TextureType type)
+{
+    return type == TextureType::TextureCube || type == TextureType::TextureCubeArray;
 }
 
 bool validSamples(const TextureDesc& desc, std::uint32_t maxSamples)
@@ -612,6 +620,7 @@ public:
                 buffer.vkUsage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
                 break;
         }
+        buffer.vkUsage |= VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
         if (!createVersion(buffer, desc.debugName)) return BufferHandle();
         if (desc.data) memcpy(buffer.versions[0].mapped, desc.data, desc.size);
         return handleCast<BufferHandle>(buffers_.insert(buffer));
@@ -629,6 +638,21 @@ public:
         if (!buffer || !data || static_cast<std::uint64_t>(offset) + size > buffer->size)
         {
             log("updateBuffer: invalid buffer handle or range");
+            return;
+        }
+
+        if (buffer->gpuWritten)
+        {
+            VkBuffer staging = stagingBuffer(data, size);
+            if (!staging) return;
+            BufferVersion& version = buffer->versions[buffer->current];
+            version.lastUsedFrame = frameNumber_;
+            VkCommandBuffer commands = transferCommands();
+            VkBufferCopy region = {};
+            region.dstOffset = offset;
+            region.size = size;
+            vkCmdCopyBuffer(commands, staging, version.buffer, 1, &region);
+            transferBarrier(commands);
             return;
         }
 
@@ -944,9 +968,10 @@ public:
         const std::uint32_t largest = desc.width > desc.height ? desc.width : desc.height;
         if (desc.format == TextureFormat::None || desc.width == 0 || desc.height == 0 ||
                 desc.depth == 0 || largest > caps_.maxTextureSize ||
-                (desc.type == TextureType::TextureCube && desc.width != desc.height))
+                (isCube(desc.type) && desc.width != desc.height) ||
+                (desc.type == TextureType::TextureCubeArray && !caps_.cubeArrays))
         {
-            log("createTexture: invalid format or size");
+            log("createTexture: invalid format or size, or cube map arrays are not supported");
             return TextureHandle();
         }
         if (!supportedFormat(desc))
@@ -969,7 +994,9 @@ public:
         texture.type = desc.type;
         texture.width = desc.width;
         texture.height = desc.height;
-        texture.depth = volume || desc.type == TextureType::Texture2DArray ? desc.depth : 1;
+        texture.depth = desc.type == TextureType::Texture2D || desc.type == TextureType::TextureCube
+                                ? 1
+                                : desc.depth;
         texture.format = desc.format;
         texture.usage = desc.usage;
         texture.samples = desc.samples;
@@ -981,8 +1008,7 @@ public:
 
         VkImageCreateInfo image = {};
         image.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-        if (desc.type == TextureType::TextureCube)
-            image.flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
+        if (isCube(desc.type)) image.flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
         if (volume && target) image.flags = VK_IMAGE_CREATE_2D_ARRAY_COMPATIBLE_BIT;
         image.imageType = volume ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D;
         image.format = textureFormat(desc.format);
@@ -995,7 +1021,14 @@ public:
         image.tiling = VK_IMAGE_TILING_OPTIMAL;
         image.usage = VK_IMAGE_USAGE_SAMPLED_BIT;
         if (desc.samples == 1) image.usage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
-        if (desc.samples == 1 && !depth) image.usage |= VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+        if (desc.samples == 1)
+        {
+            VkFormatProperties properties = {};
+            vkGetPhysicalDeviceFormatProperties(physicalDevice_, image.format, &properties);
+            texture.copyDestination = !depth || (properties.optimalTilingFeatures &
+                                                        VK_FORMAT_FEATURE_TRANSFER_DST_BIT);
+            if (texture.copyDestination) image.usage |= VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+        }
         if (target)
             image.usage |= depth ? VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT
                                  : VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
@@ -1033,6 +1066,8 @@ public:
         view.viewType = VK_IMAGE_VIEW_TYPE_2D;
         if (desc.type == TextureType::Texture2DArray) view.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
         if (desc.type == TextureType::TextureCube) view.viewType = VK_IMAGE_VIEW_TYPE_CUBE;
+        if (desc.type == TextureType::TextureCubeArray)
+            view.viewType = VK_IMAGE_VIEW_TYPE_CUBE_ARRAY;
         if (volume) view.viewType = VK_IMAGE_VIEW_TYPE_3D;
         view.format = image.format;
         view.subresourceRange.aspectMask =
@@ -1064,6 +1099,90 @@ public:
             if (desc.generateMipmaps && !isCompressedFormat(desc.format)) recordMipmaps(texture);
         }
         return handleCast<TextureHandle>(textures_.insert(texture));
+    }
+
+    void copyTexture(const TextureCopy& copy) override
+    {
+        const VulkanTexture* source = textures_.get(handleCast<TextureSlotHandle>(copy.source));
+        const VulkanTexture* destination =
+                textures_.get(handleCast<TextureSlotHandle>(copy.destination));
+        if (passActive_ ||
+                !validCopy(source, destination, copy,
+                        source ? layerCount(*source, copy.sourceMip) : 0,
+                        destination ? layerCount(*destination, copy.destinationMip) : 0) ||
+                !destination->copyDestination)
+        {
+            log("copyTexture: invalid textures, formats or rectangles, or called inside a render "
+                "pass");
+            return;
+        }
+        const bool sourceVolume = source->type == TextureType::Texture3D;
+        const bool destinationVolume = destination->type == TextureType::Texture3D;
+        const std::uint32_t sourceLayer = sourceVolume ? 0 : copy.sourceLayer;
+        const std::uint32_t destinationLayer = destinationVolume ? 0 : copy.destinationLayer;
+        const VkImageAspectFlags aspect = aspectOf(source->format);
+
+        VkImageCopy region = {};
+        region.srcSubresource.aspectMask = aspect;
+        region.srcSubresource.mipLevel = copy.sourceMip;
+        region.srcSubresource.baseArrayLayer = sourceLayer;
+        region.srcSubresource.layerCount = 1;
+        region.srcOffset.x = static_cast<std::int32_t>(copy.sourceX);
+        region.srcOffset.y = static_cast<std::int32_t>(copy.sourceY);
+        region.srcOffset.z = sourceVolume ? static_cast<std::int32_t>(copy.sourceLayer) : 0;
+        region.dstSubresource.aspectMask = aspect;
+        region.dstSubresource.mipLevel = copy.destinationMip;
+        region.dstSubresource.baseArrayLayer = destinationLayer;
+        region.dstSubresource.layerCount = 1;
+        region.dstOffset.x = static_cast<std::int32_t>(copy.destinationX);
+        region.dstOffset.y = static_cast<std::int32_t>(copy.destinationY);
+        region.dstOffset.z =
+                destinationVolume ? static_cast<std::int32_t>(copy.destinationLayer) : 0;
+        region.extent.width = copy.width;
+        region.extent.height = copy.height;
+        region.extent.depth = 1;
+
+        VkCommandBuffer commands = transferCommands();
+        imageBarrier(commands, source->image, aspect, copy.sourceMip, 1, sourceLayer, 1,
+                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+        imageBarrier(commands, destination->image, aspect, copy.destinationMip, 1, destinationLayer,
+                1, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+        vkCmdCopyImage(commands, source->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                destination->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+        imageBarrier(commands, source->image, aspect, copy.sourceMip, 1, sourceLayer, 1,
+                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        imageBarrier(commands, destination->image, aspect, copy.destinationMip, 1, destinationLayer,
+                1, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    }
+
+    void copyBuffer(BufferHandle sourceHandle, std::uint32_t sourceOffset,
+            BufferHandle destinationHandle, std::uint32_t destinationOffset,
+            std::uint32_t size) override
+    {
+        VulkanBuffer* source = buffers_.get(handleCast<BufferSlot>(sourceHandle));
+        VulkanBuffer* destination = buffers_.get(handleCast<BufferSlot>(destinationHandle));
+        if (passActive_ || !source || !destination ||
+                !validBufferCopy(true, source == destination, source->usage == BufferUsage::Index,
+                        destination->usage == BufferUsage::Index, source->size, sourceOffset,
+                        destination->size, destinationOffset, size))
+        {
+            log("copyBuffer: invalid buffers or ranges, index and other buffers mixed, or called "
+                "inside a render pass");
+            return;
+        }
+        BufferVersion& from = source->versions[source->current];
+        BufferVersion& to = destination->versions[destination->current];
+        from.lastUsedFrame = frameNumber_;
+        to.lastUsedFrame = frameNumber_;
+        destination->gpuWritten = true;
+
+        VkCommandBuffer commands = transferCommands();
+        VkBufferCopy region = {};
+        region.srcOffset = sourceOffset;
+        region.dstOffset = destinationOffset;
+        region.size = size;
+        vkCmdCopyBuffer(commands, from.buffer, to.buffer, 1, &region);
+        transferBarrier(commands);
     }
 
     SamplerHandle createSampler(const SamplerDesc& desc) override
@@ -2107,6 +2226,40 @@ private:
         vkBeginCommandBuffer(commands, &begin);
     }
 
+    VkBuffer stagingBuffer(const void* data, std::uint32_t size)
+    {
+        VulkanBuffer staging;
+        staging.size = size;
+        staging.vkUsage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+        if (!createVersion(staging, nullptr))
+        {
+            log("Vulkan: could not create a temporary upload buffer");
+            return VK_NULL_HANDLE;
+        }
+        memcpy(staging.versions[0].mapped, data, size);
+        Garbage item;
+        item.frame = frameNumber_;
+        item.buffer = staging.versions[0].buffer;
+        item.memory = staging.versions[0].memory;
+        garbage_.push_back(item);
+        return staging.versions[0].buffer;
+    }
+
+    static void transferBarrier(VkCommandBuffer commands)
+    {
+        VkMemoryBarrier2 barrier = {};
+        barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
+        barrier.srcStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
+        barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        barrier.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+        barrier.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
+        VkDependencyInfo info = {};
+        info.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        info.memoryBarrierCount = 1;
+        info.pMemoryBarriers = &barrier;
+        vkCmdPipelineBarrier2(commands, &info);
+    }
+
     VkCommandBuffer transferCommands()
     {
         if (frameReady_ && !passActive_) return frames_[frameIndex_].commands;
@@ -2670,6 +2823,8 @@ private:
                 caps_.textureBC = features.features.textureCompressionBC;
                 caps_.textureETC2 = features.features.textureCompressionETC2;
                 caps_.textureASTC = features.features.textureCompressionASTC_LDR;
+                caps_.cubeArrays = features.features.imageCubeArray;
+                caps_.compressedTextureCopy = true;
                 caps_.occlusionQueries = features12.hostQueryReset;
                 caps_.timerQueries =
                         features12.hostQueryReset && properties.limits.timestampComputeAndGraphics;
@@ -2715,6 +2870,7 @@ private:
         enabled.textureCompressionBC = caps_.textureBC;
         enabled.textureCompressionETC2 = caps_.textureETC2;
         enabled.textureCompressionASTC_LDR = caps_.textureASTC;
+        enabled.imageCubeArray = caps_.cubeArrays;
 
         const char* const extension = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
         VkDeviceCreateInfo info = {};

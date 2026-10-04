@@ -26,6 +26,9 @@ public:
     virtual void updateTextureRegion(TextureHandle handle, const TextureRegion& region,
             const void* data) = 0;
     virtual void generateMipmaps(TextureHandle handle) = 0;
+    virtual void copyTexture(const TextureCopy& copy) = 0;
+    virtual void copyBuffer(BufferHandle source, std::uint32_t sourceOffset,
+            BufferHandle destination, std::uint32_t destinationOffset, std::uint32_t size) = 0;
     virtual void destroy(BufferHandle handle) = 0;
     virtual void destroy(ShaderHandle handle) = 0;
     virtual void destroy(PipelineHandle handle) = 0;

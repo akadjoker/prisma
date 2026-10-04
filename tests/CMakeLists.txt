@@ -12,7 +12,7 @@ if(PRISMA_OPENGL AND PRISMA_BUILD_APPS)
       shaders/textured.vert shaders/textured.frag shaders/scaled.frag
       shaders/two_targets.frag shaders/instanced.vert shaders/instanced.frag
       shaders/no_buffer.vert shaders/array.frag shaders/cube.frag shaders/volume.frag
-      shaders/lod.frag shaders/shadow.frag)
+      shaders/lod.frag shaders/shadow.frag shaders/cube_array.frag)
   endif()
   add_test(NAME gl_driver COMMAND test_driver)
   set_tests_properties(gl_driver PROPERTIES LABELS gpu)

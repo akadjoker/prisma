@@ -8,6 +8,7 @@
 #ifdef PRISMA_APP_SPIRV
 #include "array.frag.h"
 #include "cube.frag.h"
+#include "cube_array.frag.h"
 #include "flat.frag.h"
 #include "flat.vert.h"
 #include "instanced.frag.h"
@@ -29,8 +30,10 @@
 
 #ifdef PRISMA_GLES
 #define SHADER_HEADER "#version 300 es\nprecision highp float;\n"
+#define SHADER_HEADER_320 "#version 320 es\nprecision highp float;\n"
 #else
 #define SHADER_HEADER "#version 460 core\n"
+#define SHADER_HEADER_320 SHADER_HEADER
 #endif
 
 namespace
@@ -183,6 +186,18 @@ const char* kCubeFragmentSource =
                       "out vec4 oColor;\n"
                       "void main() { oColor = texture(uTexture, uPlace.xyz); }\n";
 
+const char* kCubeArrayVertexSource = SHADER_HEADER_320
+        "layout(location = 0) in vec2 aPosition;\n"
+        "out vec2 vUv;\n"
+        "void main() { vUv = aPosition * 0.5 + 0.5; gl_Position = vec4(aPosition, 0.5, 1.0); }\n";
+
+const char* kCubeArrayFragmentSource =
+        SHADER_HEADER_320 "in vec2 vUv;\n"
+                          "layout(std140) uniform Params { vec4 uColor; vec4 uPlace; };\n"
+                          "uniform highp samplerCubeArray uTexture;\n"
+                          "out vec4 oColor;\n"
+                          "void main() { oColor = texture(uTexture, uPlace); }\n";
+
 const char* kVolumeFragmentSource =
         SHADER_HEADER "in vec2 vUv;\n"
                       "layout(std140) uniform Params { vec4 uColor; vec4 uPlace; };\n"
@@ -242,6 +257,7 @@ enum ParamIndex
     kParamBlueMid,
     kParamRedMid,
     kParamGreenMid,
+    kParamCubeOneNegativeY,
     kParamCount
 };
 
@@ -517,6 +533,8 @@ int main(int argc, char** argv)
         setParams(paramBytes, stride, kParamCubePositiveX, cubePositiveX);
         const Params cubeNegativeY = { { 0.0f, 0.0f, 0.0f, 0.0f }, { 0.0f, -1.0f, 0.0f, 0.0f } };
         setParams(paramBytes, stride, kParamCubeNegativeY, cubeNegativeY);
+        const Params cubeOneNegativeY = { { 0.0f, 0.0f, 0.0f, 0.0f }, { 0.0f, -1.0f, 0.0f, 1.0f } };
+        setParams(paramBytes, stride, kParamCubeOneNegativeY, cubeOneNegativeY);
         const Params cubeNegativeZ = { { 0.0f, 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, -1.0f, 0.0f } };
         setParams(paramBytes, stride, kParamCubeNegativeZ, cubeNegativeZ);
 
@@ -2016,6 +2034,281 @@ int main(int argc, char** argv)
             driver->destroy(etcTexture);
             driver->destroy(bcTexture);
             driver->destroy(regionTexture);
+        }
+
+        {
+            const float kWedge[6] = { -1.0f, -1.0f, 1.0f, 0.0f, -1.0f, 1.0f };
+            const float kFarCorner[2] = { 3.0f, -1.0f };
+            BufferDesc sourceDesc;
+            sourceDesc.size = sizeof(kWedge);
+            sourceDesc.data = kWedge;
+            const BufferHandle copySource = driver->createBuffer(sourceDesc);
+            BufferDesc emptyDesc;
+            emptyDesc.size = sizeof(kWedge);
+            emptyDesc.update = BufferUpdate::Dynamic;
+            const BufferHandle copied = driver->createBuffer(emptyDesc);
+            CHECK(copySource.valid());
+            CHECK(copied.valid());
+
+            messages = 0;
+            driver->copyBuffer(copySource, 0, copied, 0, sizeof(kWedge));
+            driver->updateBuffer(copied, sizeof(float) * 2, kFarCorner, sizeof(kFarCorner));
+            CHECK(messages == 0);
+            driver->copyBuffer(copySource, 0, copied, 8, sizeof(kWedge));
+            CHECK(messages == 1);
+            driver->copyBuffer(quadIndices, 0, copied, 0, 4);
+            CHECK(messages == 2);
+            driver->copyBuffer(copied, 0, copied, 8, 8);
+            CHECK(messages == 3);
+
+            unsigned char redTexels4[64];
+            unsigned char greenTexels4[64];
+            for (int i = 0; i < 16; ++i)
+            {
+                const unsigned char red[4] = { 255, 0, 0, 255 };
+                const unsigned char green[4] = { 0, 255, 0, 255 };
+                memcpy(redTexels4 + i * 4, red, 4);
+                memcpy(greenTexels4 + i * 4, green, 4);
+            }
+            TextureDesc copyDesc;
+            copyDesc.width = 4;
+            copyDesc.height = 4;
+            copyDesc.data = redTexels4;
+            const TextureHandle copyRed = driver->createTexture(copyDesc);
+            copyDesc.data = greenTexels4;
+            const TextureHandle copyGreen = driver->createTexture(copyDesc);
+            copyDesc.data = nullptr;
+            copyDesc.format = TextureFormat::RG8;
+            const TextureHandle copyOther = driver->createTexture(copyDesc);
+            CHECK(copyRed.valid());
+            CHECK(copyGreen.valid());
+            CHECK(copyOther.valid());
+
+            TextureCopy patch;
+            patch.source = copyRed;
+            patch.destination = copyGreen;
+            patch.destinationX = 2;
+            patch.destinationY = 2;
+            patch.width = 2;
+            patch.height = 2;
+            messages = 0;
+            driver->copyTexture(patch);
+            CHECK(messages == 0);
+            TextureCopy wrong = patch;
+            wrong.destination = copyOther;
+            driver->copyTexture(wrong);
+            CHECK(messages == 1);
+            wrong = patch;
+            wrong.destination = copyRed;
+            driver->copyTexture(wrong);
+            CHECK(messages == 2);
+            wrong = patch;
+            wrong.width = 3;
+            driver->copyTexture(wrong);
+            CHECK(messages == 3);
+
+            TextureDesc depthCopyDesc;
+            depthCopyDesc.format = TextureFormat::Depth32F;
+            depthCopyDesc.width = 32;
+            depthCopyDesc.height = 32;
+            depthCopyDesc.usage = kTextureRenderTarget;
+            const TextureHandle depthSource = driver->createTexture(depthCopyDesc);
+            depthCopyDesc.usage = kTextureSampled;
+            const TextureHandle depthCopied = driver->createTexture(depthCopyDesc);
+            CHECK(depthSource.valid());
+            CHECK(depthCopied.valid());
+            RenderPassDesc depthFill;
+            depthFill.depth.texture = depthSource;
+            depthFill.clearDepth = 0.5f;
+            TextureCopy depthCopy;
+            depthCopy.source = depthSource;
+            depthCopy.destination = depthCopied;
+            depthCopy.width = 32;
+            depthCopy.height = 32;
+
+            const unsigned char kRedBlock[8] = { 0x00, 0xF8, 0x00, 0xF8, 0, 0, 0, 0 };
+            const unsigned char kGreenBlock[8] = { 0xE0, 0x07, 0xE0, 0x07, 0, 0, 0, 0 };
+            const unsigned char kBlueBlock[8] = { 0x1F, 0x00, 0x1F, 0x00, 0, 0, 0, 0 };
+            unsigned char blockSource[16];
+            unsigned char blockTarget[16];
+            memcpy(blockSource, kRedBlock, 8);
+            memcpy(blockSource + 8, kGreenBlock, 8);
+            memcpy(blockTarget, kBlueBlock, 8);
+            memcpy(blockTarget + 8, kBlueBlock, 8);
+            TextureHandle bcSource;
+            TextureHandle bcCopied;
+            if (driver->caps().textureBC && driver->caps().compressedTextureCopy)
+            {
+                TextureDesc blockDesc;
+                blockDesc.format = TextureFormat::BC1;
+                blockDesc.width = 8;
+                blockDesc.height = 4;
+                blockDesc.data = blockSource;
+                bcSource = driver->createTexture(blockDesc);
+                blockDesc.data = blockTarget;
+                bcCopied = driver->createTexture(blockDesc);
+                CHECK(bcSource.valid());
+                CHECK(bcCopied.valid());
+                TextureCopy blockCopy;
+                blockCopy.source = bcSource;
+                blockCopy.sourceX = 4;
+                blockCopy.destination = bcCopied;
+                blockCopy.width = 4;
+                blockCopy.height = 4;
+                driver->copyTexture(blockCopy);
+            }
+
+            static const unsigned char arrayFaceColors[6][3] = { { 255, 0, 0 }, { 0, 255, 0 },
+                { 0, 0, 255 }, { 255, 255, 0 }, { 0, 255, 255 }, { 255, 0, 255 } };
+            unsigned char cubeArrayTexels[2 * 6 * 4 * 4];
+            for (int i = 0; i < 48; ++i)
+            {
+                const int face = (i / 4) % 6;
+                const unsigned char* color = arrayFaceColors[i < 24 ? face : 5 - face];
+                const unsigned char texel[4] = { color[0], color[1], color[2], 255 };
+                memcpy(cubeArrayTexels + i * 4, texel, 4);
+            }
+            TextureDesc cubeArrayDesc;
+            cubeArrayDesc.type = TextureType::TextureCubeArray;
+            cubeArrayDesc.width = 2;
+            cubeArrayDesc.height = 2;
+            cubeArrayDesc.depth = 2;
+            cubeArrayDesc.data = cubeArrayTexels;
+            messages = 0;
+            const TextureHandle cubeArray = driver->createTexture(cubeArrayDesc);
+            CHECK(cubeArray.valid() == driver->caps().cubeArrays);
+            CHECK(messages == (driver->caps().cubeArrays ? 0 : 1));
+            ShaderHandle cubeArrayVertex;
+            ShaderHandle cubeArrayFragment;
+            PipelineHandle cubeArrayPipeline;
+            if (cubeArray.valid())
+            {
+                cubeArrayFragment = makeShader(driver, ShaderStage::Fragment,
+                        kCubeArrayFragmentSource, SPIRV(cube_array_frag));
+                cubeArrayVertex = makeShader(driver, ShaderStage::Vertex, kCubeArrayVertexSource,
+                        SPIRV(textured_vert));
+                PipelineDesc cubeArrayPipelineDesc = texturedPipelineDesc;
+                cubeArrayPipelineDesc.vertexShader = cubeArrayVertex;
+                cubeArrayPipelineDesc.fragmentShader = cubeArrayFragment;
+                cubeArrayPipeline = driver->createPipeline(cubeArrayPipelineDesc);
+                CHECK(cubeArrayPipeline.valid());
+            }
+
+            messages = 0;
+            window_begin_frame(window);
+            driver->beginFrame();
+            driver->beginRenderPass(depthFill);
+            driver->copyTexture(depthCopy);
+            CHECK(messages == 1);
+            messages = 0;
+            driver->endRenderPass();
+            driver->copyTexture(depthCopy);
+
+            driver->beginRenderPass(black);
+            driver->bindUniformBuffer(2, params, kParamRed * stride, sizeof(Params));
+            driver->bindPipeline(flat);
+            driver->bindVertexBuffer(0, copied, 0);
+            driver->draw(3, 0);
+            driver->endRenderPass();
+            CHECK(pixelIs(300, 10, 255, 0, 0));
+            CHECK(pixelIs(20, 200, 255, 0, 0));
+            CHECK(pixelIs(300, 200, 0, 0, 0));
+
+            driver->beginRenderPass(black);
+            driver->bindPipeline(textured);
+            driver->bindVertexBuffer(0, buffer, 0);
+            driver->bindTexture(3, copyGreen, nearest);
+            driver->draw(3, 0);
+            driver->endRenderPass();
+            CHECK(pixelIs(280, 210, 255, 0, 0));
+            CHECK(pixelIs(200, 150, 255, 0, 0));
+            CHECK(pixelIs(40, 30, 0, 255, 0));
+            CHECK(pixelIs(280, 30, 0, 255, 0));
+
+            driver->beginRenderPass(black);
+            driver->bindPipeline(shadowPipeline);
+            driver->bindVertexBuffer(0, buffer, 0);
+            driver->bindTexture(3, depthCopied, comparison);
+            driver->bindUniformBuffer(2, params, kParamSliceQuarter * stride, sizeof(Params));
+            driver->draw(3, 0);
+            driver->endRenderPass();
+            CHECK(pixelIs(160, 120, 255, 255, 255));
+            driver->beginRenderPass(black);
+            driver->bindPipeline(shadowPipeline);
+            driver->bindVertexBuffer(0, buffer, 0);
+            driver->bindTexture(3, depthCopied, comparison);
+            driver->bindUniformBuffer(2, params, kParamSliceThreeQuarters * stride, sizeof(Params));
+            driver->draw(3, 0);
+            driver->endRenderPass();
+            CHECK(pixelIs(160, 120, 0, 0, 0));
+
+            if (bcCopied.valid())
+            {
+                driver->beginRenderPass(black);
+                driver->bindPipeline(textured);
+                driver->bindVertexBuffer(0, buffer, 0);
+                driver->bindTexture(3, bcCopied, nearest);
+                driver->draw(3, 0);
+                driver->endRenderPass();
+                CHECK(pixelIs(80, 120, 0, 255, 0));
+                CHECK(pixelIs(240, 120, 0, 0, 255));
+            }
+
+            if (cubeArray.valid())
+            {
+                driver->beginRenderPass(black);
+                driver->bindPipeline(cubeArrayPipeline);
+                driver->bindVertexBuffer(0, buffer, 0);
+                driver->bindTexture(3, cubeArray, nearest);
+                driver->bindUniformBuffer(2, params, kParamCubePositiveX * stride, sizeof(Params));
+                driver->draw(3, 0);
+                driver->endRenderPass();
+                CHECK(pixelIs(160, 120, 255, 0, 0));
+                driver->beginRenderPass(black);
+                driver->bindPipeline(cubeArrayPipeline);
+                driver->bindVertexBuffer(0, buffer, 0);
+                driver->bindTexture(3, cubeArray, nearest);
+                driver->bindUniformBuffer(2, params, kParamCubeOneNegativeY * stride,
+                        sizeof(Params));
+                driver->draw(3, 0);
+                driver->endRenderPass();
+                CHECK(pixelIs(160, 120, 0, 0, 255));
+
+                TextureCopy faceCopy;
+                faceCopy.source = cubeArray;
+                faceCopy.destination = cubeArray;
+                faceCopy.destinationLayer = 6 + 3;
+                faceCopy.width = 2;
+                faceCopy.height = 2;
+                driver->copyTexture(faceCopy);
+                driver->beginRenderPass(black);
+                driver->bindPipeline(cubeArrayPipeline);
+                driver->bindVertexBuffer(0, buffer, 0);
+                driver->bindTexture(3, cubeArray, nearest);
+                driver->bindUniformBuffer(2, params, kParamCubeOneNegativeY * stride,
+                        sizeof(Params));
+                driver->draw(3, 0);
+                driver->endRenderPass();
+                CHECK(pixelIs(160, 120, 255, 0, 0));
+            }
+            driver->endFrame();
+            driver->present();
+            CHECK(messages == 0);
+            if (messages) printf("unexpected: %s\n", lastMessage);
+
+            driver->destroy(cubeArrayPipeline);
+            driver->destroy(cubeArrayFragment);
+            driver->destroy(cubeArrayVertex);
+            driver->destroy(cubeArray);
+            driver->destroy(bcCopied);
+            driver->destroy(bcSource);
+            driver->destroy(depthCopied);
+            driver->destroy(depthSource);
+            driver->destroy(copyOther);
+            driver->destroy(copyGreen);
+            driver->destroy(copyRed);
+            driver->destroy(copied);
+            driver->destroy(copySource);
         }
 
         CHECK(driver->caps().occlusionQueries);

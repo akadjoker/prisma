@@ -17,6 +17,8 @@ struct Caps
     bool textureBC = false;
     bool textureETC2 = false;
     bool textureASTC = false;
+    bool cubeArrays = false;
+    bool compressedTextureCopy = false;
     bool occlusionQueries = false;
     bool timerQueries = false;
     std::uint32_t maxTextureSize = 0;

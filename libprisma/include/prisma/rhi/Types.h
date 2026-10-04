@@ -148,7 +148,8 @@ enum class TextureType : std::uint8_t
     Texture2D,
     Texture2DArray,
     TextureCube,
-    Texture3D
+    Texture3D,
+    TextureCubeArray
 };
 
 struct TextureDesc
@@ -172,6 +173,22 @@ struct TextureRegion
     std::uint32_t layer = 0;
     std::uint32_t x = 0;
     std::uint32_t y = 0;
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+};
+
+struct TextureCopy
+{
+    TextureHandle source;
+    std::uint32_t sourceMip = 0;
+    std::uint32_t sourceLayer = 0;
+    std::uint32_t sourceX = 0;
+    std::uint32_t sourceY = 0;
+    TextureHandle destination;
+    std::uint32_t destinationMip = 0;
+    std::uint32_t destinationLayer = 0;
+    std::uint32_t destinationX = 0;
+    std::uint32_t destinationY = 0;
     std::uint32_t width = 0;
     std::uint32_t height = 0;
 };

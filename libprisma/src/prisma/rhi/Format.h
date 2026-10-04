@@ -132,4 +132,60 @@ inline bool validRegion(TextureFormat format, std::uint32_t levelWidth, std::uin
     return true;
 }
 
+inline TextureRegion sourceRegion(const TextureCopy& copy)
+{
+    TextureRegion region;
+    region.mip = copy.sourceMip;
+    region.layer = copy.sourceLayer;
+    region.x = copy.sourceX;
+    region.y = copy.sourceY;
+    region.width = copy.width;
+    region.height = copy.height;
+    return region;
+}
+
+inline TextureRegion destinationRegion(const TextureCopy& copy)
+{
+    TextureRegion region;
+    region.mip = copy.destinationMip;
+    region.layer = copy.destinationLayer;
+    region.x = copy.destinationX;
+    region.y = copy.destinationY;
+    region.width = copy.width;
+    region.height = copy.height;
+    return region;
+}
+
+template<typename Texture>
+bool validCopy(const Texture* source, const Texture* destination, const TextureCopy& copy,
+        std::uint32_t sourceLayers, std::uint32_t destinationLayers)
+{
+    if (!source || !destination || source->format != destination->format || source->samples != 1 ||
+            destination->samples != 1)
+        return false;
+    if (copy.sourceMip >= source->mipLevels || copy.destinationMip >= destination->mipLevels ||
+            copy.sourceLayer >= sourceLayers || copy.destinationLayer >= destinationLayers)
+        return false;
+    if (copy.source == copy.destination && copy.sourceMip == copy.destinationMip &&
+            copy.sourceLayer == copy.destinationLayer)
+        return false;
+    const std::uint32_t sourceWidth = source->width >> copy.sourceMip;
+    const std::uint32_t sourceHeight = source->height >> copy.sourceMip;
+    const std::uint32_t destinationWidth = destination->width >> copy.destinationMip;
+    const std::uint32_t destinationHeight = destination->height >> copy.destinationMip;
+    return validRegion(source->format, sourceWidth ? sourceWidth : 1,
+                   sourceHeight ? sourceHeight : 1, sourceRegion(copy)) &&
+           validRegion(destination->format, destinationWidth ? destinationWidth : 1,
+                   destinationHeight ? destinationHeight : 1, destinationRegion(copy));
+}
+
+inline bool validBufferCopy(bool valid, bool sameBuffer, bool sourceIndex, bool destinationIndex,
+        std::uint32_t sourceSize, std::uint32_t sourceOffset, std::uint32_t destinationSize,
+        std::uint32_t destinationOffset, std::uint32_t size)
+{
+    return valid && !sameBuffer && sourceIndex == destinationIndex && size > 0 &&
+           static_cast<std::uint64_t>(sourceOffset) + size <= sourceSize &&
+           static_cast<std::uint64_t>(destinationOffset) + size <= destinationSize;
+}
+
 } // namespace prisma
