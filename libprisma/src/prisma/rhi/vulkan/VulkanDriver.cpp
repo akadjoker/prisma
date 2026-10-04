@@ -163,7 +163,6 @@ struct VulkanTexture
 {
     enum : std::uint32_t
     {
-        kMaxAttachmentViews = 16,
         kMaxMipViews = 16
     };
 
@@ -179,8 +178,7 @@ struct VulkanTexture
     bool copyDestination = false;
     TextureFormat format = TextureFormat::RGBA8;
     std::uint32_t usage = 0;
-    AttachmentView attachmentViews[kMaxAttachmentViews];
-    std::uint32_t attachmentViewCount = 0;
+    ct::Vector<AttachmentView> attachmentViews;
     VkImageView mipViews[kMaxMipViews] = {};
 };
 
@@ -643,7 +641,7 @@ public:
             }
             for (VulkanTexture& texture: textures_)
             {
-                for (std::uint32_t i = 0; i < texture.attachmentViewCount; ++i)
+                for (size_t i = 0; i < texture.attachmentViews.size(); ++i)
                     vkDestroyImageView(device_, texture.attachmentViews[i].view, nullptr);
                 for (std::uint32_t i = 0; i < VulkanTexture::kMaxMipViews; ++i)
                     if (texture.mipViews[i])
@@ -1684,7 +1682,7 @@ public:
         const TextureSlotHandle slot = handleCast<TextureSlotHandle>(handle);
         const VulkanTexture* texture = textures_.get(slot);
         if (!texture) return;
-        for (std::uint32_t i = 0; i < texture->attachmentViewCount; ++i)
+        for (size_t i = 0; i < texture->attachmentViews.size(); ++i)
         {
             Garbage view;
             view.frame = frameNumber_;
@@ -3186,11 +3184,9 @@ private:
 
     VkImageView attachmentView(VulkanTexture& texture, std::uint32_t mip, std::uint32_t layer)
     {
-        for (std::uint32_t i = 0; i < texture.attachmentViewCount; ++i)
+        for (size_t i = 0; i < texture.attachmentViews.size(); ++i)
             if (texture.attachmentViews[i].mip == mip && texture.attachmentViews[i].layer == layer)
                 return texture.attachmentViews[i].view;
-        if (texture.attachmentViewCount >= VulkanTexture::kMaxAttachmentViews)
-            return VK_NULL_HANDLE;
 
         VkImageViewCreateInfo info = {};
         info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -3203,12 +3199,12 @@ private:
         info.subresourceRange.baseArrayLayer = layer;
         info.subresourceRange.layerCount = 1;
 
-        AttachmentView& entry = texture.attachmentViews[texture.attachmentViewCount];
+        AttachmentView entry;
         if (vkCreateImageView(device_, &info, nullptr, &entry.view) != VK_SUCCESS)
             return VK_NULL_HANDLE;
         entry.mip = mip;
         entry.layer = layer;
-        ++texture.attachmentViewCount;
+        texture.attachmentViews.push_back(entry);
         return entry.view;
     }
 

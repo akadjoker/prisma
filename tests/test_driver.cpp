@@ -1361,6 +1361,45 @@ int main(int argc, char** argv)
         driver->endRenderPass();
         CHECK(pixelIs(160, 120, 0, 255, 0));
 
+        {
+            TextureDesc manyDesc;
+            manyDesc.type = TextureType::Texture2DArray;
+            manyDesc.width = 4;
+            manyDesc.height = 4;
+            manyDesc.depth = 24;
+            manyDesc.usage = kTextureSampled | kTextureRenderTarget;
+            const TextureHandle many = driver->createTexture(manyDesc);
+            CHECK(many.valid());
+            messages = 0;
+            for (unsigned layer = 0; layer < 24; ++layer)
+            {
+                RenderPassDesc manyPass;
+                manyPass.colors[0].texture = many;
+                manyPass.colors[0].layer = layer;
+                manyPass.colorCount = 1;
+                manyPass.clearColor[0] = static_cast<float>(layer * 10) / 255.0f;
+                driver->beginRenderPass(manyPass);
+                driver->endRenderPass();
+            }
+            bool allLayers = true;
+            for (unsigned layer = 0; layer < 24; ++layer)
+            {
+                unsigned char texel[4] = { 0, 0, 0, 0 };
+                Rect rect;
+                rect.width = 1;
+                rect.height = 1;
+                RenderTarget layerTarget;
+                layerTarget.texture = many;
+                layerTarget.layer = layer;
+                allLayers = allLayers && driver->readPixels(layerTarget, rect, texel) &&
+                            texel[0] == layer * 10;
+            }
+            CHECK(allLayers);
+            CHECK(messages == 0);
+            if (messages) printf("unexpected: %s\n", lastMessage);
+            driver->destroy(many);
+        }
+
         driver->beginRenderPass(mipPass);
         driver->endRenderPass();
         driver->beginRenderPass(black);
