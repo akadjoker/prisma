@@ -23,6 +23,82 @@ struct GLShader
     GLuint id = 0;
 };
 
+struct GLTexture
+{
+    GLuint id = 0;
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+};
+
+struct GLSampler
+{
+    GLuint id = 0;
+};
+
+struct GLFormat
+{
+    GLenum internal;
+    GLenum format;
+    GLenum type;
+};
+
+GLFormat toGLFormat(TextureFormat format)
+{
+    switch (format)
+    {
+        case TextureFormat::R8:
+            return { GL_R8, GL_RED, GL_UNSIGNED_BYTE };
+        case TextureFormat::RG8:
+            return { GL_RG8, GL_RG, GL_UNSIGNED_BYTE };
+        case TextureFormat::RGBA8:
+            return { GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE };
+        case TextureFormat::RGBA8Srgb:
+            return { GL_SRGB8_ALPHA8, GL_RGBA, GL_UNSIGNED_BYTE };
+    }
+    return { GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE };
+}
+
+GLint toGLMinFilter(Filter filter, MipFilter mip)
+{
+    const bool linear = filter == Filter::Linear;
+    switch (mip)
+    {
+        case MipFilter::None:
+            return linear ? GL_LINEAR : GL_NEAREST;
+        case MipFilter::Nearest:
+            return linear ? GL_LINEAR_MIPMAP_NEAREST : GL_NEAREST_MIPMAP_NEAREST;
+        case MipFilter::Linear:
+            return linear ? GL_LINEAR_MIPMAP_LINEAR : GL_NEAREST_MIPMAP_LINEAR;
+    }
+    return GL_LINEAR;
+}
+
+GLint toGLAddress(AddressMode mode)
+{
+    switch (mode)
+    {
+        case AddressMode::Repeat:
+            return GL_REPEAT;
+        case AddressMode::MirroredRepeat:
+            return GL_MIRRORED_REPEAT;
+        case AddressMode::ClampToEdge:
+            return GL_CLAMP_TO_EDGE;
+    }
+    return GL_REPEAT;
+}
+
+std::uint32_t fullMipCount(std::uint32_t width, std::uint32_t height)
+{
+    std::uint32_t size = width > height ? width : height;
+    std::uint32_t levels = 1;
+    while (size > 1)
+    {
+        size >>= 1;
+        ++levels;
+    }
+    return levels;
+}
+
 struct GLPipeline
 {
     GLuint program = 0;
@@ -72,6 +148,20 @@ GLenum toGLTopology(Topology topology)
             return GL_POINTS;
     }
     return GL_TRIANGLES;
+}
+
+GLenum toGLUpdate(BufferUpdate update)
+{
+    switch (update)
+    {
+        case BufferUpdate::Static:
+            return GL_STATIC_DRAW;
+        case BufferUpdate::Dynamic:
+            return GL_DYNAMIC_DRAW;
+        case BufferUpdate::Stream:
+            return GL_STREAM_DRAW;
+    }
+    return GL_STATIC_DRAW;
 }
 
 GLenum toGLCompare(CompareOp op)
@@ -171,6 +261,8 @@ public:
             glDeleteVertexArrays(1, &pipeline.vertexArray);
         }
         for (GLShader& shader: shaders_) glDeleteShader(shader.id);
+        for (GLTexture& texture: textures_) glDeleteTextures(1, &texture.id);
+        for (GLSampler& sampler: samplers_) glDeleteSamplers(1, &sampler.id);
         for (GLBuffer& buffer: buffers_) glDeleteBuffers(1, &buffer.id);
         glDeleteVertexArrays(1, &scratchVertexArray_);
     }
@@ -187,7 +279,7 @@ public:
         buffer.usage = desc.usage;
         glGenBuffers(1, &buffer.id);
         const GLenum target = bindForEdit(buffer);
-        glBufferData(target, desc.size, desc.data, desc.dynamic ? GL_DYNAMIC_DRAW : GL_STATIC_DRAW);
+        glBufferData(target, desc.size, desc.data, toGLUpdate(desc.update));
         label(GL_BUFFER, buffer.id, desc.debugName);
         return handleCast<BufferHandle>(buffers_.insert(buffer));
     }
@@ -230,12 +322,59 @@ public:
         return handleCast<ShaderHandle>(shaders_.insert(shader));
     }
 
+    TextureHandle createTexture(const TextureDesc& desc) override
+    {
+        if (desc.width == 0 || desc.height == 0 || desc.width > caps_.maxTextureSize ||
+                desc.height > caps_.maxTextureSize)
+        {
+            log("createTexture: invalid size");
+            return TextureHandle();
+        }
+
+        const GLFormat format = toGLFormat(desc.format);
+        const std::uint32_t fullChain = fullMipCount(desc.width, desc.height);
+        std::uint32_t levels = desc.mipLevels == 0 ? fullChain : desc.mipLevels;
+        if (levels > fullChain) levels = fullChain;
+
+        GLTexture texture;
+        texture.width = desc.width;
+        texture.height = desc.height;
+        glGenTextures(1, &texture.id);
+        state_.bindTexture(0, GL_TEXTURE_2D, texture.id);
+        glTexStorage2D(GL_TEXTURE_2D, static_cast<GLsizei>(levels), format.internal,
+                static_cast<GLsizei>(desc.width), static_cast<GLsizei>(desc.height));
+        if (desc.data)
+        {
+            glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, static_cast<GLsizei>(desc.width),
+                    static_cast<GLsizei>(desc.height), format.format, format.type, desc.data);
+            if (desc.generateMipmaps && levels > 1) glGenerateMipmap(GL_TEXTURE_2D);
+        }
+        label(GL_TEXTURE, texture.id, desc.debugName);
+        return handleCast<TextureHandle>(textures_.insert(texture));
+    }
+
+    SamplerHandle createSampler(const SamplerDesc& desc) override
+    {
+        GLSampler sampler;
+        glGenSamplers(1, &sampler.id);
+        glSamplerParameteri(sampler.id, GL_TEXTURE_MIN_FILTER,
+                toGLMinFilter(desc.minFilter, desc.mipFilter));
+        glSamplerParameteri(sampler.id, GL_TEXTURE_MAG_FILTER,
+                desc.magFilter == Filter::Linear ? GL_LINEAR : GL_NEAREST);
+        glSamplerParameteri(sampler.id, GL_TEXTURE_WRAP_S, toGLAddress(desc.addressU));
+        glSamplerParameteri(sampler.id, GL_TEXTURE_WRAP_T, toGLAddress(desc.addressV));
+        label(GL_SAMPLER, sampler.id, desc.debugName);
+        return handleCast<SamplerHandle>(samplers_.insert(sampler));
+    }
+
     PipelineHandle createPipeline(const PipelineDesc& desc) override
     {
         const GLShader* vertex = shaders_.get(handleCast<ShaderSlot>(desc.vertexShader));
         const GLShader* fragment = shaders_.get(handleCast<ShaderSlot>(desc.fragmentShader));
         if (!vertex || !fragment || desc.attributeCount > PipelineDesc::kMaxAttributes ||
-                desc.uniformBlockCount > PipelineDesc::kMaxUniformBlocks)
+                desc.uniformBlockCount > PipelineDesc::kMaxUniformBlocks ||
+                desc.textureCount > PipelineDesc::kMaxTextures)
         {
             log("createPipeline: invalid shader handle or too many attributes or uniform blocks");
             return PipelineHandle();
@@ -286,6 +425,19 @@ public:
             }
             glUniformBlockBinding(pipeline.program, index, block.slot);
         }
+
+        if (desc.textureCount > 0) state_.useProgram(pipeline.program);
+        for (std::uint32_t i = 0; i < desc.textureCount; ++i)
+        {
+            const TextureBinding& binding = desc.textures[i];
+            const GLint location = glGetUniformLocation(pipeline.program, binding.name);
+            if (location < 0)
+            {
+                log("createPipeline: texture not found in the shaders");
+                continue;
+            }
+            glUniform1i(location, static_cast<GLint>(binding.slot));
+        }
         glGenVertexArrays(1, &pipeline.vertexArray);
         state_.bindVertexArray(pipeline.vertexArray);
         label(GL_PROGRAM, pipeline.program, desc.debugName);
@@ -326,6 +478,26 @@ public:
         state_.programDeleted(pipeline->program);
         state_.vertexArrayDeleted(pipeline->vertexArray);
         pipelines_.erase(slot);
+    }
+
+    void destroy(TextureHandle handle) override
+    {
+        const TextureSlot slot = handleCast<TextureSlot>(handle);
+        const GLTexture* texture = textures_.get(slot);
+        if (!texture) return;
+        glDeleteTextures(1, &texture->id);
+        state_.textureDeleted(texture->id);
+        textures_.erase(slot);
+    }
+
+    void destroy(SamplerHandle handle) override
+    {
+        const SamplerSlot slot = handleCast<SamplerSlot>(handle);
+        const GLSampler* sampler = samplers_.get(slot);
+        if (!sampler) return;
+        glDeleteSamplers(1, &sampler->id);
+        state_.samplerDeleted(sampler->id);
+        samplers_.erase(slot);
     }
 
     void beginFrame() override {}
@@ -388,6 +560,20 @@ public:
         state_.bindUniformBufferRange(slot, buffer->id, offset, size);
     }
 
+    void bindTexture(std::uint32_t slot, TextureHandle textureHandle,
+            SamplerHandle samplerHandle) override
+    {
+        const GLTexture* texture = textures_.get(handleCast<TextureSlot>(textureHandle));
+        const GLSampler* sampler = samplers_.get(handleCast<SamplerSlot>(samplerHandle));
+        if (!texture || !sampler || slot >= GLState::kMaxTextureUnits)
+        {
+            log("bindTexture: invalid texture handle, sampler handle or slot");
+            return;
+        }
+        state_.bindTexture(slot, GL_TEXTURE_2D, texture->id);
+        state_.bindSampler(slot, sampler->id);
+    }
+
     void draw(std::uint32_t vertexCount, std::uint32_t firstVertex) override
     {
         const GLPipeline* pipeline = prepareDraw();
@@ -428,6 +614,8 @@ private:
     using BufferSlot = ct::Handle32<GLBuffer>;
     using ShaderSlot = ct::Handle32<GLShader>;
     using PipelineSlot = ct::Handle32<GLPipeline>;
+    using TextureSlot = ct::Handle32<GLTexture>;
+    using SamplerSlot = ct::Handle32<GLSampler>;
 
     GLenum bindForEdit(const GLBuffer& buffer)
     {
@@ -518,6 +706,8 @@ private:
     ct::SlotMap32<GLBuffer> buffers_;
     ct::SlotMap32<GLShader> shaders_;
     ct::SlotMap32<GLPipeline> pipelines_;
+    ct::SlotMap32<GLTexture> textures_;
+    ct::SlotMap32<GLSampler> samplers_;
 
     PipelineHandle pipeline_;
     BufferHandle vertexBuffer_;

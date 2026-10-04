@@ -44,10 +44,14 @@ struct DriverDesc
 struct BufferTag;
 struct ShaderTag;
 struct PipelineTag;
+struct TextureTag;
+struct SamplerTag;
 
 using BufferHandle = ct::Handle32<BufferTag>;
 using ShaderHandle = ct::Handle32<ShaderTag>;
 using PipelineHandle = ct::Handle32<PipelineTag>;
+using TextureHandle = ct::Handle32<TextureTag>;
+using SamplerHandle = ct::Handle32<SamplerTag>;
 
 enum class BufferUsage : std::uint8_t
 {
@@ -56,12 +60,19 @@ enum class BufferUsage : std::uint8_t
     Uniform
 };
 
+enum class BufferUpdate : std::uint8_t
+{
+    Static,
+    Dynamic,
+    Stream
+};
+
 struct BufferDesc
 {
     BufferUsage usage = BufferUsage::Vertex;
     std::uint32_t size = 0;
     const void* data = nullptr;
-    bool dynamic = false;
+    BufferUpdate update = BufferUpdate::Static;
     const char* debugName = nullptr;
 };
 
@@ -69,6 +80,55 @@ enum class IndexFormat : std::uint8_t
 {
     UInt16,
     UInt32
+};
+
+enum class TextureFormat : std::uint8_t
+{
+    R8,
+    RG8,
+    RGBA8,
+    RGBA8Srgb
+};
+
+struct TextureDesc
+{
+    TextureFormat format = TextureFormat::RGBA8;
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+    std::uint32_t mipLevels = 1;
+    const void* data = nullptr;
+    bool generateMipmaps = false;
+    const char* debugName = nullptr;
+};
+
+enum class Filter : std::uint8_t
+{
+    Nearest,
+    Linear
+};
+
+enum class MipFilter : std::uint8_t
+{
+    None,
+    Nearest,
+    Linear
+};
+
+enum class AddressMode : std::uint8_t
+{
+    Repeat,
+    MirroredRepeat,
+    ClampToEdge
+};
+
+struct SamplerDesc
+{
+    Filter minFilter = Filter::Linear;
+    Filter magFilter = Filter::Linear;
+    MipFilter mipFilter = MipFilter::Linear;
+    AddressMode addressU = AddressMode::Repeat;
+    AddressMode addressV = AddressMode::Repeat;
+    const char* debugName = nullptr;
 };
 
 enum class ShaderStage : std::uint8_t
@@ -152,12 +212,19 @@ struct UniformBlockBinding
     std::uint32_t slot = 0;
 };
 
+struct TextureBinding
+{
+    const char* name = nullptr;
+    std::uint32_t slot = 0;
+};
+
 struct PipelineDesc
 {
     enum : std::uint32_t
     {
         kMaxAttributes = 8,
-        kMaxUniformBlocks = 4
+        kMaxUniformBlocks = 4,
+        kMaxTextures = 8
     };
 
     ShaderHandle vertexShader;
@@ -169,6 +236,9 @@ struct PipelineDesc
 
     UniformBlockBinding uniformBlocks[kMaxUniformBlocks];
     std::uint32_t uniformBlockCount = 0;
+
+    TextureBinding textures[kMaxTextures];
+    std::uint32_t textureCount = 0;
 
     bool depthTest = false;
     bool depthWrite = true;

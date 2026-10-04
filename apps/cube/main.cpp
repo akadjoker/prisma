@@ -9,31 +9,46 @@ namespace
 const char* kVertexSource =
         ZENGL_SHADER_HEADER "layout(location = 0) in vec3 aPosition;\n"
                             "layout(location = 1) in vec3 aColor;\n"
+                            "layout(location = 2) in vec2 aUv;\n"
                             "layout(std140) uniform Frame\n"
                             "{\n"
                             "    mat4 uModelViewProjection;\n"
                             "};\n"
                             "out vec3 vColor;\n"
+                            "out vec2 vUv;\n"
                             "void main()\n"
                             "{\n"
                             "    vColor = aColor;\n"
+                            "    vUv = aUv;\n"
                             "    gl_Position = uModelViewProjection * vec4(aPosition, 1.0);\n"
                             "}\n";
 
-const char* kFragmentSource = ZENGL_SHADER_HEADER "in vec3 vColor;\n"
-                                                  "out vec4 oColor;\n"
-                                                  "void main()\n"
-                                                  "{\n"
-                                                  "    oColor = vec4(vColor, 1.0);\n"
-                                                  "}\n";
+const char* kFragmentSource =
+        ZENGL_SHADER_HEADER "in vec3 vColor;\n"
+                            "in vec2 vUv;\n"
+                            "uniform sampler2D uTexture;\n"
+                            "out vec4 oColor;\n"
+                            "void main()\n"
+                            "{\n"
+                            "    oColor = vec4(vColor * texture(uTexture, vUv).rgb, 1.0);\n"
+                            "}\n";
 
-struct Vertex
+struct Corner
 {
     float position[3];
     float color[3];
 };
 
-const Vertex kVertices[24] = {
+struct Vertex
+{
+    float position[3];
+    float color[3];
+    float uv[2];
+};
+
+const float kCornerUv[4][2] = { { 0.0f, 0.0f }, { 1.0f, 0.0f }, { 1.0f, 1.0f }, { 0.0f, 1.0f } };
+
+const Corner kCorners[24] = {
     { { -1, -1, 1 }, { 0.9f, 0.2f, 0.2f } },
     { { 1, -1, 1 }, { 0.9f, 0.2f, 0.2f } },
     { { 1, 1, 1 }, { 0.9f, 0.2f, 0.2f } },
@@ -127,9 +142,47 @@ int main(int argc, char** argv)
         return 1;
     }
 
+    Vertex vertices[24];
+    for (int i = 0; i < 24; ++i)
+    {
+        for (int c = 0; c < 3; ++c)
+        {
+            vertices[i].position[c] = kCorners[i].position[c];
+            vertices[i].color[c] = kCorners[i].color[c];
+        }
+        vertices[i].uv[0] = kCornerUv[i % 4][0];
+        vertices[i].uv[1] = kCornerUv[i % 4][1];
+    }
+
+    const int kTextureSize = 64;
+    static unsigned char pixels[kTextureSize * kTextureSize * 4];
+    for (int y = 0; y < kTextureSize; ++y)
+    {
+        for (int x = 0; x < kTextureSize; ++x)
+        {
+            const bool light = ((x / 8) + (y / 8)) % 2 == 0;
+            unsigned char* pixel = &pixels[(y * kTextureSize + x) * 4];
+            pixel[0] = pixel[1] = pixel[2] = light ? 255 : 110;
+            pixel[3] = 255;
+        }
+    }
+
+    prisma::TextureDesc textureDesc;
+    textureDesc.width = kTextureSize;
+    textureDesc.height = kTextureSize;
+    textureDesc.mipLevels = 0;
+    textureDesc.data = pixels;
+    textureDesc.generateMipmaps = true;
+    textureDesc.debugName = "cube checker";
+    const prisma::TextureHandle texture = driver->createTexture(textureDesc);
+
+    prisma::SamplerDesc samplerDesc;
+    samplerDesc.debugName = "cube sampler";
+    const prisma::SamplerHandle sampler = driver->createSampler(samplerDesc);
+
     prisma::BufferDesc bufferDesc;
-    bufferDesc.size = sizeof(kVertices);
-    bufferDesc.data = kVertices;
+    bufferDesc.size = sizeof(vertices);
+    bufferDesc.data = vertices;
     bufferDesc.debugName = "cube vertices";
     const prisma::BufferHandle vertexBuffer = driver->createBuffer(bufferDesc);
 
@@ -142,7 +195,7 @@ int main(int argc, char** argv)
     bufferDesc.usage = prisma::BufferUsage::Uniform;
     bufferDesc.size = sizeof(Math::Mat4);
     bufferDesc.data = nullptr;
-    bufferDesc.dynamic = true;
+    bufferDesc.update = prisma::BufferUpdate::Stream;
     bufferDesc.debugName = "cube frame uniforms";
     const prisma::BufferHandle uniformBuffer = driver->createBuffer(bufferDesc);
 
@@ -158,7 +211,13 @@ int main(int argc, char** argv)
     pipelineDesc.vertexShader = vertexShader;
     pipelineDesc.fragmentShader = fragmentShader;
     pipelineDesc.vertexStride = sizeof(Vertex);
-    pipelineDesc.attributeCount = 2;
+    pipelineDesc.attributeCount = 3;
+    pipelineDesc.attributes[2].location = 2;
+    pipelineDesc.attributes[2].format = prisma::VertexFormat::Float2;
+    pipelineDesc.attributes[2].offset = sizeof(float) * 6;
+    pipelineDesc.textureCount = 1;
+    pipelineDesc.textures[0].name = "uTexture";
+    pipelineDesc.textures[0].slot = 0;
     pipelineDesc.attributes[0].location = 0;
     pipelineDesc.attributes[0].format = prisma::VertexFormat::Float3;
     pipelineDesc.attributes[0].offset = 0;
@@ -177,7 +236,7 @@ int main(int argc, char** argv)
     driver->destroy(fragmentShader);
 
     const bool ready = vertexBuffer.valid() && indexBuffer.valid() && uniformBuffer.valid() &&
-                       pipeline.valid();
+                       pipeline.valid() && texture.valid() && sampler.valid();
     if (!ready) printf("cube: resource creation failed\n");
 
     prisma::RenderPassDesc pass;
@@ -210,6 +269,7 @@ int main(int argc, char** argv)
         driver->bindVertexBuffer(vertexBuffer, 0);
         driver->bindIndexBuffer(indexBuffer, prisma::IndexFormat::UInt16);
         driver->bindUniformBuffer(0, uniformBuffer, 0, sizeof(Math::Mat4));
+        driver->bindTexture(0, texture, sampler);
         driver->drawIndexed(36, 0);
         driver->endRenderPass();
         driver->endFrame();
@@ -219,6 +279,8 @@ int main(int argc, char** argv)
     }
 
     driver->destroy(pipeline);
+    driver->destroy(sampler);
+    driver->destroy(texture);
     driver->destroy(uniformBuffer);
     driver->destroy(indexBuffer);
     driver->destroy(vertexBuffer);

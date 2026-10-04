@@ -10,7 +10,8 @@ class GLState
 public:
     enum : std::uint32_t
     {
-        kMaxUniformSlots = 16
+        kMaxUniformSlots = 16,
+        kMaxTextureUnits = 16
     };
 
     void reset();
@@ -27,6 +28,9 @@ public:
     void bindUniformBufferRange(std::uint32_t slot, std::uint32_t buffer, std::uint32_t offset,
             std::uint32_t size);
 
+    void bindTexture(std::uint32_t unit, std::uint32_t target, std::uint32_t texture);
+    void bindSampler(std::uint32_t unit, std::uint32_t sampler);
+
     void depthTest(bool enabled);
     void depthMask(bool enabled);
     void depthFunc(std::uint32_t func);
@@ -39,6 +43,8 @@ public:
     void programDeleted(std::uint32_t program);
     void vertexArrayDeleted(std::uint32_t vertexArray);
     void bufferDeleted(std::uint32_t buffer);
+    void textureDeleted(std::uint32_t texture);
+    void samplerDeleted(std::uint32_t sampler);
 
 private:
     enum : std::uint32_t
@@ -58,7 +64,8 @@ private:
         kCullFace = 1u << 12,
         kFrontFace = 1u << 13,
         kBlend = 1u << 14,
-        kBlendFunc = 1u << 15
+        kBlendFunc = 1u << 15,
+        kActiveUnit = 1u << 16
     };
 
     struct UniformRange
@@ -84,6 +91,12 @@ private:
     std::uint32_t arrayBuffer_ = 0;
     std::uint32_t uniformBuffer_ = 0;
     UniformRange uniformSlots_[kMaxUniformSlots];
+
+    std::uint32_t knownTextureUnits_ = 0;
+    std::uint32_t knownSamplerUnits_ = 0;
+    std::uint32_t activeUnit_ = 0;
+    std::uint32_t textures_[kMaxTextureUnits] = {};
+    std::uint32_t samplers_[kMaxTextureUnits] = {};
 
     bool depthTest_ = false;
     bool depthMask_ = true;

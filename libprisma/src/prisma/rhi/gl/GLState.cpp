@@ -9,6 +9,8 @@ void GLState::reset()
 {
     known_ = 0;
     knownUniformSlots_ = 0;
+    knownTextureUnits_ = 0;
+    knownSamplerUnits_ = 0;
 }
 
 bool GLState::same(std::uint32_t bit, bool& stored, bool value)
@@ -106,6 +108,27 @@ void GLState::bindUniformBufferRange(std::uint32_t slot, std::uint32_t buffer, s
     known_ |= kUniformBuffer;
 }
 
+void GLState::bindTexture(std::uint32_t unit, std::uint32_t target, std::uint32_t texture)
+{
+    if (unit >= kMaxTextureUnits) return;
+    const std::uint32_t bit = 1u << unit;
+    if ((knownTextureUnits_ & bit) && textures_[unit] == texture) return;
+    if (!same(kActiveUnit, activeUnit_, unit)) glActiveTexture(GL_TEXTURE0 + unit);
+    glBindTexture(target, texture);
+    textures_[unit] = texture;
+    knownTextureUnits_ |= bit;
+}
+
+void GLState::bindSampler(std::uint32_t unit, std::uint32_t sampler)
+{
+    if (unit >= kMaxTextureUnits) return;
+    const std::uint32_t bit = 1u << unit;
+    if ((knownSamplerUnits_ & bit) && samplers_[unit] == sampler) return;
+    glBindSampler(unit, sampler);
+    samplers_[unit] = sampler;
+    knownSamplerUnits_ |= bit;
+}
+
 void GLState::depthTest(bool enabled)
 {
     if (same(kDepthTest, depthTest_, enabled)) return;
@@ -181,6 +204,18 @@ void GLState::bufferDeleted(std::uint32_t buffer)
     if (uniformBuffer_ == buffer) known_ &= ~static_cast<std::uint32_t>(kUniformBuffer);
     for (std::uint32_t slot = 0; slot < kMaxUniformSlots; ++slot)
         if (uniformSlots_[slot].buffer == buffer) knownUniformSlots_ &= ~(1u << slot);
+}
+
+void GLState::textureDeleted(std::uint32_t texture)
+{
+    for (std::uint32_t unit = 0; unit < kMaxTextureUnits; ++unit)
+        if (textures_[unit] == texture) knownTextureUnits_ &= ~(1u << unit);
+}
+
+void GLState::samplerDeleted(std::uint32_t sampler)
+{
+    for (std::uint32_t unit = 0; unit < kMaxTextureUnits; ++unit)
+        if (samplers_[unit] == sampler) knownSamplerUnits_ &= ~(1u << unit);
 }
 
 } // namespace prisma

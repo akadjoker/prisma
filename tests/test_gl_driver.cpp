@@ -63,6 +63,36 @@ const char* kFlatFragmentSource =
 const float kLeftHalfQuad[8] = { -1.0f, -1.0f, 0.0f, -1.0f, 0.0f, 1.0f, -1.0f, 1.0f };
 const std::uint16_t kQuadIndices[6] = { 0, 1, 2, 0, 2, 3 };
 
+const char* kTexturedVertexSource = SHADER_HEADER
+        "layout(location = 0) in vec2 aPosition;\n"
+        "out vec2 vUv;\n"
+        "void main() { vUv = aPosition * 0.5 + 0.5; gl_Position = vec4(aPosition, 0.0, 1.0); }\n";
+
+const char* kTexturedFragmentSource =
+        SHADER_HEADER "in vec2 vUv;\n"
+                      "uniform sampler2D uTexture;\n"
+                      "out vec4 oColor;\n"
+                      "void main() { oColor = texture(uTexture, vUv); }\n";
+
+const unsigned char kFourTexels[16] = {
+    255,
+    0,
+    0,
+    255,
+    0,
+    255,
+    0,
+    255,
+    0,
+    0,
+    255,
+    255,
+    255,
+    255,
+    255,
+    255,
+};
+
 struct Params
 {
     float color[4];
@@ -230,7 +260,7 @@ int main()
         BufferDesc paramsDesc;
         paramsDesc.usage = BufferUsage::Uniform;
         paramsDesc.size = sizeof(Params);
-        paramsDesc.dynamic = true;
+        paramsDesc.update = BufferUpdate::Dynamic;
         const BufferHandle params = driver->createBuffer(paramsDesc);
         CHECK(quad.valid());
         CHECK(quadIndices.valid());
@@ -303,6 +333,80 @@ int main()
         driver->present();
         CHECK(messages == 0);
         if (messages) printf("unexpected: %s\n", lastMessage);
+
+        TextureDesc textureDesc;
+        textureDesc.width = 2;
+        textureDesc.height = 2;
+        textureDesc.data = kFourTexels;
+        textureDesc.debugName = "test texture";
+        const TextureHandle texture = driver->createTexture(textureDesc);
+        CHECK(texture.valid());
+        messages = 0;
+        CHECK(!driver->createTexture(TextureDesc()).valid());
+        CHECK(messages == 1);
+
+        static unsigned char grey[16 * 16 * 4];
+        TextureDesc mippedDesc;
+        mippedDesc.width = 16;
+        mippedDesc.height = 16;
+        mippedDesc.mipLevels = 0;
+        mippedDesc.data = grey;
+        mippedDesc.generateMipmaps = true;
+        const TextureHandle mipped = driver->createTexture(mippedDesc);
+        CHECK(mipped.valid());
+
+        SamplerDesc samplerDesc;
+        samplerDesc.minFilter = Filter::Nearest;
+        samplerDesc.magFilter = Filter::Nearest;
+        samplerDesc.mipFilter = MipFilter::None;
+        samplerDesc.addressU = AddressMode::ClampToEdge;
+        samplerDesc.addressV = AddressMode::ClampToEdge;
+        const SamplerHandle nearest = driver->createSampler(samplerDesc);
+        CHECK(nearest.valid());
+
+        ShaderDesc texturedDesc;
+        texturedDesc.source = kTexturedVertexSource;
+        const ShaderHandle texturedVertex = driver->createShader(texturedDesc);
+        texturedDesc.stage = ShaderStage::Fragment;
+        texturedDesc.source = kTexturedFragmentSource;
+        const ShaderHandle texturedFragment = driver->createShader(texturedDesc);
+
+        PipelineDesc texturedPipelineDesc;
+        texturedPipelineDesc.vertexShader = texturedVertex;
+        texturedPipelineDesc.fragmentShader = texturedFragment;
+        texturedPipelineDesc.vertexStride = sizeof(float) * 2;
+        texturedPipelineDesc.attributeCount = 1;
+        texturedPipelineDesc.attributes[0].format = VertexFormat::Float2;
+        texturedPipelineDesc.textureCount = 1;
+        texturedPipelineDesc.textures[0].name = "uTexture";
+        texturedPipelineDesc.textures[0].slot = 3;
+        const PipelineHandle textured = driver->createPipeline(texturedPipelineDesc);
+        CHECK(textured.valid());
+
+        messages = 0;
+        window_begin_frame(window);
+        driver->beginFrame();
+        driver->beginRenderPass(black);
+        driver->bindPipeline(textured);
+        driver->bindVertexBuffer(buffer, 0);
+        driver->bindTexture(3, texture, nearest);
+        driver->draw(3, 0);
+        CHECK(pixelIs(80, 60, 255, 0, 0));
+        CHECK(pixelIs(240, 60, 0, 255, 0));
+        CHECK(pixelIs(80, 180, 0, 0, 255));
+        CHECK(pixelIs(240, 180, 255, 255, 255));
+        driver->endRenderPass();
+        driver->endFrame();
+        driver->present();
+        CHECK(messages == 0);
+        if (messages) printf("unexpected: %s\n", lastMessage);
+
+        driver->destroy(textured);
+        driver->destroy(texturedVertex);
+        driver->destroy(texturedFragment);
+        driver->destroy(nearest);
+        driver->destroy(mipped);
+        driver->destroy(texture);
 
         driver->destroy(flatBlend);
         driver->destroy(flatDepth);

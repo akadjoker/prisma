@@ -36,7 +36,20 @@ public:
     void updateBuffer(BufferHandle, std::uint32_t, const void*, std::uint32_t) override {}
     void destroy(BufferHandle handle) override { buffers_.erase(handleCast<Slot>(handle)); }
     void destroy(ShaderHandle handle) override { shaders_.erase(handleCast<Slot>(handle)); }
+    TextureHandle createTexture(const TextureDesc& desc) override
+    {
+        if (desc.width == 0 || desc.height == 0) return TextureHandle();
+        return handleCast<TextureHandle>(textures_.insert(0));
+    }
+
+    SamplerHandle createSampler(const SamplerDesc&) override
+    {
+        return handleCast<SamplerHandle>(samplers_.insert(0));
+    }
+
     void destroy(PipelineHandle handle) override { pipelines_.erase(handleCast<Slot>(handle)); }
+    void destroy(TextureHandle handle) override { textures_.erase(handleCast<Slot>(handle)); }
+    void destroy(SamplerHandle handle) override { samplers_.erase(handleCast<Slot>(handle)); }
 
     void beginFrame() override {}
     void beginRenderPass(const RenderPassDesc&) override {}
@@ -44,6 +57,7 @@ public:
     void bindVertexBuffer(BufferHandle, std::uint32_t) override {}
     void bindIndexBuffer(BufferHandle, IndexFormat) override {}
     void bindUniformBuffer(std::uint32_t, BufferHandle, std::uint32_t, std::uint32_t) override {}
+    void bindTexture(std::uint32_t, TextureHandle, SamplerHandle) override {}
     void draw(std::uint32_t, std::uint32_t) override {}
     void drawIndexed(std::uint32_t, std::uint32_t) override {}
     void endRenderPass() override {}
@@ -57,6 +71,8 @@ private:
     ct::SlotMap32<std::uint32_t> buffers_;
     ct::SlotMap32<std::uint32_t> shaders_;
     ct::SlotMap32<std::uint32_t> pipelines_;
+    ct::SlotMap32<std::uint32_t> textures_;
+    ct::SlotMap32<std::uint32_t> samplers_;
 };
 
 } // namespace
