@@ -25,6 +25,11 @@ target_include_directories(test_dfg PRIVATE ${PROJECT_SOURCE_DIR}/demos/common)
 target_link_libraries(test_dfg PRIVATE prisma ct)
 add_test(NAME dfg COMMAND test_dfg)
 
+add_executable(test_sh test_sh.cpp)
+target_include_directories(test_sh PRIVATE ${PROJECT_SOURCE_DIR}/demos/common)
+target_link_libraries(test_sh PRIVATE ct)
+add_test(NAME sh COMMAND test_sh)
+
 add_executable(test_free_ranges test_free_ranges.cpp)
 target_include_directories(test_free_ranges PRIVATE ${PROJECT_SOURCE_DIR}/libprisma/src)
 target_link_libraries(test_free_ranges PRIVATE ct)
