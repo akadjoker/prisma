@@ -4,6 +4,11 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef PRISMA_APP_SPIRV
+#include "cube.frag.h"
+#include "cube.vert.h"
+#endif
+
 namespace
 {
 
@@ -142,6 +147,7 @@ int main(int argc, char** argv)
     const int maxFrames = zenapp::frameLimit(argc, argv);
     const prisma::DriverType driverType = zenapp::driverType(argc, argv);
     const bool offscreen = zenapp::hasArgument(argc, argv, "offscreen");
+    const bool still = zenapp::hasArgument(argc, argv, "still");
 
     if (!platform_init())
     {
@@ -190,6 +196,7 @@ int main(int argc, char** argv)
         }
     }
 
+    const bool textured = driver->type() != prisma::DriverType::Vulkan;
     prisma::TextureDesc textureDesc;
     textureDesc.width = kTextureSize;
     textureDesc.height = kTextureSize;
@@ -197,11 +204,13 @@ int main(int argc, char** argv)
     textureDesc.data = pixels;
     textureDesc.generateMipmaps = true;
     textureDesc.debugName = "cube checker";
-    const prisma::TextureHandle texture = driver->createTexture(textureDesc);
+    prisma::TextureHandle texture;
+    if (textured) texture = driver->createTexture(textureDesc);
 
     prisma::SamplerDesc samplerDesc;
     samplerDesc.debugName = "cube sampler";
-    const prisma::SamplerHandle sampler = driver->createSampler(samplerDesc);
+    prisma::SamplerHandle sampler;
+    if (textured) sampler = driver->createSampler(samplerDesc);
 
     prisma::BufferDesc bufferDesc;
     bufferDesc.size = sizeof(vertices);
@@ -225,9 +234,17 @@ int main(int argc, char** argv)
     prisma::ShaderDesc shaderDesc;
     shaderDesc.stage = prisma::ShaderStage::Vertex;
     shaderDesc.source = kVertexSource;
+#ifdef PRISMA_APP_SPIRV
+    shaderDesc.spirv = cube_vert;
+    shaderDesc.spirvSize = sizeof(cube_vert);
+#endif
     const prisma::ShaderHandle vertexShader = driver->createShader(shaderDesc);
     shaderDesc.stage = prisma::ShaderStage::Fragment;
     shaderDesc.source = kFragmentSource;
+#ifdef PRISMA_APP_SPIRV
+    shaderDesc.spirv = cube_frag;
+    shaderDesc.spirvSize = sizeof(cube_frag);
+#endif
     const prisma::ShaderHandle fragmentShader = driver->createShader(shaderDesc);
 
     prisma::PipelineDesc pipelineDesc;
@@ -269,7 +286,7 @@ int main(int argc, char** argv)
     driver->destroy(fragmentShader);
 
     const bool ready = vertexBuffer.valid() && indexBuffer.valid() && uniformBuffer.valid() &&
-                       pipeline.valid() && texture.valid() && sampler.valid();
+                       pipeline.valid() && (!textured || (texture.valid() && sampler.valid()));
     if (!ready) log_error("cube: resource creation failed");
 
     const std::uint32_t kTargetWidth = 320;
@@ -355,7 +372,7 @@ int main(int argc, char** argv)
         window_get_framebuffer_size(window, &width, &height);
         const float aspect =
                 height > 0 ? static_cast<float>(width) / static_cast<float>(height) : 1.0f;
-        const float angle = static_cast<float>(time_seconds()) + 0.6f;
+        const float angle = (still ? 0.0f : static_cast<float>(time_seconds())) + 0.6f;
 
         Math::Mat4 depthZeroToOne = Math::Mat4::Identity();
         depthZeroToOne.col2.z = 0.5f;
@@ -373,7 +390,7 @@ int main(int argc, char** argv)
         driver->bindVertexBuffer(0, vertexBuffer, 0);
         driver->bindIndexBuffer(indexBuffer);
         driver->bindUniformBuffer(0, uniformBuffer, 0, sizeof(Math::Mat4));
-        driver->bindTexture(0, texture, sampler);
+        if (textured) driver->bindTexture(0, texture, sampler);
         driver->drawIndexed(36, 0);
         driver->endRenderPass();
         if (offscreen)

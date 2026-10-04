@@ -31,11 +31,28 @@ struct SwapchainImage
     VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
 };
 
-struct VulkanBuffer
+const std::uint64_t kNeverUsed = UINT64_MAX;
+
+struct BufferVersion
 {
     VkBuffer buffer = VK_NULL_HANDLE;
     VkDeviceMemory memory = VK_NULL_HANDLE;
+    void* mapped = nullptr;
+    std::uint64_t lastUsedFrame = kNeverUsed;
+};
+
+struct VulkanBuffer
+{
+    enum : std::uint32_t
+    {
+        kMaxVersions = 8
+    };
+
+    BufferVersion versions[kMaxVersions];
+    std::uint32_t versionCount = 0;
+    std::uint32_t current = 0;
     std::uint32_t size = 0;
+    VkBufferUsageFlags vkUsage = 0;
     BufferUsage usage = BufferUsage::Vertex;
     IndexFormat indexFormat = IndexFormat::UInt16;
 };
@@ -50,9 +67,19 @@ struct VulkanPipeline
 {
     VkPipeline pipeline = VK_NULL_HANDLE;
     VkPipelineLayout layout = VK_NULL_HANDLE;
+    VkDescriptorSetLayout setLayout = VK_NULL_HANDLE;
     TargetFormats targets;
     std::uint32_t vertexBufferCount = 0;
     VertexBufferLayout vertexBuffers[PipelineDesc::kMaxVertexBuffers];
+    std::uint32_t uniformCount = 0;
+    std::uint32_t uniformSlots[PipelineDesc::kMaxUniformBlocks] = {};
+};
+
+struct UniformBinding
+{
+    BufferHandle handle;
+    std::uint32_t offset = 0;
+    std::uint32_t size = 0;
 };
 
 struct Garbage
@@ -62,6 +89,7 @@ struct Garbage
     VkDeviceMemory memory = VK_NULL_HANDLE;
     VkPipeline pipeline = VK_NULL_HANDLE;
     VkPipelineLayout layout = VK_NULL_HANDLE;
+    VkDescriptorSetLayout setLayout = VK_NULL_HANDLE;
 };
 
 bool sameTargets(const TargetFormats& a, const TargetFormats& b)
@@ -228,13 +256,17 @@ public:
             {
                 vkDestroyPipeline(device_, pipeline.pipeline, nullptr);
                 vkDestroyPipelineLayout(device_, pipeline.layout, nullptr);
+                vkDestroyDescriptorSetLayout(device_, pipeline.setLayout, nullptr);
             }
             for (VulkanShader& shader: shaders_)
                 vkDestroyShaderModule(device_, shader.module, nullptr);
             for (VulkanBuffer& buffer: buffers_)
             {
-                vkDestroyBuffer(device_, buffer.buffer, nullptr);
-                vkFreeMemory(device_, buffer.memory, nullptr);
+                for (std::uint32_t i = 0; i < buffer.versionCount; ++i)
+                {
+                    vkDestroyBuffer(device_, buffer.versions[i].buffer, nullptr);
+                    vkFreeMemory(device_, buffer.versions[i].memory, nullptr);
+                }
             }
             collectGarbage(true);
             destroySwapchain();
@@ -244,6 +276,9 @@ public:
                     vkDestroySemaphore(device_, frames_[i].imageAvailable, nullptr);
                 if (frames_[i].inFlight) vkDestroyFence(device_, frames_[i].inFlight, nullptr);
             }
+            for (std::uint32_t i = 0; i < kFramesInFlight; ++i)
+                if (descriptorPools_[i])
+                    vkDestroyDescriptorPool(device_, descriptorPools_[i], nullptr);
             if (commandPool_) vkDestroyCommandPool(device_, commandPool_, nullptr);
             vkDestroyDevice(device_, nullptr);
         }
@@ -266,7 +301,7 @@ public:
 
         if (!pickPhysicalDevice()) return DriverError::VersionTooLow;
         if (!createDevice()) return DriverError::ContextFailed;
-        if (!createFrames()) return DriverError::ContextFailed;
+        if (!createFrames() || !createDescriptorPools()) return DriverError::ContextFailed;
         createSwapchain();
         return DriverError::None;
     }
@@ -282,47 +317,20 @@ public:
         buffer.size = desc.size;
         buffer.usage = desc.usage;
         buffer.indexFormat = desc.indexFormat;
-
-        VkBufferCreateInfo info = {};
-        info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-        info.size = desc.size;
-        info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
         switch (desc.usage)
         {
             case BufferUsage::Vertex:
-                info.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+                buffer.vkUsage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
                 break;
             case BufferUsage::Index:
-                info.usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
+                buffer.vkUsage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
                 break;
             case BufferUsage::Uniform:
-                info.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+                buffer.vkUsage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
                 break;
         }
-        if (vkCreateBuffer(device_, &info, nullptr, &buffer.buffer) != VK_SUCCESS)
-        {
-            log("createBuffer: could not create the buffer");
-            return BufferHandle();
-        }
-
-        VkMemoryRequirements requirements;
-        vkGetBufferMemoryRequirements(device_, buffer.buffer, &requirements);
-        VkMemoryAllocateInfo allocate = {};
-        allocate.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        allocate.allocationSize = requirements.size;
-        allocate.memoryTypeIndex = findMemoryType(requirements.memoryTypeBits,
-                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        if (allocate.memoryTypeIndex == UINT32_MAX ||
-                vkAllocateMemory(device_, &allocate, nullptr, &buffer.memory) != VK_SUCCESS)
-        {
-            log("createBuffer: could not allocate memory");
-            vkDestroyBuffer(device_, buffer.buffer, nullptr);
-            return BufferHandle();
-        }
-        vkBindBufferMemory(device_, buffer.buffer, buffer.memory, 0);
-
-        if (desc.data) writeBuffer(buffer, 0, desc.data, desc.size);
-        setName(VK_OBJECT_TYPE_BUFFER, (std::uint64_t) buffer.buffer, desc.debugName);
+        if (!createVersion(buffer, desc.debugName)) return BufferHandle();
+        if (desc.data) memcpy(buffer.versions[0].mapped, desc.data, desc.size);
         return handleCast<BufferHandle>(buffers_.insert(buffer));
     }
 
@@ -334,13 +342,38 @@ public:
             log("updateBuffer: not allowed inside a render pass");
             return;
         }
-        const VulkanBuffer* buffer = buffers_.get(handleCast<BufferSlot>(handle));
+        VulkanBuffer* buffer = buffers_.get(handleCast<BufferSlot>(handle));
         if (!buffer || !data || static_cast<std::uint64_t>(offset) + size > buffer->size)
         {
             log("updateBuffer: invalid buffer handle or range");
             return;
         }
-        writeBuffer(*buffer, offset, data, size);
+
+        const std::uint32_t previous = buffer->current;
+        if (buffer->versions[previous].lastUsedFrame != kNeverUsed)
+        {
+            std::uint32_t next = buffer->versionCount;
+            for (std::uint32_t i = 0; i < buffer->versionCount && next == buffer->versionCount; ++i)
+            {
+                const std::uint64_t used = buffer->versions[i].lastUsedFrame;
+                if (i != previous && (used == kNeverUsed || used + kFramesInFlight < frameNumber_))
+                    next = i;
+            }
+            if (next == buffer->versionCount && !createVersion(*buffer, nullptr))
+            {
+                log("updateBuffer: too many versions of this buffer are still in use");
+                next = previous;
+            }
+            if (next != previous)
+            {
+                if (offset != 0 || size != buffer->size)
+                    memcpy(buffer->versions[next].mapped, buffer->versions[previous].mapped,
+                            buffer->size);
+                buffer->versions[next].lastUsedFrame = kNeverUsed;
+                buffer->current = next;
+            }
+        }
+        memcpy(static_cast<char*>(buffer->versions[buffer->current].mapped) + offset, data, size);
     }
 
     ShaderHandle createShader(const ShaderDesc& desc) override
@@ -372,7 +405,10 @@ public:
         const VulkanShader* fragment = shaders_.get(handleCast<ShaderSlot>(desc.fragmentShader));
         bool valid = vertex && fragment && desc.attributeCount <= PipelineDesc::kMaxAttributes &&
                      desc.vertexBufferCount <= PipelineDesc::kMaxVertexBuffers &&
-                     desc.targets.colorCount <= TargetFormats::kMaxColors;
+                     desc.targets.colorCount <= TargetFormats::kMaxColors &&
+                     desc.uniformBlockCount <= PipelineDesc::kMaxUniformBlocks;
+        for (std::uint32_t i = 0; valid && i < desc.uniformBlockCount; ++i)
+            if (desc.uniformBlocks[i].slot >= kMaxUniformSlots) valid = false;
         for (std::uint32_t i = 0; valid && i < desc.attributeCount; ++i)
             if (desc.attributes[i].buffer >= desc.vertexBufferCount) valid = false;
         if (!valid)
@@ -480,7 +516,7 @@ public:
         rendering.colorAttachmentCount = colorCount;
         rendering.pColorAttachmentFormats = colorFormats;
         rendering.depthAttachmentFormat =
-                desc.targets.window ? VK_FORMAT_UNDEFINED : toVkFormat(desc.targets.depth);
+                desc.targets.window ? depthFormat_ : toVkFormat(desc.targets.depth);
 
         VulkanPipeline pipeline;
         pipeline.targets = desc.targets;
@@ -488,11 +524,45 @@ public:
         for (std::uint32_t i = 0; i < desc.vertexBufferCount; ++i)
             pipeline.vertexBuffers[i] = desc.vertexBuffers[i];
 
+        pipeline.uniformCount = desc.uniformBlockCount;
+        for (std::uint32_t i = 0; i < desc.uniformBlockCount; ++i)
+            pipeline.uniformSlots[i] = desc.uniformBlocks[i].slot;
+        for (std::uint32_t i = 1; i < pipeline.uniformCount; ++i)
+            for (std::uint32_t j = i;
+                    j > 0 && pipeline.uniformSlots[j - 1] > pipeline.uniformSlots[j]; --j)
+            {
+                const std::uint32_t swapped = pipeline.uniformSlots[j];
+                pipeline.uniformSlots[j] = pipeline.uniformSlots[j - 1];
+                pipeline.uniformSlots[j - 1] = swapped;
+            }
+
+        VkDescriptorSetLayoutBinding setBindings[PipelineDesc::kMaxUniformBlocks] = {};
+        for (std::uint32_t i = 0; i < pipeline.uniformCount; ++i)
+        {
+            setBindings[i].binding = pipeline.uniformSlots[i];
+            setBindings[i].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
+            setBindings[i].descriptorCount = 1;
+            setBindings[i].stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+        }
+        VkDescriptorSetLayoutCreateInfo setLayout = {};
+        setLayout.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        setLayout.bindingCount = pipeline.uniformCount;
+        setLayout.pBindings = setBindings;
+        if (vkCreateDescriptorSetLayout(device_, &setLayout, nullptr, &pipeline.setLayout) !=
+                VK_SUCCESS)
+        {
+            log("createPipeline: could not create the descriptor set layout");
+            return PipelineHandle();
+        }
+
         VkPipelineLayoutCreateInfo layout = {};
         layout.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        layout.setLayoutCount = 1;
+        layout.pSetLayouts = &pipeline.setLayout;
         if (vkCreatePipelineLayout(device_, &layout, nullptr, &pipeline.layout) != VK_SUCCESS)
         {
             log("createPipeline: could not create the pipeline layout");
+            vkDestroyDescriptorSetLayout(device_, pipeline.setLayout, nullptr);
             return PipelineHandle();
         }
 
@@ -515,6 +585,7 @@ public:
         {
             log("createPipeline: could not create the pipeline");
             vkDestroyPipelineLayout(device_, pipeline.layout, nullptr);
+            vkDestroyDescriptorSetLayout(device_, pipeline.setLayout, nullptr);
             return PipelineHandle();
         }
         setName(VK_OBJECT_TYPE_PIPELINE, (std::uint64_t) pipeline.pipeline, desc.debugName);
@@ -529,11 +600,14 @@ public:
         const BufferSlot slot = handleCast<BufferSlot>(handle);
         const VulkanBuffer* buffer = buffers_.get(slot);
         if (!buffer) return;
-        Garbage item;
-        item.frame = frameNumber_;
-        item.buffer = buffer->buffer;
-        item.memory = buffer->memory;
-        garbage_.push_back(item);
+        for (std::uint32_t i = 0; i < buffer->versionCount; ++i)
+        {
+            Garbage item;
+            item.frame = frameNumber_;
+            item.buffer = buffer->versions[i].buffer;
+            item.memory = buffer->versions[i].memory;
+            garbage_.push_back(item);
+        }
         buffers_.erase(slot);
     }
 
@@ -555,6 +629,7 @@ public:
         item.frame = frameNumber_;
         item.pipeline = pipeline->pipeline;
         item.layout = pipeline->layout;
+        item.setLayout = pipeline->setLayout;
         garbage_.push_back(item);
         pipelines_.erase(slot);
     }
@@ -580,6 +655,8 @@ public:
         Frame& frame = frames_[frameIndex_];
         vkWaitForFences(device_, 1, &frame.inFlight, VK_TRUE, UINT64_MAX);
         collectGarbage(false);
+        vkResetDescriptorPool(device_, descriptorPools_[frameIndex_], 0);
+        lastSet_ = VK_NULL_HANDLE;
 
         const VkResult acquired = vkAcquireNextImageKHR(device_, swapchain_, UINT64_MAX,
                 frame.imageAvailable, VK_NULL_HANDLE, &imageIndex_);
@@ -620,6 +697,7 @@ public:
             transition(commands, target,
                     desc.colorLoad == LoadOp::Load ? target.layout : VK_IMAGE_LAYOUT_UNDEFINED,
                     VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+        transitionDepth(commands);
 
         VkRenderingAttachmentInfo color = {};
         color.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
@@ -630,13 +708,24 @@ public:
                                                           : VK_ATTACHMENT_STORE_OP_DONT_CARE;
         for (int i = 0; i < 4; ++i) color.clearValue.color.float32[i] = desc.clearColor[i];
 
+        VkRenderingAttachmentInfo depth = {};
+        depth.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+        depth.imageView = depthView_;
+        depth.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        depth.loadOp = toLoadOp(desc.depthLoad);
+        depth.storeOp = desc.depthStore == StoreOp::Store ? VK_ATTACHMENT_STORE_OP_STORE
+                                                          : VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        depth.clearValue.depthStencil.depth = desc.clearDepth;
+
         VkRenderingInfo rendering = {};
         rendering.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
         rendering.renderArea.extent = extent_;
         rendering.layerCount = 1;
         rendering.colorAttachmentCount = 1;
         rendering.pColorAttachments = &color;
+        rendering.pDepthAttachment = &depth;
         vkCmdBeginRendering(commands, &rendering);
+
         passActive_ = true;
         passFormats_ = TargetFormats();
         passWidth_ = extent_.width;
@@ -649,8 +738,10 @@ public:
             vertexBuffers_[i] = BufferHandle();
             vertexOffsets_[i] = 0;
         }
+        for (std::uint32_t i = 0; i < kMaxUniformSlots; ++i) uniformBindings_[i] = UniformBinding();
         vertexDirty_ = true;
         indexDirty_ = true;
+        uniformDirty_ = true;
 
         Viewport viewport;
         viewport.width = static_cast<float>(passWidth_);
@@ -719,9 +810,21 @@ public:
         indexDirty_ = true;
     }
 
-    void bindUniformBuffer(std::uint32_t, BufferHandle, std::uint32_t, std::uint32_t) override
+    void bindUniformBuffer(std::uint32_t slot, BufferHandle handle, std::uint32_t offset,
+            std::uint32_t size) override
     {
-        log("Vulkan: uniform buffers are not implemented yet");
+        const VulkanBuffer* buffer = buffers_.get(handleCast<BufferSlot>(handle));
+        if (!buffer || buffer->usage != BufferUsage::Uniform || size == 0 ||
+                static_cast<std::uint64_t>(offset) + size > buffer->size ||
+                slot >= kMaxUniformSlots || offset % caps_.uniformBufferOffsetAlignment != 0)
+        {
+            log("bindUniformBuffer: invalid buffer handle, range, alignment or slot");
+            return;
+        }
+        uniformBindings_[slot].handle = handle;
+        uniformBindings_[slot].offset = offset;
+        uniformBindings_[slot].size = size;
+        uniformDirty_ = true;
     }
 
     void bindTexture(std::uint32_t, TextureHandle, SamplerHandle) override
@@ -740,9 +843,7 @@ public:
     void drawIndexed(std::uint32_t indexCount, std::uint32_t firstIndex,
             std::uint32_t instanceCount) override
     {
-        if (!prepareDraw(0, instanceCount)) return;
-
-        const VulkanBuffer* indices = buffers_.get(handleCast<BufferSlot>(indexBuffer_));
+        VulkanBuffer* indices = buffers_.get(handleCast<BufferSlot>(indexBuffer_));
         if (!indices || indices->usage != BufferUsage::Index)
         {
             log("drawIndexed: no valid index buffer bound");
@@ -755,11 +856,14 @@ public:
             log("drawIndexed: index range is outside the index buffer");
             return;
         }
+        if (!prepareDraw(0, instanceCount)) return;
 
         VkCommandBuffer commands = frames_[frameIndex_].commands;
+        BufferVersion& version = indices->versions[indices->current];
+        version.lastUsedFrame = frameNumber_;
         if (indexDirty_)
         {
-            vkCmdBindIndexBuffer(commands, indices->buffer, 0,
+            vkCmdBindIndexBuffer(commands, version.buffer, 0,
                     wide ? VK_INDEX_TYPE_UINT32 : VK_INDEX_TYPE_UINT16);
             indexDirty_ = false;
         }
@@ -822,19 +926,6 @@ private:
         return Handle();
     }
 
-    void writeBuffer(const VulkanBuffer& buffer, std::uint32_t offset, const void* data,
-            std::uint32_t size)
-    {
-        void* mapped = nullptr;
-        if (vkMapMemory(device_, buffer.memory, offset, size, 0, &mapped) != VK_SUCCESS)
-        {
-            log("Vulkan: could not map the buffer memory");
-            return;
-        }
-        memcpy(mapped, data, size);
-        vkUnmapMemory(device_, buffer.memory);
-    }
-
     void log(const char* message) const
     {
         if (log_) log_(message);
@@ -864,6 +955,45 @@ private:
         return UINT32_MAX;
     }
 
+    bool createVersion(VulkanBuffer& buffer, const char* name)
+    {
+        if (buffer.versionCount >= VulkanBuffer::kMaxVersions) return false;
+        BufferVersion version;
+
+        VkBufferCreateInfo info = {};
+        info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        info.size = buffer.size;
+        info.usage = buffer.vkUsage;
+        info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        if (vkCreateBuffer(device_, &info, nullptr, &version.buffer) != VK_SUCCESS)
+        {
+            log("Vulkan: could not create a buffer");
+            return false;
+        }
+
+        VkMemoryRequirements requirements;
+        vkGetBufferMemoryRequirements(device_, version.buffer, &requirements);
+        VkMemoryAllocateInfo allocate = {};
+        allocate.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        allocate.allocationSize = requirements.size;
+        allocate.memoryTypeIndex = findMemoryType(requirements.memoryTypeBits,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        if (allocate.memoryTypeIndex == UINT32_MAX ||
+                vkAllocateMemory(device_, &allocate, nullptr, &version.memory) != VK_SUCCESS ||
+                vkBindBufferMemory(device_, version.buffer, version.memory, 0) != VK_SUCCESS ||
+                vkMapMemory(device_, version.memory, 0, VK_WHOLE_SIZE, 0, &version.mapped) !=
+                        VK_SUCCESS)
+        {
+            log("Vulkan: could not allocate or map buffer memory");
+            vkDestroyBuffer(device_, version.buffer, nullptr);
+            if (version.memory) vkFreeMemory(device_, version.memory, nullptr);
+            return false;
+        }
+        setName(VK_OBJECT_TYPE_BUFFER, (std::uint64_t) version.buffer, name);
+        buffer.versions[buffer.versionCount++] = version;
+        return true;
+    }
+
     void collectGarbage(bool all)
     {
         std::size_t kept = 0;
@@ -877,10 +1007,73 @@ private:
             }
             if (item.pipeline) vkDestroyPipeline(device_, item.pipeline, nullptr);
             if (item.layout) vkDestroyPipelineLayout(device_, item.layout, nullptr);
+            if (item.setLayout) vkDestroyDescriptorSetLayout(device_, item.setLayout, nullptr);
             if (item.buffer) vkDestroyBuffer(device_, item.buffer, nullptr);
             if (item.memory) vkFreeMemory(device_, item.memory, nullptr);
         }
         garbage_.resize(kept);
+    }
+
+    bool bindUniforms(const VulkanPipeline& pipeline, VkCommandBuffer commands)
+    {
+        VkBuffer buffers[PipelineDesc::kMaxUniformBlocks] = {};
+        std::uint32_t ranges[PipelineDesc::kMaxUniformBlocks] = {};
+        std::uint32_t offsets[PipelineDesc::kMaxUniformBlocks] = {};
+        for (std::uint32_t i = 0; i < pipeline.uniformCount; ++i)
+        {
+            const UniformBinding& binding = uniformBindings_[pipeline.uniformSlots[i]];
+            VulkanBuffer* buffer = buffers_.get(handleCast<BufferSlot>(binding.handle));
+            if (!buffer)
+            {
+                log("draw: a uniform buffer the pipeline needs is not bound");
+                return false;
+            }
+            BufferVersion& version = buffer->versions[buffer->current];
+            version.lastUsedFrame = frameNumber_;
+            buffers[i] = version.buffer;
+            ranges[i] = binding.size;
+            offsets[i] = binding.offset;
+        }
+
+        bool sameSet = lastSet_ != VK_NULL_HANDLE && lastSetLayout_ == pipeline.setLayout;
+        for (std::uint32_t i = 0; sameSet && i < pipeline.uniformCount; ++i)
+            if (lastSetBuffers_[i] != buffers[i] || lastSetRanges_[i] != ranges[i]) sameSet = false;
+
+        if (!sameSet)
+        {
+            VkDescriptorSetAllocateInfo allocate = {};
+            allocate.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+            allocate.descriptorPool = descriptorPools_[frameIndex_];
+            allocate.descriptorSetCount = 1;
+            allocate.pSetLayouts = &pipeline.setLayout;
+            if (vkAllocateDescriptorSets(device_, &allocate, &lastSet_) != VK_SUCCESS)
+            {
+                lastSet_ = VK_NULL_HANDLE;
+                log("draw: out of descriptor sets for this frame");
+                return false;
+            }
+
+            VkDescriptorBufferInfo infos[PipelineDesc::kMaxUniformBlocks] = {};
+            VkWriteDescriptorSet writes[PipelineDesc::kMaxUniformBlocks] = {};
+            for (std::uint32_t i = 0; i < pipeline.uniformCount; ++i)
+            {
+                infos[i].buffer = buffers[i];
+                infos[i].range = ranges[i];
+                writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                writes[i].dstSet = lastSet_;
+                writes[i].dstBinding = pipeline.uniformSlots[i];
+                writes[i].descriptorCount = 1;
+                writes[i].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
+                writes[i].pBufferInfo = &infos[i];
+                lastSetBuffers_[i] = buffers[i];
+                lastSetRanges_[i] = ranges[i];
+            }
+            vkUpdateDescriptorSets(device_, pipeline.uniformCount, writes, 0, nullptr);
+            lastSetLayout_ = pipeline.setLayout;
+        }
+        vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.layout, 0, 1,
+                &lastSet_, pipeline.uniformCount, offsets);
+        return true;
     }
 
     const VulkanPipeline* prepareDraw(std::uint64_t vertexEnd, std::uint32_t instanceCount)
@@ -901,7 +1094,7 @@ private:
         VkDeviceSize offsets[PipelineDesc::kMaxVertexBuffers] = {};
         for (std::uint32_t i = 0; i < pipeline->vertexBufferCount; ++i)
         {
-            const VulkanBuffer* buffer = buffers_.get(handleCast<BufferSlot>(vertexBuffers_[i]));
+            VulkanBuffer* buffer = buffers_.get(handleCast<BufferSlot>(vertexBuffers_[i]));
             if (!buffer || buffer->usage != BufferUsage::Vertex)
             {
                 log("draw: a vertex buffer the pipeline needs is not bound");
@@ -915,7 +1108,9 @@ private:
                 log("draw: vertex or instance range is outside the vertex buffer");
                 return nullptr;
             }
-            buffers[i] = buffer->buffer;
+            BufferVersion& version = buffer->versions[buffer->current];
+            version.lastUsedFrame = frameNumber_;
+            buffers[i] = version.buffer;
             offsets[i] = vertexOffsets_[i];
         }
 
@@ -924,11 +1119,17 @@ private:
         {
             vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline->pipeline);
             boundPipeline_ = pipeline->pipeline;
+            uniformDirty_ = true;
         }
         if (vertexDirty_ && pipeline->vertexBufferCount > 0)
         {
             vkCmdBindVertexBuffers(commands, 0, pipeline->vertexBufferCount, buffers, offsets);
             vertexDirty_ = false;
+        }
+        if (uniformDirty_ && pipeline->uniformCount > 0)
+        {
+            if (!bindUniforms(*pipeline, commands)) return nullptr;
+            uniformDirty_ = false;
         }
         return pipeline;
     }
@@ -1130,6 +1331,13 @@ private:
         }
         vkGetDeviceQueue(device_, queueFamily_, 0, &queue_);
         vkGetPhysicalDeviceMemoryProperties(physicalDevice_, &memoryProperties_);
+        VkFormatProperties depthProperties;
+        vkGetPhysicalDeviceFormatProperties(physicalDevice_, VK_FORMAT_D32_SFLOAT,
+                &depthProperties);
+        depthFormat_ = (depthProperties.optimalTilingFeatures &
+                               VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT)
+                               ? VK_FORMAT_D32_SFLOAT
+                               : VK_FORMAT_X8_D24_UNORM_PACK32;
         if (messenger_)
             setObjectName_ = reinterpret_cast<PFN_vkSetDebugUtilsObjectNameEXT>(
                     vkGetDeviceProcAddr(device_, "vkSetDebugUtilsObjectNameEXT"));
@@ -1168,8 +1376,106 @@ private:
         return true;
     }
 
+    bool createDescriptorPools()
+    {
+        const VkDescriptorPoolSize sizes[2] = {
+            { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 8192 },
+            { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 8192 },
+        };
+        VkDescriptorPoolCreateInfo info = {};
+        info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        info.maxSets = 2048;
+        info.poolSizeCount = 2;
+        info.pPoolSizes = sizes;
+        for (std::uint32_t i = 0; i < kFramesInFlight; ++i)
+            if (vkCreateDescriptorPool(device_, &info, nullptr, &descriptorPools_[i]) != VK_SUCCESS)
+                return false;
+        return true;
+    }
+
+    void destroyDepth()
+    {
+        if (depthView_) vkDestroyImageView(device_, depthView_, nullptr);
+        if (depthImage_) vkDestroyImage(device_, depthImage_, nullptr);
+        if (depthMemory_) vkFreeMemory(device_, depthMemory_, nullptr);
+        depthView_ = VK_NULL_HANDLE;
+        depthImage_ = VK_NULL_HANDLE;
+        depthMemory_ = VK_NULL_HANDLE;
+        depthLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
+    }
+
+    bool createDepth()
+    {
+        VkImageCreateInfo image = {};
+        image.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        image.imageType = VK_IMAGE_TYPE_2D;
+        image.format = depthFormat_;
+        image.extent.width = extent_.width;
+        image.extent.height = extent_.height;
+        image.extent.depth = 1;
+        image.mipLevels = 1;
+        image.arrayLayers = 1;
+        image.samples = VK_SAMPLE_COUNT_1_BIT;
+        image.tiling = VK_IMAGE_TILING_OPTIMAL;
+        image.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+        image.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        image.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        if (vkCreateImage(device_, &image, nullptr, &depthImage_) != VK_SUCCESS) return false;
+
+        VkMemoryRequirements requirements;
+        vkGetImageMemoryRequirements(device_, depthImage_, &requirements);
+        VkMemoryAllocateInfo allocate = {};
+        allocate.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        allocate.allocationSize = requirements.size;
+        allocate.memoryTypeIndex =
+                findMemoryType(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        if (allocate.memoryTypeIndex == UINT32_MAX ||
+                vkAllocateMemory(device_, &allocate, nullptr, &depthMemory_) != VK_SUCCESS ||
+                vkBindImageMemory(device_, depthImage_, depthMemory_, 0) != VK_SUCCESS)
+            return false;
+
+        VkImageViewCreateInfo view = {};
+        view.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        view.image = depthImage_;
+        view.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        view.format = depthFormat_;
+        view.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+        view.subresourceRange.levelCount = 1;
+        view.subresourceRange.layerCount = 1;
+        return vkCreateImageView(device_, &view, nullptr, &depthView_) == VK_SUCCESS;
+    }
+
+    void transitionDepth(VkCommandBuffer commands)
+    {
+        if (depthLayout_ == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL) return;
+
+        VkImageMemoryBarrier2 barrier = {};
+        barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+        barrier.srcStageMask = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
+                               VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+        barrier.dstStageMask = barrier.srcStageMask;
+        barrier.dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+                                VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        barrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.image = depthImage_;
+        barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+        barrier.subresourceRange.levelCount = 1;
+        barrier.subresourceRange.layerCount = 1;
+
+        VkDependencyInfo dependency = {};
+        dependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        dependency.imageMemoryBarrierCount = 1;
+        dependency.pImageMemoryBarriers = &barrier;
+        vkCmdPipelineBarrier2(commands, &dependency);
+        depthLayout_ = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    }
+
     void destroySwapchain()
     {
+        destroyDepth();
         for (std::size_t i = 0; i < images_.size(); ++i)
         {
             vkDestroyImageView(device_, images_[i].view, nullptr);
@@ -1281,6 +1587,11 @@ private:
             vkCreateSemaphore(device_, &semaphore, nullptr, &image.renderFinished);
             images_.push_back(image);
         }
+        if (!createDepth())
+        {
+            log("Vulkan: could not create the depth buffer of the window");
+            return false;
+        }
         return true;
     }
 
@@ -1361,6 +1672,25 @@ private:
     BufferHandle indexBuffer_;
     bool vertexDirty_ = true;
     bool indexDirty_ = true;
+    bool uniformDirty_ = true;
+
+    enum : std::uint32_t
+    {
+        kMaxUniformSlots = 16
+    };
+    UniformBinding uniformBindings_[kMaxUniformSlots];
+
+    VkDescriptorPool descriptorPools_[kFramesInFlight] = {};
+    VkDescriptorSet lastSet_ = VK_NULL_HANDLE;
+    VkDescriptorSetLayout lastSetLayout_ = VK_NULL_HANDLE;
+    VkBuffer lastSetBuffers_[PipelineDesc::kMaxUniformBlocks] = {};
+    std::uint32_t lastSetRanges_[PipelineDesc::kMaxUniformBlocks] = {};
+
+    VkFormat depthFormat_ = VK_FORMAT_D32_SFLOAT;
+    VkImage depthImage_ = VK_NULL_HANDLE;
+    VkDeviceMemory depthMemory_ = VK_NULL_HANDLE;
+    VkImageView depthView_ = VK_NULL_HANDLE;
+    VkImageLayout depthLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
 };
 
 } // namespace

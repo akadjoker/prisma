@@ -38,3 +38,4 @@ foreach(app clear triangle cube)
 endforeach()
 
 prisma_spirv(triangle triangle/shaders/triangle.vert triangle/shaders/triangle.frag)
+prisma_spirv(cube cube/shaders/cube.vert cube/shaders/cube.frag)
