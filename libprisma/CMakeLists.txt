@@ -1,6 +1,10 @@
 file(GLOB_RECURSE PRISMA_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/prisma/*.cpp")
 if(NOT PRISMA_OPENGL)
   list(FILTER PRISMA_SOURCES EXCLUDE REGEX "/rhi/gl/")
+elseif(PRISMA_GLES)
+  list(FILTER PRISMA_SOURCES EXCLUDE REGEX "/rhi/gl/loader/OpenGL\\.cpp$")
+else()
+  list(FILTER PRISMA_SOURCES EXCLUDE REGEX "/rhi/gl/loader/OpenGLES3\\.cpp$")
 endif()
 
 add_library(prisma STATIC ${PRISMA_SOURCES})
@@ -14,8 +18,15 @@ endif()
 
 if(PRISMA_OPENGL)
   target_compile_definitions(prisma PRIVATE PRISMA_HAS_OPENGL)
+  target_link_libraries(prisma PRIVATE ${CMAKE_DL_LIBS})
   if(PRISMA_GLES)
     target_compile_definitions(prisma PUBLIC PRISMA_GLES)
+    target_link_libraries(prisma PRIVATE EGL)
   endif()
-  target_link_libraries(prisma PRIVATE gl)
+  if(NOT MSVC)
+    set_source_files_properties(
+      src/prisma/rhi/gl/loader/OpenGL.cpp
+      src/prisma/rhi/gl/loader/OpenGLES3.cpp
+      PROPERTIES COMPILE_OPTIONS "-w")
+  endif()
 endif()

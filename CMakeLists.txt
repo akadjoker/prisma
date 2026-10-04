@@ -16,17 +16,6 @@ option(PRISMA_BUILD_TESTS "Build the prisma tests" ON)
 add_library(ct INTERFACE)
 target_include_directories(ct INTERFACE external/containers/include)
 
-if(PRISMA_OPENGL)
-  if(PRISMA_GLES)
-    add_library(gl STATIC external/opengl/OpenGLES3.cpp)
-    target_link_libraries(gl PUBLIC EGL ${CMAKE_DL_LIBS})
-  else()
-    add_library(gl STATIC external/opengl/OpenGL.cpp)
-    target_link_libraries(gl PUBLIC ${CMAKE_DL_LIBS})
-  endif()
-  target_include_directories(gl PUBLIC external/opengl)
-endif()
-
 add_subdirectory(libprisma)
 
 if(PRISMA_BUILD_APPS)

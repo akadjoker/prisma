@@ -1,16 +1,15 @@
 #include "Check.h"
-#ifdef PRISMA_GLES
-#include "OpenGLES3.h"
-using namespace gles;
-#define SHADER_HEADER "#version 300 es\nprecision mediump float;\n"
-#else
-#include "OpenGL.h"
-#define SHADER_HEADER "#version 460 core\n"
-#endif
 #include "platform.h"
 #include "prisma/rhi/Driver.h"
+#include "prisma/rhi/gl/GL.h"
 
 #include <string.h>
+
+#ifdef PRISMA_GLES
+#define SHADER_HEADER "#version 300 es\nprecision mediump float;\n"
+#else
+#define SHADER_HEADER "#version 460 core\n"
+#endif
 
 namespace
 {
