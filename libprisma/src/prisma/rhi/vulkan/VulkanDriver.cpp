@@ -176,12 +176,12 @@ public:
     void setViewport(const Viewport&) override {}
     void setScissor(const Rect&) override {}
     void bindPipeline(PipelineHandle) override {}
-    void bindVertexBuffer(BufferHandle, std::uint32_t) override {}
+    void bindVertexBuffer(std::uint32_t, BufferHandle, std::uint32_t) override {}
     void bindIndexBuffer(BufferHandle) override {}
     void bindUniformBuffer(std::uint32_t, BufferHandle, std::uint32_t, std::uint32_t) override {}
     void bindTexture(std::uint32_t, TextureHandle, SamplerHandle) override {}
-    void draw(std::uint32_t, std::uint32_t) override {}
-    void drawIndexed(std::uint32_t, std::uint32_t) override {}
+    void draw(std::uint32_t, std::uint32_t, std::uint32_t) override {}
+    void drawIndexed(std::uint32_t, std::uint32_t, std::uint32_t) override {}
 
     void endRenderPass() override
     {

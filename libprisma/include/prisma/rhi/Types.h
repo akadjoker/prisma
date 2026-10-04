@@ -169,9 +169,33 @@ struct ShaderDesc
 
 enum class VertexFormat : std::uint8_t
 {
+    Float1,
     Float2,
     Float3,
-    Float4
+    Float4,
+    Half2,
+    Half4,
+    UByte4Norm,
+    Byte4Norm,
+    UShort2Norm,
+    UShort4Norm,
+    Short2Norm,
+    Short4Norm,
+    Int1010102Norm,
+    UByte4,
+    UShort4
+};
+
+enum class VertexStep : std::uint8_t
+{
+    Vertex,
+    Instance
+};
+
+struct VertexBufferLayout
+{
+    std::uint32_t stride = 0;
+    VertexStep step = VertexStep::Vertex;
 };
 
 struct VertexAttribute
@@ -179,6 +203,7 @@ struct VertexAttribute
     std::uint32_t location = 0;
     VertexFormat format = VertexFormat::Float3;
     std::uint32_t offset = 0;
+    std::uint32_t buffer = 0;
 };
 
 enum class Topology : std::uint8_t
@@ -259,7 +284,8 @@ struct PipelineDesc
 {
     enum : std::uint32_t
     {
-        kMaxAttributes = 8,
+        kMaxAttributes = 16,
+        kMaxVertexBuffers = 4,
         kMaxUniformBlocks = 4,
         kMaxTextures = 8
     };
@@ -268,7 +294,8 @@ struct PipelineDesc
     ShaderHandle fragmentShader;
     VertexAttribute attributes[kMaxAttributes];
     std::uint32_t attributeCount = 0;
-    std::uint32_t vertexStride = 0;
+    VertexBufferLayout vertexBuffers[kMaxVertexBuffers];
+    std::uint32_t vertexBufferCount = 0;
     Topology topology = Topology::Triangles;
     TargetFormats targets;
 

@@ -32,13 +32,16 @@ public:
     virtual void setViewport(const Viewport& viewport) = 0;
     virtual void setScissor(const Rect& rect) = 0;
     virtual void bindPipeline(PipelineHandle handle) = 0;
-    virtual void bindVertexBuffer(BufferHandle handle, std::uint32_t offset) = 0;
+    virtual void bindVertexBuffer(std::uint32_t slot, BufferHandle handle,
+            std::uint32_t offset) = 0;
     virtual void bindIndexBuffer(BufferHandle handle) = 0;
     virtual void bindUniformBuffer(std::uint32_t slot, BufferHandle handle, std::uint32_t offset,
             std::uint32_t size) = 0;
     virtual void bindTexture(std::uint32_t slot, TextureHandle texture, SamplerHandle sampler) = 0;
-    virtual void draw(std::uint32_t vertexCount, std::uint32_t firstVertex) = 0;
-    virtual void drawIndexed(std::uint32_t indexCount, std::uint32_t firstIndex) = 0;
+    virtual void draw(std::uint32_t vertexCount, std::uint32_t firstVertex,
+            std::uint32_t instanceCount = 1) = 0;
+    virtual void drawIndexed(std::uint32_t indexCount, std::uint32_t firstIndex,
+            std::uint32_t instanceCount = 1) = 0;
     virtual void endRenderPass() = 0;
     virtual void endFrame() = 0;
     virtual void present() = 0;

@@ -85,6 +85,32 @@ const char* kTwoTargetsFragmentSource = SHADER_HEADER
         "layout(location = 1) out vec4 oSecond;\n"
         "void main() { oFirst = vec4(1.0, 0.0, 0.0, 1.0); oSecond = vec4(0.0, 1.0, 0.0, 1.0); }\n";
 
+const char* kInstancedVertexSource =
+        SHADER_HEADER "layout(location = 0) in vec2 aPosition;\n"
+                      "layout(location = 1) in vec4 aPlace;\n"
+                      "layout(location = 2) in vec4 aColor;\n"
+                      "out vec4 vColor;\n"
+                      "void main()\n"
+                      "{\n"
+                      "    vColor = aColor;\n"
+                      "    gl_Position = vec4(aPosition * aPlace.z + aPlace.xy, 0.5, 1.0);\n"
+                      "}\n";
+
+const char* kInstancedFragmentSource = SHADER_HEADER "in vec4 vColor;\n"
+                                                     "out vec4 oColor;\n"
+                                                     "void main() { oColor = vColor; }\n";
+
+struct Instance
+{
+    float place[4];
+    unsigned char color[4];
+};
+
+const Instance kInstances[2] = {
+    { { -0.5f, 0.0f, 0.25f, 0.0f }, { 255, 0, 0, 255 } },
+    { { 0.5f, 0.0f, 0.25f, 0.0f }, { 0, 0, 255, 255 } },
+};
+
 const char* kNoBufferVertexSource = SHADER_HEADER
         "void main()\n"
         "{\n"
@@ -262,7 +288,8 @@ int main()
         PipelineDesc pipelineDesc;
         pipelineDesc.vertexShader = vertexShader;
         pipelineDesc.fragmentShader = fragmentShader;
-        pipelineDesc.vertexStride = sizeof(float) * 2;
+        pipelineDesc.vertexBuffers[0].stride = sizeof(float) * 2;
+        pipelineDesc.vertexBufferCount = 1;
         pipelineDesc.attributeCount = 1;
         pipelineDesc.attributes[0].format = VertexFormat::Float2;
         pipelineDesc.debugName = "test pipeline";
@@ -281,7 +308,7 @@ int main()
         driver->beginRenderPass(pass);
         CHECK(pixelIs(160, 120, 26, 64, 115));
         driver->bindPipeline(pipeline);
-        driver->bindVertexBuffer(buffer, 0);
+        driver->bindVertexBuffer(0, buffer, 0);
         driver->draw(3, 0);
         CHECK(pixelIs(160, 120, 255, 0, 0));
         CHECK(pixelIs(2, 2, 255, 0, 0));
@@ -348,7 +375,8 @@ int main()
         PipelineDesc flatPipelineDesc;
         flatPipelineDesc.vertexShader = flatVertex;
         flatPipelineDesc.fragmentShader = flatFragment;
-        flatPipelineDesc.vertexStride = sizeof(float) * 2;
+        flatPipelineDesc.vertexBuffers[0].stride = sizeof(float) * 2;
+        flatPipelineDesc.vertexBufferCount = 1;
         flatPipelineDesc.attributeCount = 1;
         flatPipelineDesc.attributes[0].format = VertexFormat::Float2;
         flatPipelineDesc.uniformBlockCount = 1;
@@ -373,7 +401,7 @@ int main()
         driver->beginRenderPass(black);
         driver->bindUniformBuffer(2, params, kParamGreen * stride, sizeof(Params));
         driver->bindPipeline(flat);
-        driver->bindVertexBuffer(quad, 0);
+        driver->bindVertexBuffer(0, quad, 0);
         driver->bindIndexBuffer(quadIndices);
         driver->drawIndexed(12, 0);
         CHECK(messages == 1);
@@ -384,7 +412,7 @@ int main()
 
         driver->bindUniformBuffer(2, params, kParamNearBlue * stride, sizeof(Params));
         driver->bindPipeline(flatDepth);
-        driver->bindVertexBuffer(buffer, 0);
+        driver->bindVertexBuffer(0, buffer, 0);
         driver->draw(3, 0);
         driver->bindUniformBuffer(2, params, kParamFarRed * stride, sizeof(Params));
         driver->draw(3, 0);
@@ -392,7 +420,7 @@ int main()
 
         driver->bindUniformBuffer(2, params, kParamBehindNear * stride, sizeof(Params));
         driver->bindPipeline(flat);
-        driver->bindVertexBuffer(buffer, 0);
+        driver->bindVertexBuffer(0, buffer, 0);
         driver->draw(3, 0);
         CHECK(pixelIs(160, 120, 0, 0, 255));
         driver->bindUniformBuffer(2, params, kParamBeyondFar * stride, sizeof(Params));
@@ -401,7 +429,7 @@ int main()
 
         driver->bindUniformBuffer(2, params, kParamHalfWhite * stride, sizeof(Params));
         driver->bindPipeline(flatBlend);
-        driver->bindVertexBuffer(buffer, 0);
+        driver->bindVertexBuffer(0, buffer, 0);
         driver->draw(3, 0);
         CHECK(pixelIs(160, 120, 128, 128, 255, 2));
 
@@ -417,7 +445,7 @@ int main()
         driver->beginRenderPass(black);
         driver->bindUniformBuffer(2, params, kParamRed * stride, sizeof(Params));
         driver->bindPipeline(flat);
-        driver->bindVertexBuffer(buffer, 0);
+        driver->bindVertexBuffer(0, buffer, 0);
 
         Rect topLeft;
         topLeft.width = 160;
@@ -455,6 +483,75 @@ int main()
         CHECK(messages == 0);
         if (messages) printf("unexpected: %s\n", lastMessage);
 
+        BufferDesc instanceDesc;
+        instanceDesc.size = sizeof(kInstances);
+        instanceDesc.data = kInstances;
+        const BufferHandle instanceBuffer = driver->createBuffer(instanceDesc);
+
+        ShaderDesc instancedDesc;
+        instancedDesc.source = kInstancedVertexSource;
+        const ShaderHandle instancedVertex = driver->createShader(instancedDesc);
+        instancedDesc.stage = ShaderStage::Fragment;
+        instancedDesc.source = kInstancedFragmentSource;
+        const ShaderHandle instancedFragment = driver->createShader(instancedDesc);
+
+        PipelineDesc instancedPipelineDesc;
+        instancedPipelineDesc.vertexShader = instancedVertex;
+        instancedPipelineDesc.fragmentShader = instancedFragment;
+        instancedPipelineDesc.vertexBufferCount = 2;
+        instancedPipelineDesc.vertexBuffers[0].stride = sizeof(float) * 2;
+        instancedPipelineDesc.vertexBuffers[1].stride = sizeof(Instance);
+        instancedPipelineDesc.vertexBuffers[1].step = VertexStep::Instance;
+        instancedPipelineDesc.attributeCount = 3;
+        instancedPipelineDesc.attributes[0].location = 0;
+        instancedPipelineDesc.attributes[0].format = VertexFormat::Float2;
+        instancedPipelineDesc.attributes[1].location = 1;
+        instancedPipelineDesc.attributes[1].format = VertexFormat::Float4;
+        instancedPipelineDesc.attributes[1].buffer = 1;
+        instancedPipelineDesc.attributes[2].location = 2;
+        instancedPipelineDesc.attributes[2].format = VertexFormat::UByte4Norm;
+        instancedPipelineDesc.attributes[2].offset = sizeof(float) * 4;
+        instancedPipelineDesc.attributes[2].buffer = 1;
+        const PipelineHandle instanced = driver->createPipeline(instancedPipelineDesc);
+        CHECK(instanceBuffer.valid());
+        CHECK(instanced.valid());
+
+        messages = 0;
+        instancedPipelineDesc.attributes[2].buffer = 2;
+        CHECK(!driver->createPipeline(instancedPipelineDesc).valid());
+        CHECK(messages == 1);
+
+        messages = 0;
+        window_begin_frame(window);
+        driver->beginFrame();
+        driver->beginRenderPass(black);
+        driver->bindPipeline(instanced);
+        driver->bindVertexBuffer(0, buffer, 0);
+        driver->bindVertexBuffer(1, instanceBuffer, 0);
+        driver->draw(3, 0, 2);
+        CHECK(pixelIs(64, 108, 255, 0, 0));
+        CHECK(pixelIs(224, 108, 0, 0, 255));
+        driver->endRenderPass();
+
+        driver->beginRenderPass(black);
+        driver->bindPipeline(instanced);
+        driver->bindVertexBuffer(0, buffer, 0);
+        driver->bindVertexBuffer(1, instanceBuffer, sizeof(Instance));
+        driver->draw(3, 0, 1);
+        CHECK(pixelIs(224, 108, 0, 0, 255));
+        CHECK(pixelIs(64, 108, 0, 0, 0));
+        CHECK(messages == 0);
+        driver->draw(3, 0, 2);
+        CHECK(messages == 1);
+        driver->endRenderPass();
+        driver->endFrame();
+        driver->present();
+
+        driver->destroy(instanced);
+        driver->destroy(instancedVertex);
+        driver->destroy(instancedFragment);
+        driver->destroy(instanceBuffer);
+
         ShaderDesc noBufferDesc;
         noBufferDesc.source = kNoBufferVertexSource;
         const ShaderHandle noBufferVertex = driver->createShader(noBufferDesc);
@@ -477,7 +574,7 @@ int main()
         CHECK(pixelIs(2, 2, 255, 0, 0));
         CHECK(messages == 0);
         driver->bindPipeline(pipeline);
-        driver->bindVertexBuffer(buffer, 0);
+        driver->bindVertexBuffer(0, buffer, 0);
         driver->draw(1000, 0);
         CHECK(messages == 1);
         messages = 0;
@@ -532,7 +629,8 @@ int main()
         PipelineDesc texturedPipelineDesc;
         texturedPipelineDesc.vertexShader = texturedVertex;
         texturedPipelineDesc.fragmentShader = texturedFragment;
-        texturedPipelineDesc.vertexStride = sizeof(float) * 2;
+        texturedPipelineDesc.vertexBuffers[0].stride = sizeof(float) * 2;
+        texturedPipelineDesc.vertexBufferCount = 1;
         texturedPipelineDesc.attributeCount = 1;
         texturedPipelineDesc.attributes[0].format = VertexFormat::Float2;
         texturedPipelineDesc.textureCount = 1;
@@ -546,7 +644,7 @@ int main()
         driver->beginFrame();
         driver->beginRenderPass(black);
         driver->bindPipeline(textured);
-        driver->bindVertexBuffer(buffer, 0);
+        driver->bindVertexBuffer(0, buffer, 0);
         driver->bindTexture(3, texture, nearest);
         driver->draw(3, 0);
         CHECK(pixelIs(80, 60, 255, 0, 0));
@@ -603,7 +701,7 @@ int main()
             driver->beginRenderPass(offscreen);
             driver->bindUniformBuffer(2, params, kParamNearBright * stride, sizeof(Params));
             driver->bindPipeline(flatHdr);
-            driver->bindVertexBuffer(buffer, 0);
+            driver->bindVertexBuffer(0, buffer, 0);
             driver->draw(3, 0);
             driver->bindUniformBuffer(2, params, kParamFarGreen * stride, sizeof(Params));
             driver->draw(3, 0);
@@ -611,7 +709,7 @@ int main()
 
             driver->beginRenderPass(black);
             driver->bindPipeline(scaled);
-            driver->bindVertexBuffer(buffer, 0);
+            driver->bindVertexBuffer(0, buffer, 0);
             driver->bindTexture(3, hdr, nearest);
             driver->draw(3, 0);
             CHECK(pixelIs(160, 120, 255, 128, 32, 2));
@@ -664,17 +762,17 @@ int main()
         driver->beginRenderPass(srgbPass);
         driver->bindUniformBuffer(2, params, kParamHalf * stride, sizeof(Params));
         driver->bindPipeline(flatSrgb);
-        driver->bindVertexBuffer(buffer, 0);
+        driver->bindVertexBuffer(0, buffer, 0);
         driver->draw(3, 0);
         driver->endRenderPass();
         driver->beginRenderPass(tenBitPass);
         driver->bindUniformBuffer(2, params, kParamHalf * stride, sizeof(Params));
         driver->bindPipeline(flatTenBit);
-        driver->bindVertexBuffer(buffer, 0);
+        driver->bindVertexBuffer(0, buffer, 0);
         driver->draw(3, 0);
         driver->bindUniformBuffer(2, params, kParamGreen * stride, sizeof(Params));
         driver->bindPipeline(flat);
-        driver->bindVertexBuffer(buffer, 0);
+        driver->bindVertexBuffer(0, buffer, 0);
         driver->draw(3, 0);
         CHECK(messages == 1);
         messages = 0;
@@ -682,7 +780,7 @@ int main()
 
         driver->beginRenderPass(black);
         driver->bindPipeline(textured);
-        driver->bindVertexBuffer(buffer, 0);
+        driver->bindVertexBuffer(0, buffer, 0);
         driver->bindTexture(3, srgbTarget, nearest);
         driver->draw(3, 0);
         CHECK(pixelIs(160, 120, 128, 128, 128, 2));
@@ -715,7 +813,8 @@ int main()
         PipelineDesc twoTargetsPipelineDesc;
         twoTargetsPipelineDesc.vertexShader = vertexShader;
         twoTargetsPipelineDesc.fragmentShader = twoTargetsFragment;
-        twoTargetsPipelineDesc.vertexStride = sizeof(float) * 2;
+        twoTargetsPipelineDesc.vertexBuffers[0].stride = sizeof(float) * 2;
+        twoTargetsPipelineDesc.vertexBufferCount = 1;
         twoTargetsPipelineDesc.attributeCount = 1;
         twoTargetsPipelineDesc.attributes[0].format = VertexFormat::Float2;
         twoTargetsPipelineDesc.targets.window = false;
@@ -735,13 +834,13 @@ int main()
         driver->beginFrame();
         driver->beginRenderPass(twoTargetsPass);
         driver->bindPipeline(twoTargets);
-        driver->bindVertexBuffer(buffer, 0);
+        driver->bindVertexBuffer(0, buffer, 0);
         driver->draw(3, 0);
         driver->endRenderPass();
 
         driver->beginRenderPass(black);
         driver->bindPipeline(textured);
-        driver->bindVertexBuffer(buffer, 0);
+        driver->bindVertexBuffer(0, buffer, 0);
         driver->bindTexture(3, first, nearest);
         driver->draw(3, 0);
         CHECK(pixelIs(160, 120, 255, 0, 0));

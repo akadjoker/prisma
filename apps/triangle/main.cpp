@@ -79,7 +79,8 @@ int main(int argc, char** argv)
     prisma::PipelineDesc pipelineDesc;
     pipelineDesc.vertexShader = vertexShader;
     pipelineDesc.fragmentShader = fragmentShader;
-    pipelineDesc.vertexStride = sizeof(Vertex);
+    pipelineDesc.vertexBuffers[0].stride = sizeof(Vertex);
+    pipelineDesc.vertexBufferCount = 1;
     pipelineDesc.debugName = "triangle pipeline";
     pipelineDesc.attributeCount = 2;
     pipelineDesc.attributes[0].location = 0;
@@ -110,7 +111,7 @@ int main(int argc, char** argv)
         driver->beginFrame();
         driver->beginRenderPass(pass);
         driver->bindPipeline(pipeline);
-        driver->bindVertexBuffer(vertexBuffer, 0);
+        driver->bindVertexBuffer(0, vertexBuffer, 0);
         driver->draw(3, 0);
         driver->endRenderPass();
         driver->endFrame();

@@ -233,7 +233,8 @@ int main(int argc, char** argv)
     prisma::PipelineDesc pipelineDesc;
     pipelineDesc.vertexShader = vertexShader;
     pipelineDesc.fragmentShader = fragmentShader;
-    pipelineDesc.vertexStride = sizeof(Vertex);
+    pipelineDesc.vertexBuffers[0].stride = sizeof(Vertex);
+    pipelineDesc.vertexBufferCount = 1;
     pipelineDesc.attributeCount = 3;
     pipelineDesc.attributes[2].location = 2;
     pipelineDesc.attributes[2].format = prisma::VertexFormat::Float2;
@@ -316,7 +317,8 @@ int main(int argc, char** argv)
         prisma::PipelineDesc copyDesc;
         copyDesc.vertexShader = copyVertex;
         copyDesc.fragmentShader = copyFragment;
-        copyDesc.vertexStride = sizeof(float) * 2;
+        copyDesc.vertexBuffers[0].stride = sizeof(float) * 2;
+        copyDesc.vertexBufferCount = 1;
         copyDesc.attributeCount = 1;
         copyDesc.attributes[0].format = prisma::VertexFormat::Float2;
         copyDesc.textureCount = 1;
@@ -368,7 +370,7 @@ int main(int argc, char** argv)
         driver->updateBuffer(uniformBuffer, 0, &modelViewProjection, sizeof(Math::Mat4));
         driver->beginRenderPass(scenePass);
         driver->bindPipeline(pipeline);
-        driver->bindVertexBuffer(vertexBuffer, 0);
+        driver->bindVertexBuffer(0, vertexBuffer, 0);
         driver->bindIndexBuffer(indexBuffer);
         driver->bindUniformBuffer(0, uniformBuffer, 0, sizeof(Math::Mat4));
         driver->bindTexture(0, texture, sampler);
@@ -378,7 +380,7 @@ int main(int argc, char** argv)
         {
             driver->beginRenderPass(pass);
             driver->bindPipeline(copyPipeline);
-            driver->bindVertexBuffer(copyVertices, 0);
+            driver->bindVertexBuffer(0, copyVertices, 0);
             driver->bindTexture(0, colorTarget, copySampler);
             driver->draw(3, 0);
             driver->endRenderPass();

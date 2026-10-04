@@ -153,7 +153,8 @@ struct GLPipeline
     GLuint program = 0;
     GLuint vertexArray = 0;
     GLenum topology = GL_TRIANGLES;
-    std::uint32_t vertexStride = 0;
+    VertexBufferLayout vertexBuffers[PipelineDesc::kMaxVertexBuffers];
+    std::uint32_t vertexBufferCount = 0;
     std::uint32_t attributeCount = 0;
     VertexAttribute attributes[PipelineDesc::kMaxAttributes];
 
@@ -168,18 +169,50 @@ struct GLPipeline
     TargetFormats targets;
 };
 
-GLint componentCount(VertexFormat format)
+struct GLVertexFormat
+{
+    GLint components;
+    GLenum type;
+    GLboolean normalized;
+    bool integer;
+};
+
+GLVertexFormat toGLVertexFormat(VertexFormat format)
 {
     switch (format)
     {
+        case VertexFormat::Float1:
+            return { 1, GL_FLOAT, GL_FALSE, false };
         case VertexFormat::Float2:
-            return 2;
+            return { 2, GL_FLOAT, GL_FALSE, false };
         case VertexFormat::Float3:
-            return 3;
+            return { 3, GL_FLOAT, GL_FALSE, false };
         case VertexFormat::Float4:
-            return 4;
+            return { 4, GL_FLOAT, GL_FALSE, false };
+        case VertexFormat::Half2:
+            return { 2, GL_HALF_FLOAT, GL_FALSE, false };
+        case VertexFormat::Half4:
+            return { 4, GL_HALF_FLOAT, GL_FALSE, false };
+        case VertexFormat::UByte4Norm:
+            return { 4, GL_UNSIGNED_BYTE, GL_TRUE, false };
+        case VertexFormat::Byte4Norm:
+            return { 4, GL_BYTE, GL_TRUE, false };
+        case VertexFormat::UShort2Norm:
+            return { 2, GL_UNSIGNED_SHORT, GL_TRUE, false };
+        case VertexFormat::UShort4Norm:
+            return { 4, GL_UNSIGNED_SHORT, GL_TRUE, false };
+        case VertexFormat::Short2Norm:
+            return { 2, GL_SHORT, GL_TRUE, false };
+        case VertexFormat::Short4Norm:
+            return { 4, GL_SHORT, GL_TRUE, false };
+        case VertexFormat::Int1010102Norm:
+            return { 4, GL_INT_2_10_10_10_REV, GL_TRUE, false };
+        case VertexFormat::UByte4:
+            return { 4, GL_UNSIGNED_BYTE, GL_FALSE, true };
+        case VertexFormat::UShort4:
+            return { 4, GL_UNSIGNED_SHORT, GL_FALSE, true };
     }
-    return 0;
+    return { 4, GL_FLOAT, GL_FALSE, false };
 }
 
 GLenum toGLTopology(Topology topology)
@@ -468,7 +501,7 @@ public:
         if (!vertex || !fragment || desc.attributeCount > PipelineDesc::kMaxAttributes ||
                 desc.uniformBlockCount > PipelineDesc::kMaxUniformBlocks ||
                 desc.textureCount > PipelineDesc::kMaxTextures ||
-                desc.targets.colorCount > TargetFormats::kMaxColors)
+                desc.targets.colorCount > TargetFormats::kMaxColors || !validVertexInput(desc))
         {
             log("createPipeline: invalid shader handle or too many attributes or uniform blocks");
             return PipelineHandle();
@@ -494,7 +527,9 @@ public:
         }
 
         pipeline.topology = toGLTopology(desc.topology);
-        pipeline.vertexStride = desc.vertexStride;
+        pipeline.vertexBufferCount = desc.vertexBufferCount;
+        for (std::uint32_t i = 0; i < desc.vertexBufferCount; ++i)
+            pipeline.vertexBuffers[i] = desc.vertexBuffers[i];
         pipeline.attributeCount = desc.attributeCount;
         pipeline.targets = desc.targets;
         pipeline.depthTest = desc.depthTest;
@@ -538,8 +573,11 @@ public:
         label(GL_PROGRAM, pipeline.program, desc.debugName);
         for (std::uint32_t i = 0; i < desc.attributeCount; ++i)
         {
-            pipeline.attributes[i] = desc.attributes[i];
-            glEnableVertexAttribArray(desc.attributes[i].location);
+            const VertexAttribute& attribute = desc.attributes[i];
+            pipeline.attributes[i] = attribute;
+            glEnableVertexAttribArray(attribute.location);
+            glVertexAttribDivisor(attribute.location,
+                    desc.vertexBuffers[attribute.buffer].step == VertexStep::Instance ? 1 : 0);
         }
         return handleCast<PipelineHandle>(pipelines_.insert(pipeline));
     }
@@ -640,7 +678,11 @@ public:
         }
         passActive_ = true;
         pipeline_ = PipelineHandle();
-        vertexBuffer_ = BufferHandle();
+        for (std::uint32_t i = 0; i < PipelineDesc::kMaxVertexBuffers; ++i)
+        {
+            vertexBuffers_[i] = BufferHandle();
+            vertexOffsets_[i] = 0;
+        }
         indexBuffer_ = BufferHandle();
         vertexDirty_ = true;
         indexDirty_ = true;
@@ -697,10 +739,15 @@ public:
         indexDirty_ = true;
     }
 
-    void bindVertexBuffer(BufferHandle handle, std::uint32_t offset) override
+    void bindVertexBuffer(std::uint32_t slot, BufferHandle handle, std::uint32_t offset) override
     {
-        vertexBuffer_ = handle;
-        vertexOffset_ = offset;
+        if (slot >= PipelineDesc::kMaxVertexBuffers)
+        {
+            log("bindVertexBuffer: slot out of range");
+            return;
+        }
+        vertexBuffers_[slot] = handle;
+        vertexOffsets_[slot] = offset;
         vertexDirty_ = true;
     }
 
@@ -738,18 +785,24 @@ public:
         state_.bindSampler(slot, sampler->id);
     }
 
-    void draw(std::uint32_t vertexCount, std::uint32_t firstVertex) override
+    void draw(std::uint32_t vertexCount, std::uint32_t firstVertex,
+            std::uint32_t instanceCount) override
     {
         const GLPipeline* pipeline =
-                prepareDraw(static_cast<std::uint64_t>(firstVertex) + vertexCount);
+                prepareDraw(static_cast<std::uint64_t>(firstVertex) + vertexCount, instanceCount);
         if (!pipeline) return;
-        glDrawArrays(pipeline->topology, static_cast<GLint>(firstVertex),
-                static_cast<GLsizei>(vertexCount));
+        if (instanceCount == 1)
+            glDrawArrays(pipeline->topology, static_cast<GLint>(firstVertex),
+                    static_cast<GLsizei>(vertexCount));
+        else
+            glDrawArraysInstanced(pipeline->topology, static_cast<GLint>(firstVertex),
+                    static_cast<GLsizei>(vertexCount), static_cast<GLsizei>(instanceCount));
     }
 
-    void drawIndexed(std::uint32_t indexCount, std::uint32_t firstIndex) override
+    void drawIndexed(std::uint32_t indexCount, std::uint32_t firstIndex,
+            std::uint32_t instanceCount) override
     {
-        const GLPipeline* pipeline = prepareDraw(0);
+        const GLPipeline* pipeline = prepareDraw(0, instanceCount);
         if (!pipeline) return;
 
         const GLBuffer* indices = buffers_.get(handleCast<BufferSlot>(indexBuffer_));
@@ -772,8 +825,13 @@ public:
             log("drawIndexed: index range is outside the index buffer");
             return;
         }
-        glDrawElements(pipeline->topology, static_cast<GLsizei>(indexCount),
-                wide ? GL_UNSIGNED_INT : GL_UNSIGNED_SHORT, reinterpret_cast<const void*>(offset));
+        const GLenum type = wide ? GL_UNSIGNED_INT : GL_UNSIGNED_SHORT;
+        if (instanceCount == 1)
+            glDrawElements(pipeline->topology, static_cast<GLsizei>(indexCount), type,
+                    reinterpret_cast<const void*>(offset));
+        else
+            glDrawElementsInstanced(pipeline->topology, static_cast<GLsizei>(indexCount), type,
+                    reinterpret_cast<const void*>(offset), static_cast<GLsizei>(instanceCount));
     }
 
     void endRenderPass() override
@@ -896,6 +954,14 @@ private:
         return &framebuffers_[framebuffers_.size() - 1];
     }
 
+    static bool validVertexInput(const PipelineDesc& desc)
+    {
+        if (desc.vertexBufferCount > PipelineDesc::kMaxVertexBuffers) return false;
+        for (std::uint32_t i = 0; i < desc.attributeCount && i < PipelineDesc::kMaxAttributes; ++i)
+            if (desc.attributes[i].buffer >= desc.vertexBufferCount) return false;
+        return true;
+    }
+
     GLenum bindForEdit(const GLBuffer& buffer)
     {
         switch (buffer.usage)
@@ -914,12 +980,12 @@ private:
         return GL_ARRAY_BUFFER;
     }
 
-    const GLPipeline* prepareDraw(std::uint64_t vertexEnd)
+    const GLPipeline* prepareDraw(std::uint64_t vertexEnd, std::uint32_t instanceCount)
     {
         const GLPipeline* pipeline = pipelines_.get(handleCast<PipelineSlot>(pipeline_));
-        if (!passActive_ || !pipeline)
+        if (!passActive_ || !pipeline || instanceCount == 0)
         {
-            log("draw: no active render pass or no pipeline bound in this pass");
+            log("draw: no active render pass, no pipeline bound in this pass or no instances");
             return nullptr;
         }
         if (!sameTargets(pipeline->targets, passFormats_))
@@ -928,18 +994,21 @@ private:
             return nullptr;
         }
 
-        const GLBuffer* buffer = nullptr;
-        if (pipeline->attributeCount > 0)
+        const GLBuffer* buffers[PipelineDesc::kMaxVertexBuffers] = {};
+        for (std::uint32_t i = 0; i < pipeline->vertexBufferCount; ++i)
         {
-            buffer = buffers_.get(handleCast<BufferSlot>(vertexBuffer_));
-            if (!buffer || buffer->usage != BufferUsage::Vertex)
+            buffers[i] = buffers_.get(handleCast<BufferSlot>(vertexBuffers_[i]));
+            if (!buffers[i] || buffers[i]->usage != BufferUsage::Vertex)
             {
-                log("draw: the pipeline has vertex attributes and no vertex buffer is bound");
+                log("draw: a vertex buffer the pipeline needs is not bound");
                 return nullptr;
             }
-            if (vertexOffset_ + vertexEnd * pipeline->vertexStride > buffer->size)
+            const VertexBufferLayout& layout = pipeline->vertexBuffers[i];
+            const std::uint64_t count =
+                    layout.step == VertexStep::Instance ? instanceCount : vertexEnd;
+            if (vertexOffsets_[i] + count * layout.stride > buffers[i]->size)
             {
-                log("draw: vertex range is outside the vertex buffer");
+                log("draw: vertex or instance range is outside the vertex buffer");
                 return nullptr;
             }
         }
@@ -956,17 +1025,25 @@ private:
                     pipeline->blendFunc[3]);
 
         state_.bindVertexArray(pipeline->vertexArray);
-        if (buffer && vertexDirty_)
+        if (vertexDirty_)
         {
-            state_.bindArrayBuffer(buffer->id);
             for (std::uint32_t i = 0; i < pipeline->attributeCount; ++i)
             {
                 const VertexAttribute& attribute = pipeline->attributes[i];
+                const VertexBufferLayout& layout = pipeline->vertexBuffers[attribute.buffer];
+                const GLVertexFormat format = toGLVertexFormat(attribute.format);
                 const std::size_t offset =
-                        static_cast<std::size_t>(vertexOffset_) + attribute.offset;
-                glVertexAttribPointer(attribute.location, componentCount(attribute.format),
-                        GL_FLOAT, GL_FALSE, static_cast<GLsizei>(pipeline->vertexStride),
-                        reinterpret_cast<const void*>(offset));
+                        static_cast<std::size_t>(vertexOffsets_[attribute.buffer]) +
+                        attribute.offset;
+                state_.bindArrayBuffer(buffers[attribute.buffer]->id);
+                if (format.integer)
+                    glVertexAttribIPointer(attribute.location, format.components, format.type,
+                            static_cast<GLsizei>(layout.stride),
+                            reinterpret_cast<const void*>(offset));
+                else
+                    glVertexAttribPointer(attribute.location, format.components, format.type,
+                            format.normalized, static_cast<GLsizei>(layout.stride),
+                            reinterpret_cast<const void*>(offset));
             }
             vertexDirty_ = false;
         }
@@ -1021,9 +1098,9 @@ private:
     StoreOp passDepthStore_ = StoreOp::Store;
 
     PipelineHandle pipeline_;
-    BufferHandle vertexBuffer_;
+    BufferHandle vertexBuffers_[PipelineDesc::kMaxVertexBuffers];
+    std::uint32_t vertexOffsets_[PipelineDesc::kMaxVertexBuffers] = {};
     BufferHandle indexBuffer_;
-    std::uint32_t vertexOffset_ = 0;
     bool vertexDirty_ = true;
     bool indexDirty_ = true;
 };

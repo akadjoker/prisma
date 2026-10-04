@@ -58,7 +58,7 @@ int main()
         driver->beginFrame();
         driver->beginRenderPass(RenderPassDesc());
         driver->bindPipeline(pipeline);
-        driver->bindVertexBuffer(buffer, 0);
+        driver->bindVertexBuffer(0, buffer, 0);
         driver->draw(3, 0);
         driver->endRenderPass();
         driver->endFrame();
