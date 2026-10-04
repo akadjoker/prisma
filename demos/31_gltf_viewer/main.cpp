@@ -1,3 +1,4 @@
+#include "common/FrameLog.h"
 #include "common/StatsOverlay.h"
 #include "common/GltfGpu.h"
 #include "common/Ibl.h"
@@ -141,7 +142,12 @@ int main(int argc, char** argv)
     const char* skipArgument = zenapp::argumentValue(argc, argv, "skipmips");
     const unsigned skipMips = skipArgument ? static_cast<unsigned>(atoi(skipArgument)) : 0;
     const bool useFileCamera = zenapp::hasArgument(argc, argv, "camera");
-    const bool usePrepass = !zenapp::hasArgument(argc, argv, "noprepass");
+    const bool usePrepass = zenapp::hasArgument(argc, argv, "prepass");
+    const float minPixels = numberArgument(argc, argv, "minpixels", 12.0f);
+    const bool skipMain = zenapp::hasArgument(argc, argv, "skipmain");
+    const bool noLights = zenapp::hasArgument(argc, argv, "nolights");
+    const bool noBlend = zenapp::hasArgument(argc, argv, "noblend");
+    const bool noMask = zenapp::hasArgument(argc, argv, "nomask");
     const bool autoWalk = zenapp::hasArgument(argc, argv, "autowalk");
 
     zenapp::GltfModel model;
@@ -202,6 +208,7 @@ int main(int argc, char** argv)
 
     zenapp::GltfGpuOptions gpuOptions;
     gpuOptions.skipMips = skipMips;
+    gpuOptions.anisotropy = numberArgument(argc, argv, "aniso", 4.0f);
     zenapp::GltfGpu gpu;
     const bool gpuReady = zenapp::createGltfGpu(driver, model, gpuOptions, &gpu);
     log_info("gltf viewer: %u textures loaded, %u failed", gpu.texturesLoaded, gpu.texturesFailed);
@@ -337,7 +344,7 @@ int main(int argc, char** argv)
         const float color[3] = { 1.0f, 0.96f, 0.9f };
         zenapp::setSunLight(&lights, toLight, color, 2.0f);
     }
-    addModelLights(model, lightScale, sunScale, &lights);
+    if (!noLights) addModelLights(model, lightScale, sunScale, &lights);
 
     prisma::RenderPassDesc pass;
     pass.clearColor[0] = pass.clearColor[1] = pass.clearColor[2] = 0.0f;
@@ -357,10 +364,79 @@ int main(int argc, char** argv)
         flyYaw = atan2f(forward.x, -forward.z);
         flyPitch = asinf(forward.y);
     }
+    if (ready && !zenapp::hasArgument(argc, argv, "nowarmup"))
+    {
+        ct::Vector<int> firstPrimitive;
+        firstPrimitive.resize(model.materials.size());
+        for (size_t m = 0; m < firstPrimitive.size(); ++m) firstPrimitive[m] = -1;
+        for (size_t p = 0; p < model.primitives.size(); ++p)
+        {
+            const int m = model.primitives[p].material;
+            if (m >= 0 && firstPrimitive[m] < 0) firstPrimitive[m] = static_cast<int>(p);
+        }
+
+        FrameUniforms warmFrame;
+        memset(&warmFrame, 0, sizeof(warmFrame));
+        warmFrame.camera[3] = 1.0f;
+        ObjectUniforms warmObject;
+        warmObject.model = Math::Mat4::Identity();
+        warmObject.normalMatrix = Math::Mat4::Identity();
+        memset(&clustered, 0, sizeof(clustered));
+        prisma::Rect pixel;
+        pixel.width = 1;
+        pixel.height = 1;
+        const size_t perFrame = 16;
+        for (size_t first = 0; first < model.materials.size(); first += perFrame)
+        {
+            driver->beginFrame();
+            driver->updateBuffer(frameBuffer, 0, &warmFrame, sizeof(warmFrame));
+            driver->updateBuffer(objectBuffer, 0, &warmObject, sizeof(warmObject));
+            driver->updateBuffer(clusteredBuffer, 0, &clustered, sizeof(clustered));
+            driver->beginRenderPass(pass);
+            driver->setScissor(pixel);
+            zenapp::bindIbl(driver, ibl);
+            driver->bindUniformBuffer(0, frameBuffer, 0, sizeof(FrameUniforms));
+            driver->bindUniformBuffer(2, objectBuffer, 0, sizeof(ObjectUniforms));
+            driver->bindUniformBuffer(3, clusteredBuffer, offsetof(zenapp::ClusteredBuffers, cluster),
+                    sizeof(zenapp::ClusterUniforms));
+            driver->bindUniformBuffer(4, clusteredBuffer, offsetof(zenapp::ClusteredBuffers, lights),
+                    sizeof(clustered.lights));
+            driver->bindUniformBuffer(5, clusteredBuffer, offsetof(zenapp::ClusteredBuffers, froxels),
+                    sizeof(clustered.froxels));
+            driver->bindUniformBuffer(6, clusteredBuffer, offsetof(zenapp::ClusteredBuffers, records),
+                    sizeof(clustered.records));
+            zenapp::bindGltfGeometry(driver, gpu);
+            for (size_t m = first; m < first + perFrame && m < model.materials.size(); ++m)
+            {
+                if (firstPrimitive[m] < 0) continue;
+                const zenapp::GltfMaterial& material = model.materials[m];
+                const bool blend = material.alpha == zenapp::GltfMaterial::Alpha::Blend;
+                driver->bindPipeline(blend ? blendPipeline
+                                     : material.doubleSided ? doublePipeline
+                                                            : opaquePipeline);
+                zenapp::bindGltfMaterial(driver, gpu, model, static_cast<int>(m));
+                zenapp::drawGltfPrimitive(driver, gpu, model.primitives[firstPrimitive[m]]);
+            }
+            driver->endRenderPass();
+            zenapp::endFrame(driver);
+            driver->present();
+        }
+        froxelizer.setDepthRange(fileCamera ? 3.0f : radius * 0.3f, fileCamera ? 150.0f : radius * 8.0f);
+    }
+
+    Math::Vec3 previousEye = flyEye;
     double lastTime = time_seconds();
     if (zenapp::hasArgument(argc, argv, "novsync")) window_set_vsync(window, false);
     static const char* const phaseNames[4] = { "cull", "uniforms", "record", "present" };
     zenapp::FrameStats stats(4);
+    zenapp::FrameLog frameLog;
+    frameLog.reserve(20000);
+    float lastGpu = 0.0f;
+    float lastStep = 0.0f;
+    unsigned lastKeys = 0;
+    unsigned visibleTriangles = 0;
+    const char* reportPath = zenapp::argumentValue(argc, argv, "report");
+    if (!reportPath) reportPath = "gltf_viewer_report.txt";
     prisma::QueryHandle gpuQueries[3];
     bool gpuPending[3] = { false, false, false };
     if (driver->caps().timerQueries)
@@ -424,6 +500,14 @@ int main(int argc, char** argv)
                 flyYaw += 0.5f * delta;
                 flyEye = flyEye + forward * (4.0f * delta * cosf(static_cast<float>(now) * 0.4f));
             }
+            const Math::Vec3 moved = flyEye - previousEye;
+            lastStep = moved.Length();
+            previousEye = flyEye;
+            lastKeys = (key_down(window, KEY_W) ? 1u : 0u) | (key_down(window, KEY_S) ? 2u : 0u) |
+                       (key_down(window, KEY_A) ? 4u : 0u) | (key_down(window, KEY_D) ? 8u : 0u) |
+                       (key_down(window, KEY_Q) ? 16u : 0u) | (key_down(window, KEY_E) ? 32u : 0u) |
+                       (key_down(window, KEY_LEFT_SHIFT) ? 64u : 0u) |
+                       (mouse_button_down(window, MOUSE_RIGHT) ? 128u : 0u);
             fov = model.camera.yfov;
             nearPlane = model.camera.nearPlane;
             farPlane = model.camera.farPlane < 400.0f ? model.camera.farPlane : 400.0f;
@@ -442,6 +526,7 @@ int main(int argc, char** argv)
         const Math::Frustum frustum = Math::Frustum::FromViewProjection(
                 Math::Mat4::Perspective(fov, aspect, nearPlane, farPlane) * view);
 
+        const float pixelsPerUnit = static_cast<float>(height) * 0.5f / tanf(fov * 0.5f);
         draws.clear();
         for (unsigned n = 0; n < model.nodes.size(); ++n)
         {
@@ -458,6 +543,13 @@ int main(int argc, char** argv)
                         Math::Vec3(primitive.boundsMax[0], primitive.boundsMax[1],
                                 primitive.boundsMax[2])).Transformed(matrix);
                 if (!frustum.IntersectsBox(box)) continue;
+                if (minPixels > 0.0f)
+                {
+                    const float distanceToBox = (box.Center() - eye).Length();
+                    const float pixels = box.Extents().Length() * 2.0f * pixelsPerUnit /
+                                         (distanceToBox > nearPlane ? distanceToBox : nearPlane);
+                    if (pixels < minPixels) continue;
+                }
                 Draw draw;
                 draw.node = n;
                 draw.primitive = index;
@@ -469,6 +561,7 @@ int main(int argc, char** argv)
                 draw.blend = material && material->alpha == zenapp::GltfMaterial::Alpha::Blend;
                 draw.mask = material && material->alpha == zenapp::GltfMaterial::Alpha::Mask;
                 draw.doubleSided = material && material->doubleSided;
+                if ((noBlend && draw.blend) || (noMask && draw.mask)) continue;
                 draws.push_back(draw);
             }
         }
@@ -531,9 +624,12 @@ int main(int argc, char** argv)
         if (overlayReady && showStats)
         {
             char extra[128];
-            snprintf(extra, sizeof(extra), "%s  draws %u of %u  F1 hides",
+            unsigned triangles = 0;
+            for (size_t d = 0; d < draws.size(); ++d) triangles += model.primitives[draws[d].primitive].indexCount / 3;
+            visibleTriangles = triangles;
+            snprintf(extra, sizeof(extra), "%s  %uk tris  draws %u of %u  F1 hides",
                     driver->type() == prisma::DriverType::Vulkan ? "Vulkan" : "OpenGL",
-                    static_cast<unsigned>(draws.size()), maxDraws);
+                    triangles / 1000, static_cast<unsigned>(draws.size()), maxDraws);
             zenapp::drawStatsOverlay(&overlay, stats, phaseNames, 4, extra);
         }
         overlay.upload(driver);
@@ -587,7 +683,7 @@ int main(int argc, char** argv)
 
         int boundMaterial = -2;
         int boundPipeline = -1;
-        for (size_t i = 0; i < draws.size(); ++i)
+        for (size_t i = 0; i < draws.size() && !skipMain; ++i)
         {
             const Draw& draw = draws[i];
             const int pipelineKind = draw.blend ? 2 : (draw.doubleSided ? 1 : 0);
@@ -620,17 +716,38 @@ int main(int argc, char** argv)
             if (gpuPending[i] && static_cast<unsigned>(i) != gpuActive &&
                     driver->queryResult(gpuQueries[i], &nanoseconds))
             {
-                stats.gpu(static_cast<float>(nanoseconds) * 1e-6f);
+                lastGpu = static_cast<float>(nanoseconds) * 1e-6f;
+                stats.gpu(lastGpu);
                 gpuPending[i] = false;
             }
         }
         ++frameIndex;
         stats.phase(3);
         stats.end();
+        frameLog.add(stats, lastGpu, lastStep, lastKeys, visibleTriangles);
 
         if (maxFrames > 0 && ++frames >= maxFrames) window_set_should_close(window, true);
     }
 
+    {
+        int width = 0;
+        int height = 0;
+        window_get_framebuffer_size(window, &width, &height);
+        char header[512];
+        snprintf(header, sizeof(header),
+                "gltf_viewer backend=%s window=%dx%d vsync=%s prepass=%d warmup=%d camera=%d "
+#ifdef NDEBUG
+                "build=release "
+#else
+                "build=DEBUG "
+#endif
+                "model=%s skipmips=%u frames=%zu",
+                driver->type() == prisma::DriverType::Vulkan ? "vulkan" : "opengl", width, height,
+                zenapp::hasArgument(argc, argv, "novsync") ? "off" : "on", usePrepass ? 1 : 0,
+                zenapp::hasArgument(argc, argv, "nowarmup") ? 0 : 1, fileCamera ? 1 : 0, modelPath,
+                skipMips, frameLog.size());
+        if (frameLog.write(reportPath, header)) log_info("report written to %s", reportPath);
+    }
     overlay.destroy(driver);
     for (int i = 0; i < 3; ++i) driver->destroy(gpuQueries[i]);
     for (int i = 0; i < 4; ++i) driver->destroy(depthPipelines[i]);

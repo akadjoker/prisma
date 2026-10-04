@@ -22,6 +22,7 @@ struct GltfGpuOptions
 {
     unsigned skipMips = 0;
     bool preferDds = true;
+    float anisotropy = 8.0f;
 };
 
 struct GltfGpu

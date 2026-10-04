@@ -39,6 +39,7 @@ public:
         const double milliseconds = (now - last_) * 1000.0;
         last_ = now;
         if (index < 0 || index >= phaseCount_) return;
+        lastPhase_[index] = static_cast<float>(milliseconds);
         sum_[index] += milliseconds;
         if (milliseconds > worst_[index]) worst_[index] = milliseconds;
     }
@@ -47,6 +48,7 @@ public:
     {
         const double now = monotonicSeconds();
         const double milliseconds = (now - frameStart_) * 1000.0;
+        lastFrame_ = static_cast<float>(milliseconds);
         history_[head_] = static_cast<float>(milliseconds);
         head_ = (head_ + 1) % kHistory;
         if (historyCount_ < kHistory) ++historyCount_;
@@ -90,6 +92,8 @@ public:
         if (milliseconds > gpuWorstRaw_) gpuWorstRaw_ = milliseconds;
     }
 
+    float lastFrameMs() const { return lastFrame_; }
+    float lastPhaseMs(int i) const { return lastPhase_[i]; }
     float fps() const { return fps_; }
     float gpuAverageMs() const { return gpuAverage_; }
     float gpuWorstMs() const { return gpuWorst_; }
@@ -123,6 +127,8 @@ private:
     float worst_ms_ = 0.0f;
     float phaseAverage_[kMaxPhases] = {};
     float phaseWorst_[kMaxPhases] = {};
+    float lastFrame_ = 0.0f;
+    float lastPhase_[kMaxPhases] = {};
     float history_[kHistory] = {};
     int head_ = 0;
     int historyCount_ = 0;

@@ -132,7 +132,8 @@ bool createGltfGpu(prisma::Driver* driver, const GltfModel& model, const GltfGpu
     out->materialBuffer = driver->createBuffer(bufferDesc);
 
     float anisotropy = driver->caps().maxAnisotropy;
-    anisotropy = anisotropy > 8.0f ? 8.0f : (anisotropy < 1.0f ? 1.0f : anisotropy);
+    anisotropy = anisotropy > options.anisotropy ? options.anisotropy : anisotropy;
+    anisotropy = anisotropy < 1.0f ? 1.0f : anisotropy;
     prisma::SamplerDesc samplerDesc;
     samplerDesc.maxAnisotropy = anisotropy;
     samplerDesc.debugName = "gltf repeat";
