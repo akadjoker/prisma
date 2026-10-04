@@ -20,6 +20,10 @@ target_include_directories(ct INTERFACE external/containers/include)
 
 add_subdirectory(libprisma)
 
+if(PRISMA_BUILD_APPS OR PRISMA_BUILD_TESTS)
+  include(cmake/PrismaShaders.cmake)
+endif()
+
 if(PRISMA_BUILD_APPS)
   set(PLATFORM_BUILD_TESTS OFF CACHE BOOL "" FORCE)
   set(PLATFORM_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)

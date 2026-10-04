@@ -8,3 +8,6 @@
 	path = external/zen_plataform
 	url = https://github.com/akadjoker/zen_plataform.git
  
+[submodule "external/SPIRV-Cross"]
+	path = external/SPIRV-Cross
+	url = https://github.com/KhronosGroup/SPIRV-Cross

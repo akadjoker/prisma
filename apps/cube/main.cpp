@@ -4,60 +4,13 @@
 #include <stdlib.h>
 #include <string.h>
 
-#ifdef PRISMA_APP_SPIRV
 #include "copy.frag.h"
 #include "copy.vert.h"
 #include "cube.frag.h"
 #include "cube.vert.h"
-#endif
 
 namespace
 {
-
-const char* kVertexSource =
-        ZENAPP_SHADER_HEADER "layout(location = 0) in vec3 aPosition;\n"
-                             "layout(location = 1) in vec3 aColor;\n"
-                             "layout(location = 2) in vec2 aUv;\n"
-                             "layout(std140) uniform Frame\n"
-                             "{\n"
-                             "    mat4 uModelViewProjection;\n"
-                             "};\n"
-                             "out vec3 vColor;\n"
-                             "out vec2 vUv;\n"
-                             "void main()\n"
-                             "{\n"
-                             "    vColor = aColor;\n"
-                             "    vUv = aUv;\n"
-                             "    gl_Position = uModelViewProjection * vec4(aPosition, 1.0);\n"
-                             "}\n";
-
-const char* kFragmentSource =
-        ZENAPP_SHADER_HEADER "in vec3 vColor;\n"
-                             "in vec2 vUv;\n"
-                             "uniform sampler2D uTexture;\n"
-                             "out vec4 oColor;\n"
-                             "void main()\n"
-                             "{\n"
-                             "    oColor = vec4(vColor * texture(uTexture, vUv).rgb, 1.0);\n"
-                             "}\n";
-
-const char* kCopyVertexSource =
-        ZENAPP_SHADER_HEADER "layout(location = 0) in vec2 aPosition;\n"
-                             "out vec2 vUv;\n"
-                             "void main()\n"
-                             "{\n"
-                             "    vUv = aPosition * 0.5 + 0.5;\n"
-                             "    gl_Position = vec4(aPosition, 0.5, 1.0);\n"
-                             "}\n";
-
-const char* kCopyFragmentSource =
-        ZENAPP_SHADER_HEADER "in vec2 vUv;\n"
-                             "uniform sampler2D uTexture;\n"
-                             "out vec4 oColor;\n"
-                             "void main()\n"
-                             "{\n"
-                             "    oColor = vec4(texture(uTexture, vUv).rgb, 1.0);\n"
-                             "}\n";
 
 const float kCoveringTriangle[6] = { -1.0f, -1.0f, 3.0f, -1.0f, -1.0f, 3.0f };
 
@@ -230,21 +183,8 @@ int main(int argc, char** argv)
     bufferDesc.debugName = "cube frame uniforms";
     const prisma::BufferHandle uniformBuffer = driver->createBuffer(bufferDesc);
 
-    prisma::ShaderDesc shaderDesc;
-    shaderDesc.stage = prisma::ShaderStage::Vertex;
-    shaderDesc.source = kVertexSource;
-#ifdef PRISMA_APP_SPIRV
-    shaderDesc.spirv = cube_vert;
-    shaderDesc.spirvSize = sizeof(cube_vert);
-#endif
-    const prisma::ShaderHandle vertexShader = driver->createShader(shaderDesc);
-    shaderDesc.stage = prisma::ShaderStage::Fragment;
-    shaderDesc.source = kFragmentSource;
-#ifdef PRISMA_APP_SPIRV
-    shaderDesc.spirv = cube_frag;
-    shaderDesc.spirvSize = sizeof(cube_frag);
-#endif
-    const prisma::ShaderHandle fragmentShader = driver->createShader(shaderDesc);
+    const prisma::ShaderHandle vertexShader = zenapp::createShader(driver, cube_vert);
+    const prisma::ShaderHandle fragmentShader = zenapp::createShader(driver, cube_frag);
 
     prisma::PipelineDesc pipelineDesc;
     pipelineDesc.vertexShader = vertexShader;
@@ -255,18 +195,12 @@ int main(int argc, char** argv)
     pipelineDesc.attributes[2].location = 2;
     pipelineDesc.attributes[2].format = prisma::VertexFormat::Float2;
     pipelineDesc.attributes[2].offset = sizeof(float) * 6;
-    pipelineDesc.textureCount = 1;
-    pipelineDesc.textures[0].name = "uTexture";
-    pipelineDesc.textures[0].slot = 0;
     pipelineDesc.attributes[0].location = 0;
     pipelineDesc.attributes[0].format = prisma::VertexFormat::Float3;
     pipelineDesc.attributes[0].offset = 0;
     pipelineDesc.attributes[1].location = 1;
     pipelineDesc.attributes[1].format = prisma::VertexFormat::Float3;
     pipelineDesc.attributes[1].offset = sizeof(float) * 3;
-    pipelineDesc.uniformBlockCount = 1;
-    pipelineDesc.uniformBlocks[0].name = "Frame";
-    pipelineDesc.uniformBlocks[0].slot = 0;
     pipelineDesc.depthTest = true;
     pipelineDesc.cullMode = prisma::CullMode::Back;
     if (offscreen)
@@ -323,20 +257,8 @@ int main(int argc, char** argv)
         copyBufferDesc.data = kCoveringTriangle;
         copyVertices = driver->createBuffer(copyBufferDesc);
 
-        prisma::ShaderDesc copyShaderDesc;
-        copyShaderDesc.source = kCopyVertexSource;
-#ifdef PRISMA_APP_SPIRV
-        copyShaderDesc.spirv = copy_vert;
-        copyShaderDesc.spirvSize = sizeof(copy_vert);
-#endif
-        const prisma::ShaderHandle copyVertex = driver->createShader(copyShaderDesc);
-        copyShaderDesc.stage = prisma::ShaderStage::Fragment;
-        copyShaderDesc.source = kCopyFragmentSource;
-#ifdef PRISMA_APP_SPIRV
-        copyShaderDesc.spirv = copy_frag;
-        copyShaderDesc.spirvSize = sizeof(copy_frag);
-#endif
-        const prisma::ShaderHandle copyFragment = driver->createShader(copyShaderDesc);
+        const prisma::ShaderHandle copyVertex = zenapp::createShader(driver, copy_vert);
+        const prisma::ShaderHandle copyFragment = zenapp::createShader(driver, copy_frag);
 
         prisma::PipelineDesc copyDesc;
         copyDesc.vertexShader = copyVertex;
@@ -345,9 +267,6 @@ int main(int argc, char** argv)
         copyDesc.vertexBufferCount = 1;
         copyDesc.attributeCount = 1;
         copyDesc.attributes[0].format = prisma::VertexFormat::Float2;
-        copyDesc.textureCount = 1;
-        copyDesc.textures[0].name = "uTexture";
-        copyDesc.textures[0].slot = 0;
         copyDesc.debugName = "copy pipeline";
         copyPipeline = driver->createPipeline(copyDesc);
         driver->destroy(copyVertex);

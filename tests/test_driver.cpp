@@ -1,11 +1,11 @@
 #include "Check.h"
 #include "platform.h"
 #include "prisma/rhi/Driver.h"
+#include "prisma/rhi/ShaderBlob.h"
 #include "prisma/rhi/gl/GL.h"
 
 #include <string.h>
 
-#ifdef PRISMA_APP_SPIRV
 #include "array.frag.h"
 #include "cube.frag.h"
 #include "cube_array.frag.h"
@@ -26,20 +26,7 @@
 #include "two_targets.frag.h"
 #include "vertices.comp.h"
 #include "volume.frag.h"
-#define SPIRV(name) name, static_cast<std::uint32_t>(sizeof(name))
-#else
-#define SPIRV(name) nullptr, 0u
-#endif
 
-#ifdef PRISMA_GLES
-#define SHADER_HEADER "#version 300 es\nprecision highp float;\n"
-#define SHADER_HEADER_320 "#version 320 es\nprecision highp float;\n"
-#define SHADER_HEADER_310 "#version 310 es\nprecision highp float;\n"
-#else
-#define SHADER_HEADER "#version 460 core\n"
-#define SHADER_HEADER_320 SHADER_HEADER
-#define SHADER_HEADER_310 SHADER_HEADER
-#endif
 
 namespace
 {
@@ -81,64 +68,10 @@ void framebufferSize(void* user, std::uint32_t* width, std::uint32_t* height)
     *height = static_cast<std::uint32_t>(h);
 }
 
-const char* kVertexSource =
-        SHADER_HEADER "layout(location = 0) in vec2 aPosition;\n"
-                      "void main() { gl_Position = vec4(aPosition, 0.5, 1.0); }\n";
-
-const char* kFragmentSource = SHADER_HEADER "out vec4 oColor;\n"
-                                            "void main() { oColor = vec4(1.0, 0.0, 0.0, 1.0); }\n";
-
 const float kCoveringTriangle[6] = { -1.0f, -1.0f, 3.0f, -1.0f, -1.0f, 3.0f };
-
-const char* kFlatVertexSource =
-        SHADER_HEADER "layout(location = 0) in vec2 aPosition;\n"
-                      "layout(std140) uniform Params { vec4 uColor; vec4 uPlace; };\n"
-                      "void main() { gl_Position = vec4(aPosition, uPlace.z, 1.0); }\n";
-
-const char* kFlatFragmentSource =
-        SHADER_HEADER "layout(std140) uniform Params { vec4 uColor; vec4 uPlace; };\n"
-                      "out vec4 oColor;\n"
-                      "void main() { oColor = uColor; }\n";
 
 const float kLeftHalfQuad[8] = { -1.0f, -1.0f, 0.0f, -1.0f, 0.0f, 1.0f, -1.0f, 1.0f };
 const std::uint16_t kQuadIndices[6] = { 0, 1, 2, 0, 2, 3 };
-
-const char* kTexturedVertexSource = SHADER_HEADER
-        "layout(location = 0) in vec2 aPosition;\n"
-        "out vec2 vUv;\n"
-        "void main() { vUv = aPosition * 0.5 + 0.5; gl_Position = vec4(aPosition, 0.5, 1.0); }\n";
-
-const char* kTexturedFragmentSource =
-        SHADER_HEADER "in vec2 vUv;\n"
-                      "uniform sampler2D uTexture;\n"
-                      "out vec4 oColor;\n"
-                      "void main() { oColor = texture(uTexture, vUv); }\n";
-
-const char* kScaledFragmentSource =
-        SHADER_HEADER "in vec2 vUv;\n"
-                      "uniform sampler2D uTexture;\n"
-                      "out vec4 oColor;\n"
-                      "void main() { oColor = vec4(texture(uTexture, vUv).rgb * 0.25, 1.0); }\n";
-
-const char* kTwoTargetsFragmentSource = SHADER_HEADER
-        "layout(location = 0) out vec4 oFirst;\n"
-        "layout(location = 1) out vec4 oSecond;\n"
-        "void main() { oFirst = vec4(1.0, 0.0, 0.0, 1.0); oSecond = vec4(0.0, 1.0, 0.0, 1.0); }\n";
-
-const char* kInstancedVertexSource =
-        SHADER_HEADER "layout(location = 0) in vec2 aPosition;\n"
-                      "layout(location = 1) in vec4 aPlace;\n"
-                      "layout(location = 2) in vec4 aColor;\n"
-                      "out vec4 vColor;\n"
-                      "void main()\n"
-                      "{\n"
-                      "    vColor = aColor;\n"
-                      "    gl_Position = vec4(aPosition * aPlace.z + aPlace.xy, 0.5, 1.0);\n"
-                      "}\n";
-
-const char* kInstancedFragmentSource = SHADER_HEADER "in vec4 vColor;\n"
-                                                     "out vec4 oColor;\n"
-                                                     "void main() { oColor = vColor; }\n";
 
 struct Instance
 {
@@ -150,13 +83,6 @@ const Instance kInstances[2] = {
     { { -0.5f, 0.0f, 0.25f, 0.0f }, { 255, 0, 0, 255 } },
     { { 0.5f, 0.0f, 0.25f, 0.0f }, { 0, 0, 255, 255 } },
 };
-
-const char* kNoBufferVertexSource = SHADER_HEADER
-        "void main()\n"
-        "{\n"
-        "    vec2 corner = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));\n"
-        "    gl_Position = vec4(corner * 2.0 - 1.0, 0.5, 1.0);\n"
-        "}\n";
 
 const unsigned char kFourTexels[16] = {
     255,
@@ -176,88 +102,6 @@ const unsigned char kFourTexels[16] = {
     255,
     255,
 };
-
-const char* kArrayFragmentSource =
-        SHADER_HEADER "in vec2 vUv;\n"
-                      "layout(std140) uniform Params { vec4 uColor; vec4 uPlace; };\n"
-                      "uniform highp sampler2DArray uTexture;\n"
-                      "out vec4 oColor;\n"
-                      "void main() { oColor = texture(uTexture, vec3(vUv, uPlace.w)); }\n";
-
-const char* kCubeFragmentSource =
-        SHADER_HEADER "in vec2 vUv;\n"
-                      "layout(std140) uniform Params { vec4 uColor; vec4 uPlace; };\n"
-                      "uniform samplerCube uTexture;\n"
-                      "out vec4 oColor;\n"
-                      "void main() { oColor = texture(uTexture, uPlace.xyz); }\n";
-
-const char* kCubeArrayVertexSource = SHADER_HEADER_320
-        "layout(location = 0) in vec2 aPosition;\n"
-        "out vec2 vUv;\n"
-        "void main() { vUv = aPosition * 0.5 + 0.5; gl_Position = vec4(aPosition, 0.5, 1.0); }\n";
-
-const char* kCubeArrayFragmentSource =
-        SHADER_HEADER_320 "in vec2 vUv;\n"
-                          "layout(std140) uniform Params { vec4 uColor; vec4 uPlace; };\n"
-                          "uniform highp samplerCubeArray uTexture;\n"
-                          "out vec4 oColor;\n"
-                          "void main() { oColor = texture(uTexture, uPlace); }\n";
-
-const char* kFillComputeSource = SHADER_HEADER_310
-        "layout(local_size_x = 8, local_size_y = 8) in;\n"
-        "layout(std140) uniform Params { vec4 uColor; vec4 uPlace; };\n"
-        "layout(rgba8, binding = 0) uniform highp writeonly image2D uImage;\n"
-        "void main() { imageStore(uImage, ivec2(gl_GlobalInvocationID.xy), uColor); }\n";
-
-const char* kVerticesComputeSource =
-        SHADER_HEADER_310 "layout(local_size_x = 1) in;\n"
-                          "layout(std430, binding = 0) buffer Vertices { vec4 uPositions[3]; };\n"
-                          "layout(std430, binding = 1) buffer Arguments { uint uArguments[4]; };\n"
-                          "void main()\n"
-                          "{\n"
-                          "    uPositions[0] = vec4(-1.0, -1.0, 0.0, 1.0);\n"
-                          "    uPositions[1] = vec4(3.0, -1.0, 0.0, 1.0);\n"
-                          "    uPositions[2] = vec4(-1.0, 3.0, 0.0, 1.0);\n"
-                          "    uArguments[0] = 3u;\n"
-                          "    uArguments[1] = 1u;\n"
-                          "    uArguments[2] = 0u;\n"
-                          "    uArguments[3] = 0u;\n"
-                          "}\n";
-
-const char* kStorageVertexSource =
-        SHADER_HEADER_310 "layout(location = 0) in vec2 aPosition;\n"
-                          "layout(std140) uniform Params { vec4 uColor; vec4 uPlace; };\n"
-                          "void main() { gl_Position = vec4(aPosition, uPlace.z, 1.0); }\n";
-
-const char* kStorageFragmentSource = SHADER_HEADER_310
-        "layout(std430, binding = 1) readonly buffer Colors { vec4 uColors[2]; };\n"
-        "out vec4 oColor;\n"
-        "void main() { oColor = uColors[1]; }\n";
-
-const char* kVolumeFragmentSource =
-        SHADER_HEADER "in vec2 vUv;\n"
-                      "layout(std140) uniform Params { vec4 uColor; vec4 uPlace; };\n"
-                      "uniform highp sampler3D uTexture;\n"
-                      "out vec4 oColor;\n"
-                      "void main() { oColor = texture(uTexture, vec3(vUv, uPlace.w)); }\n";
-
-const char* kLodFragmentSource =
-        SHADER_HEADER "in vec2 vUv;\n"
-                      "layout(std140) uniform Params { vec4 uColor; vec4 uPlace; };\n"
-                      "uniform sampler2D uTexture;\n"
-                      "out vec4 oColor;\n"
-                      "void main() { oColor = textureLod(uTexture, vUv, uPlace.w); }\n";
-
-const char* kShadowFragmentSource =
-        SHADER_HEADER "in vec2 vUv;\n"
-                      "layout(std140) uniform Params { vec4 uColor; vec4 uPlace; };\n"
-                      "uniform highp sampler2DShadow uTexture;\n"
-                      "out vec4 oColor;\n"
-                      "void main()\n"
-                      "{\n"
-                      "    float lit = texture(uTexture, vec3(vUv, uPlace.w));\n"
-                      "    oColor = vec4(lit, lit, lit, 1.0);\n"
-                      "}\n";
 
 const unsigned char kBlueTexels[16] = { 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255,
     255 };
@@ -317,15 +161,9 @@ prisma::RenderPassDesc keep(const prisma::RenderPassDesc& pass)
     return next;
 }
 
-prisma::ShaderHandle makeShader(prisma::Driver* driver, prisma::ShaderStage stage,
-        const char* source, const void* spirv, std::uint32_t spirvSize)
+prisma::ShaderHandle makeShader(prisma::Driver* driver, const prisma::ShaderBlob& blob)
 {
-    prisma::ShaderDesc desc;
-    desc.stage = stage;
-    desc.source = source;
-    desc.spirv = spirv;
-    desc.spirvSize = spirvSize;
-    return driver->createShader(desc);
+    return driver->createShader(prisma::shaderDesc(blob, driver->caps()));
 }
 
 bool pixelIs(int x, int y, int r, int g, int b, int tolerance = 1)
@@ -479,10 +317,8 @@ int main(int argc, char** argv)
         bufferDesc.debugName = "test vertices";
         const BufferHandle buffer = driver->createBuffer(bufferDesc);
 
-        const ShaderHandle vertexShader =
-                makeShader(driver, ShaderStage::Vertex, kVertexSource, SPIRV(plain_vert));
-        const ShaderHandle fragmentShader =
-                makeShader(driver, ShaderStage::Fragment, kFragmentSource, SPIRV(red_frag));
+        const ShaderHandle vertexShader = makeShader(driver, plain_vert);
+        const ShaderHandle fragmentShader = makeShader(driver, red_frag);
 
         PipelineDesc pipelineDesc;
         pipelineDesc.vertexShader = vertexShader;
@@ -597,10 +433,8 @@ int main(int argc, char** argv)
         CHECK(quadIndices.valid());
         CHECK(params.valid());
 
-        const ShaderHandle flatVertex =
-                makeShader(driver, ShaderStage::Vertex, kFlatVertexSource, SPIRV(flat_vert));
-        const ShaderHandle flatFragment =
-                makeShader(driver, ShaderStage::Fragment, kFlatFragmentSource, SPIRV(flat_frag));
+        const ShaderHandle flatVertex = makeShader(driver, flat_vert);
+        const ShaderHandle flatFragment = makeShader(driver, flat_frag);
 
         PipelineDesc flatPipelineDesc;
         flatPipelineDesc.vertexShader = flatVertex;
@@ -733,10 +567,8 @@ int main(int argc, char** argv)
         instanceDesc.data = kInstances;
         const BufferHandle instanceBuffer = driver->createBuffer(instanceDesc);
 
-        const ShaderHandle instancedVertex = makeShader(driver, ShaderStage::Vertex,
-                kInstancedVertexSource, SPIRV(instanced_vert));
-        const ShaderHandle instancedFragment = makeShader(driver, ShaderStage::Fragment,
-                kInstancedFragmentSource, SPIRV(instanced_frag));
+        const ShaderHandle instancedVertex = makeShader(driver, instanced_vert);
+        const ShaderHandle instancedFragment = makeShader(driver, instanced_frag);
 
         PipelineDesc instancedPipelineDesc;
         instancedPipelineDesc.vertexShader = instancedVertex;
@@ -801,8 +633,7 @@ int main(int argc, char** argv)
         driver->destroy(instancedFragment);
         driver->destroy(instanceBuffer);
 
-        const ShaderHandle noBufferVertex = makeShader(driver, ShaderStage::Vertex,
-                kNoBufferVertexSource, SPIRV(no_buffer_vert));
+        const ShaderHandle noBufferVertex = makeShader(driver, no_buffer_vert);
         PipelineDesc noBufferPipelineDesc;
         noBufferPipelineDesc.vertexShader = noBufferVertex;
         noBufferPipelineDesc.fragmentShader = fragmentShader;
@@ -869,10 +700,8 @@ int main(int argc, char** argv)
         const SamplerHandle nearest = driver->createSampler(samplerDesc);
         CHECK(nearest.valid());
 
-        const ShaderHandle texturedVertex = makeShader(driver, ShaderStage::Vertex,
-                kTexturedVertexSource, SPIRV(textured_vert));
-        const ShaderHandle texturedFragment = makeShader(driver, ShaderStage::Fragment,
-                kTexturedFragmentSource, SPIRV(textured_frag));
+        const ShaderHandle texturedVertex = makeShader(driver, textured_vert);
+        const ShaderHandle texturedFragment = makeShader(driver, textured_frag);
 
         PipelineDesc texturedPipelineDesc;
         texturedPipelineDesc.vertexShader = texturedVertex;
@@ -919,8 +748,7 @@ int main(int argc, char** argv)
             CHECK(hdr.valid());
             CHECK(hdrDepth.valid());
 
-            const ShaderHandle scaledFragment = makeShader(driver, ShaderStage::Fragment,
-                    kScaledFragmentSource, SPIRV(scaled_frag));
+            const ShaderHandle scaledFragment = makeShader(driver, scaled_frag);
             texturedPipelineDesc.fragmentShader = scaledFragment;
             const PipelineHandle scaled = driver->createPipeline(texturedPipelineDesc);
             texturedPipelineDesc.fragmentShader = texturedFragment;
@@ -1057,8 +885,7 @@ int main(int argc, char** argv)
         CHECK(first.valid());
         CHECK(second.valid());
 
-        const ShaderHandle twoTargetsFragment = makeShader(driver, ShaderStage::Fragment,
-                kTwoTargetsFragmentSource, SPIRV(two_targets_frag));
+        const ShaderHandle twoTargetsFragment = makeShader(driver, two_targets_frag);
         PipelineDesc twoTargetsPipelineDesc;
         twoTargetsPipelineDesc.vertexShader = vertexShader;
         twoTargetsPipelineDesc.fragmentShader = twoTargetsFragment;
@@ -1121,14 +948,10 @@ int main(int argc, char** argv)
         const SamplerHandle anisotropic = driver->createSampler(anisotropicDesc);
         CHECK(anisotropic.valid());
 
-        const ShaderHandle arrayFragment =
-                makeShader(driver, ShaderStage::Fragment, kArrayFragmentSource, SPIRV(array_frag));
-        const ShaderHandle cubeFragment =
-                makeShader(driver, ShaderStage::Fragment, kCubeFragmentSource, SPIRV(cube_frag));
-        const ShaderHandle volumeFragment = makeShader(driver, ShaderStage::Fragment,
-                kVolumeFragmentSource, SPIRV(volume_frag));
-        const ShaderHandle lodFragment =
-                makeShader(driver, ShaderStage::Fragment, kLodFragmentSource, SPIRV(lod_frag));
+        const ShaderHandle arrayFragment = makeShader(driver, array_frag);
+        const ShaderHandle cubeFragment = makeShader(driver, cube_frag);
+        const ShaderHandle volumeFragment = makeShader(driver, volume_frag);
+        const ShaderHandle lodFragment = makeShader(driver, lod_frag);
 
         texturedPipelineDesc.uniformBlockCount = 1;
         texturedPipelineDesc.uniformBlocks[0].name = "Params";
@@ -1636,8 +1459,7 @@ int main(int argc, char** argv)
         const SamplerHandle comparison = driver->createSampler(comparisonDesc);
         CHECK(comparison.valid());
 
-        const ShaderHandle shadowFragment = makeShader(driver, ShaderStage::Fragment,
-                kShadowFragmentSource, SPIRV(shadow_frag));
+        const ShaderHandle shadowFragment = makeShader(driver, shadow_frag);
         texturedPipelineDesc.fragmentShader = shadowFragment;
         const PipelineHandle shadowPipeline = driver->createPipeline(texturedPipelineDesc);
         CHECK(shadowPipeline.valid());
@@ -2219,10 +2041,8 @@ int main(int argc, char** argv)
             PipelineHandle cubeArrayPipeline;
             if (cubeArray.valid())
             {
-                cubeArrayFragment = makeShader(driver, ShaderStage::Fragment,
-                        kCubeArrayFragmentSource, SPIRV(cube_array_frag));
-                cubeArrayVertex = makeShader(driver, ShaderStage::Vertex, kCubeArrayVertexSource,
-                        SPIRV(textured_vert));
+                cubeArrayFragment = makeShader(driver, cube_array_frag);
+                cubeArrayVertex = makeShader(driver, textured_vert);
                 PipelineDesc cubeArrayPipelineDesc = texturedPipelineDesc;
                 cubeArrayPipelineDesc.vertexShader = cubeArrayVertex;
                 cubeArrayPipelineDesc.fragmentShader = cubeArrayFragment;
@@ -2349,10 +2169,8 @@ int main(int argc, char** argv)
 
         if (driver->caps().compute)
         {
-            const ShaderHandle fillShader =
-                    makeShader(driver, ShaderStage::Compute, kFillComputeSource, SPIRV(fill_comp));
-            const ShaderHandle verticesShader = makeShader(driver, ShaderStage::Compute,
-                    kVerticesComputeSource, SPIRV(vertices_comp));
+            const ShaderHandle fillShader = makeShader(driver, fill_comp);
+            const ShaderHandle verticesShader = makeShader(driver, vertices_comp);
             CHECK(fillShader.valid());
             CHECK(verticesShader.valid());
 
@@ -2440,10 +2258,8 @@ int main(int argc, char** argv)
             PipelineHandle storagePipeline;
             if (driver->caps().storageBuffersInGraphics)
             {
-                storageVertex = makeShader(driver, ShaderStage::Vertex, kStorageVertexSource,
-                        SPIRV(flat_vert));
-                storageFragment = makeShader(driver, ShaderStage::Fragment, kStorageFragmentSource,
-                        SPIRV(storage_frag));
+                storageVertex = makeShader(driver, flat_vert);
+                storageFragment = makeShader(driver, storage_frag);
                 PipelineDesc storageDesc = wideDesc;
                 storageDesc.vertexBuffers[0].stride = sizeof(float) * 2;
                 storageDesc.vertexShader = storageVertex;
@@ -2570,6 +2386,32 @@ int main(int argc, char** argv)
         }
         printf("compute %d, indirect %d, storage buffers in graphics %d\n", driver->caps().compute,
                 driver->caps().indirectDraw, driver->caps().storageBuffersInGraphics);
+
+        {
+            PipelineDesc reflectedDesc = texturedPipelineDesc;
+            reflectedDesc.fragmentShader = cubeFragment;
+            reflectedDesc.uniformBlockCount = 0;
+            reflectedDesc.textureCount = 0;
+            const PipelineHandle reflected = driver->createPipeline(reflectedDesc);
+            CHECK(reflected.valid());
+
+            messages = 0;
+            window_begin_frame(window);
+            driver->beginFrame();
+            driver->beginRenderPass(black);
+            driver->bindPipeline(reflected);
+            driver->bindVertexBuffer(0, buffer, 0);
+            driver->bindTexture(3, cubeTexture, nearest);
+            driver->bindUniformBuffer(2, params, kParamCubePositiveX * stride, sizeof(Params));
+            driver->draw(3, 0);
+            driver->endRenderPass();
+            CHECK(pixelIs(160, 120, 255, 0, 0));
+            driver->endFrame();
+            driver->present();
+            CHECK(messages == 0);
+            if (messages) printf("unexpected: %s\n", lastMessage);
+            driver->destroy(reflected);
+        }
 
         CHECK(driver->caps().occlusionQueries);
         const QueryHandle visibleQuery = driver->createQuery(QueryType::Occlusion);

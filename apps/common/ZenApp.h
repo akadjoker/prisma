@@ -2,15 +2,10 @@
 
 #include "platform.h"
 #include "prisma/rhi/Driver.h"
+#include "prisma/rhi/ShaderBlob.h"
 
 #include <stdlib.h>
 #include <string.h>
-
-#ifdef PRISMA_GLES
-#define ZENAPP_SHADER_HEADER "#version 300 es\nprecision highp float;\n"
-#else
-#define ZENAPP_SHADER_HEADER "#version 460 core\n"
-#endif
 
 namespace zenapp
 {
@@ -119,6 +114,14 @@ inline PlatformWindow* openWindow(const char* title, prisma::DriverType type)
 #endif
     return openWindowEx(title, type, 1280, 720, WINDOW_POS_CENTERED, WINDOW_POS_CENTERED, monitor,
             true, true);
+}
+
+inline prisma::ShaderHandle createShader(prisma::Driver* driver, const prisma::ShaderBlob& blob,
+        const char* debugName = nullptr)
+{
+    prisma::ShaderDesc desc = prisma::shaderDesc(blob, driver->caps());
+    desc.debugName = debugName;
+    return driver->createShader(desc);
 }
 
 inline prisma::Driver* createDriver(PlatformWindow* window, prisma::DriverType type)

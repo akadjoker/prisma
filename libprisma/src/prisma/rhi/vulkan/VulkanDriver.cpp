@@ -63,6 +63,8 @@ struct VulkanShader
 {
     VkShaderModule module = VK_NULL_HANDLE;
     ShaderStage stage = ShaderStage::Vertex;
+    std::uint32_t slotCount[4] = {};
+    std::uint32_t slots[4][PipelineDesc::kMaxTextures] = {};
 };
 
 struct VulkanPipeline
@@ -701,6 +703,17 @@ public:
         pipeline.imageCount = desc.storageTextureCount;
         for (std::uint32_t i = 0; i < desc.storageTextureCount; ++i)
             pipeline.imageSlots[i] = desc.storageTextures[i].slot;
+        mergeSlots(pipeline.uniformSlots, pipeline.uniformCount,
+                ComputePipelineDesc::kMaxUniformBlocks, kMaxUniformSlots, *shader,
+                BindingKind::UniformBlock);
+        mergeSlots(pipeline.textureSlots, pipeline.textureCount, ComputePipelineDesc::kMaxTextures,
+                kMaxTextureSlots, *shader, BindingKind::Texture);
+        mergeSlots(pipeline.storageSlots, pipeline.storageCount,
+                ComputePipelineDesc::kMaxStorageBuffers, ComputePipelineDesc::kMaxStorageBuffers,
+                *shader, BindingKind::StorageBuffer);
+        mergeSlots(pipeline.imageSlots, pipeline.imageCount,
+                ComputePipelineDesc::kMaxStorageTextures, ComputePipelineDesc::kMaxStorageTextures,
+                *shader, BindingKind::StorageTexture);
         sortSlots(pipeline.uniformSlots, pipeline.uniformCount);
         sortSlots(pipeline.textureSlots, pipeline.textureCount);
 
@@ -815,6 +828,16 @@ public:
 
         VulkanShader shader;
         shader.stage = desc.stage;
+        for (std::uint32_t i = 0; i < desc.bindingCount; ++i)
+        {
+            const std::uint32_t kind = static_cast<std::uint32_t>(desc.bindings[i].kind);
+            if (shader.slotCount[kind] >= PipelineDesc::kMaxTextures)
+            {
+                log("createShader: too many bindings");
+                return ShaderHandle();
+            }
+            shader.slots[kind][shader.slotCount[kind]++] = desc.bindings[i].slot;
+        }
         VkShaderModuleCreateInfo info = {};
         info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
         info.codeSize = desc.spirvSize;
@@ -986,6 +1009,10 @@ public:
         pipeline.uniformCount = desc.uniformBlockCount;
         for (std::uint32_t i = 0; i < desc.uniformBlockCount; ++i)
             pipeline.uniformSlots[i] = desc.uniformBlocks[i].slot;
+        mergeSlots(pipeline.uniformSlots, pipeline.uniformCount, PipelineDesc::kMaxUniformBlocks,
+                kMaxUniformSlots, *vertex, BindingKind::UniformBlock);
+        mergeSlots(pipeline.uniformSlots, pipeline.uniformCount, PipelineDesc::kMaxUniformBlocks,
+                kMaxUniformSlots, *fragment, BindingKind::UniformBlock);
         for (std::uint32_t i = 1; i < pipeline.uniformCount; ++i)
             for (std::uint32_t j = i;
                     j > 0 && pipeline.uniformSlots[j - 1] > pipeline.uniformSlots[j]; --j)
@@ -1017,6 +1044,10 @@ public:
         pipeline.textureCount = desc.textureCount;
         for (std::uint32_t i = 0; i < desc.textureCount; ++i)
             pipeline.textureSlots[i] = desc.textures[i].slot;
+        mergeSlots(pipeline.textureSlots, pipeline.textureCount, PipelineDesc::kMaxTextures,
+                kMaxTextureSlots, *vertex, BindingKind::Texture);
+        mergeSlots(pipeline.textureSlots, pipeline.textureCount, PipelineDesc::kMaxTextures,
+                kMaxTextureSlots, *fragment, BindingKind::Texture);
         for (std::uint32_t i = 1; i < pipeline.textureCount; ++i)
             for (std::uint32_t j = i;
                     j > 0 && pipeline.textureSlots[j - 1] > pipeline.textureSlots[j]; --j)
@@ -1050,6 +1081,10 @@ public:
         pipeline.storageCount = desc.storageBufferCount;
         for (std::uint32_t i = 0; i < desc.storageBufferCount; ++i)
             pipeline.storageSlots[i] = desc.storageBuffers[i].slot;
+        mergeSlots(pipeline.storageSlots, pipeline.storageCount, PipelineDesc::kMaxStorageBuffers,
+                PipelineDesc::kMaxStorageBuffers, *vertex, BindingKind::StorageBuffer);
+        mergeSlots(pipeline.storageSlots, pipeline.storageCount, PipelineDesc::kMaxStorageBuffers,
+                PipelineDesc::kMaxStorageBuffers, *fragment, BindingKind::StorageBuffer);
         if (!createSlotLayout(pipeline.storageSlots, pipeline.storageCount,
                     VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                     VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
@@ -2986,6 +3021,26 @@ private:
     static VkPipelineBindPoint bindPoint(const VulkanPipeline& pipeline)
     {
         return pipeline.compute ? VK_PIPELINE_BIND_POINT_COMPUTE : VK_PIPELINE_BIND_POINT_GRAPHICS;
+    }
+
+    void mergeSlots(std::uint32_t* slots, std::uint32_t& count, std::uint32_t capacity,
+            std::uint32_t slotLimit, const VulkanShader& shader, BindingKind kind) const
+    {
+        const std::uint32_t index = static_cast<std::uint32_t>(kind);
+        for (std::uint32_t i = 0; i < shader.slotCount[index]; ++i)
+        {
+            const std::uint32_t slot = shader.slots[index][i];
+            bool present = false;
+            for (std::uint32_t j = 0; j < count; ++j)
+                if (slots[j] == slot) present = true;
+            if (present) continue;
+            if (count >= capacity || slot >= slotLimit)
+            {
+                log("createPipeline: a shader uses too many bindings or a slot out of range");
+                continue;
+            }
+            slots[count++] = slot;
+        }
     }
 
     static void sortSlots(std::uint32_t* slots, std::uint32_t count)

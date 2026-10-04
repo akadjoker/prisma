@@ -249,12 +249,34 @@ enum class ShaderStage : std::uint8_t
     Compute
 };
 
+enum class BindingKind : std::uint8_t
+{
+    UniformBlock,
+    Texture,
+    StorageBuffer,
+    StorageTexture
+};
+
+struct ShaderBinding
+{
+    BindingKind kind = BindingKind::UniformBlock;
+    const char* name = nullptr;
+    std::uint32_t slot = 0;
+};
+
 struct ShaderDesc
 {
+    enum : std::uint32_t
+    {
+        kMaxBindings = 24
+    };
+
     ShaderStage stage = ShaderStage::Vertex;
     const char* source = nullptr;
     const void* spirv = nullptr;
     std::uint32_t spirvSize = 0;
+    const ShaderBinding* bindings = nullptr;
+    std::uint32_t bindingCount = 0;
     const char* debugName = nullptr;
 };
 

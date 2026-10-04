@@ -23,10 +23,19 @@ struct GLBuffer
     IndexFormat indexFormat = IndexFormat::UInt16;
 };
 
+struct GLBinding
+{
+    BindingKind kind = BindingKind::UniformBlock;
+    std::uint32_t slot = 0;
+    char name[48] = {};
+};
+
 struct GLShader
 {
     GLuint id = 0;
     ShaderStage stage = ShaderStage::Vertex;
+    std::uint32_t bindingCount = 0;
+    GLBinding bindings[ShaderDesc::kMaxBindings];
 };
 
 struct GLTexture
@@ -685,30 +694,12 @@ public:
             }
             glUniform1i(location, static_cast<GLint>(desc.textures[i].slot));
         }
-        bool mapped =
-                mapStorageBuffers(pipeline.program, desc.storageBuffers, desc.storageBufferCount);
+        bool mapped = mapStorageBuffers(pipeline.program, desc.storageBuffers,
+                desc.storageBufferCount, true);
         for (std::uint32_t i = 0; mapped && i < desc.storageTextureCount; ++i)
-        {
-            const StorageBinding& binding = desc.storageTextures[i];
-            const GLint location = glGetUniformLocation(pipeline.program, binding.name);
-            if (location < 0)
-            {
-                log("createComputePipeline: storage texture not found in the shader");
-                continue;
-            }
-#ifdef PRISMA_GLES
-            GLint unit = -1;
-            glGetUniformiv(pipeline.program, location, &unit);
-            if (unit != static_cast<GLint>(binding.slot))
-            {
-                log("createComputePipeline: on OpenGL ES a storage texture must declare "
-                    "layout(binding = slot)");
-                mapped = false;
-            }
-#else
-            glUniform1i(location, static_cast<GLint>(binding.slot));
-#endif
-        }
+            mapped = mapStorageTexture(pipeline.program, desc.storageTextures[i].name,
+                    desc.storageTextures[i].slot, true);
+        mapped = mapped && applyBindings(pipeline.program, *shader);
         if (!mapped)
         {
             state_.programDeleted(pipeline.program);
@@ -738,7 +729,16 @@ public:
 
     ShaderHandle createShader(const ShaderDesc& desc) override
     {
-        if (!desc.source) return ShaderHandle();
+        if (!desc.source)
+        {
+            log("createShader: no source for this OpenGL version");
+            return ShaderHandle();
+        }
+        if (desc.bindingCount > ShaderDesc::kMaxBindings)
+        {
+            log("createShader: too many bindings");
+            return ShaderHandle();
+        }
 
         if (desc.stage == ShaderStage::Compute && !caps_.compute)
         {
@@ -752,29 +752,7 @@ public:
                                                                          : GL_COMPUTE_SHADER);
         label(GL_SHADER, shader.id, desc.debugName);
         const char* source = desc.source;
-#ifdef PRISMA_GLES
-        if (desc.stage == ShaderStage::Vertex)
-        {
-            GLint versionLine = 0;
-            if (strncmp(source, "#version", 8) == 0)
-            {
-                const char* end = strchr(source, '\n');
-                versionLine = static_cast<GLint>(end ? end - source + 1 : strlen(source));
-            }
-            const char* parts[4] = {
-                source,
-                versionLine > 0 ? "#define main prismaUserMain\n#line 2\n"
-                                : "#define main prismaUserMain\n#line 1\n",
-                source + versionLine,
-                "\n#undef main\nvoid main()\n{\n    prismaUserMain();\n"
-                "    gl_Position.z = 2.0 * gl_Position.z - gl_Position.w;\n}\n",
-            };
-            const GLint lengths[4] = { versionLine, -1, -1, -1 };
-            glShaderSource(shader.id, 4, parts, lengths);
-        }
-        else
-#endif
-            glShaderSource(shader.id, 1, &source, nullptr);
+        glShaderSource(shader.id, 1, &source, nullptr);
         glCompileShader(shader.id);
 
         GLint compiled = GL_FALSE;
@@ -786,6 +764,16 @@ public:
             log(message);
             glDeleteShader(shader.id);
             return ShaderHandle();
+        }
+        for (std::uint32_t i = 0; i < desc.bindingCount; ++i)
+        {
+            GLBinding& binding = shader.bindings[shader.bindingCount];
+            if (!desc.bindings[i].name || strlen(desc.bindings[i].name) >= sizeof(binding.name))
+                continue;
+            binding.kind = desc.bindings[i].kind;
+            binding.slot = desc.bindings[i].slot;
+            strcpy(binding.name, desc.bindings[i].name);
+            ++shader.bindingCount;
         }
         return handleCast<ShaderHandle>(shaders_.insert(shader));
     }
@@ -1131,7 +1119,10 @@ public:
             }
             glUniform1i(location, static_cast<GLint>(binding.slot));
         }
-        if (!mapStorageBuffers(pipeline.program, desc.storageBuffers, desc.storageBufferCount))
+        if (!mapStorageBuffers(pipeline.program, desc.storageBuffers, desc.storageBufferCount,
+                    true) ||
+                !applyBindings(pipeline.program, *vertex) ||
+                !applyBindings(pipeline.program, *fragment))
         {
             state_.programDeleted(pipeline.program);
             glDeleteProgram(pipeline.program);
@@ -1795,7 +1786,72 @@ private:
         return caps_.textureASTC;
     }
 
-    bool mapStorageBuffers(GLuint program, const StorageBinding* blocks, std::uint32_t count)
+    bool mapStorageTexture(GLuint program, const char* name, std::uint32_t slot, bool required)
+    {
+        const GLint location = glGetUniformLocation(program, name);
+        if (location < 0)
+        {
+            if (required) log("createComputePipeline: storage texture not found in the shader");
+            return true;
+        }
+#ifdef PRISMA_GLES
+        GLint unit = -1;
+        glGetUniformiv(program, location, &unit);
+        if (unit != static_cast<GLint>(slot))
+        {
+            log("createComputePipeline: on OpenGL ES a storage texture must declare "
+                "layout(binding = slot)");
+            return false;
+        }
+#else
+        glUniform1i(location, static_cast<GLint>(slot));
+#endif
+        return true;
+    }
+
+    bool applyBindings(GLuint program, const GLShader& shader)
+    {
+        if (shader.bindingCount == 0) return true;
+        state_.useProgram(program);
+        for (std::uint32_t i = 0; i < shader.bindingCount; ++i)
+        {
+            const GLBinding& binding = shader.bindings[i];
+            switch (binding.kind)
+            {
+                case BindingKind::UniformBlock:
+                {
+                    const GLuint index = glGetUniformBlockIndex(program, binding.name);
+                    if (index != GL_INVALID_INDEX)
+                        glUniformBlockBinding(program, index, binding.slot);
+                    break;
+                }
+                case BindingKind::Texture:
+                {
+                    const GLint location = glGetUniformLocation(program, binding.name);
+                    if (location >= 0) glUniform1i(location, static_cast<GLint>(binding.slot));
+                    break;
+                }
+                case BindingKind::StorageBuffer:
+                {
+                    StorageBinding block;
+                    block.name = binding.name;
+                    block.slot = binding.slot;
+                    if (!caps_.compute || !mapStorageBuffers(program, &block, 1, false))
+                        return false;
+                    break;
+                }
+                case BindingKind::StorageTexture:
+                    if (!caps_.compute ||
+                            !mapStorageTexture(program, binding.name, binding.slot, false))
+                        return false;
+                    break;
+            }
+        }
+        return true;
+    }
+
+    bool mapStorageBuffers(GLuint program, const StorageBinding* blocks, std::uint32_t count,
+            bool required)
     {
         for (std::uint32_t i = 0; i < count; ++i)
         {
@@ -1803,7 +1859,7 @@ private:
                     glGetProgramResourceIndex(program, GL_SHADER_STORAGE_BLOCK, blocks[i].name);
             if (index == GL_INVALID_INDEX)
             {
-                log("createPipeline: storage block not found in the shaders");
+                if (required) log("createPipeline: storage block not found in the shaders");
                 continue;
             }
 #ifdef PRISMA_GLES

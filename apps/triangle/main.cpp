@@ -2,29 +2,11 @@
 
 #include <stdlib.h>
 
-#ifdef PRISMA_APP_SPIRV
 #include "triangle.frag.h"
 #include "triangle.vert.h"
-#endif
 
 namespace
 {
-
-const char* kVertexSource = ZENAPP_SHADER_HEADER "layout(location = 0) in vec2 aPosition;\n"
-                                                 "layout(location = 1) in vec3 aColor;\n"
-                                                 "out vec3 vColor;\n"
-                                                 "void main()\n"
-                                                 "{\n"
-                                                 "    vColor = aColor;\n"
-                                                 "    gl_Position = vec4(aPosition, 0.5, 1.0);\n"
-                                                 "}\n";
-
-const char* kFragmentSource = ZENAPP_SHADER_HEADER "in vec3 vColor;\n"
-                                                   "out vec4 oColor;\n"
-                                                   "void main()\n"
-                                                   "{\n"
-                                                   "    oColor = vec4(vColor, 1.0);\n"
-                                                   "}\n";
 
 struct Vertex
 {
@@ -73,21 +55,8 @@ int main(int argc, char** argv)
     bufferDesc.debugName = "triangle vertices";
     const prisma::BufferHandle vertexBuffer = driver->createBuffer(bufferDesc);
 
-    prisma::ShaderDesc shaderDesc;
-    shaderDesc.stage = prisma::ShaderStage::Vertex;
-    shaderDesc.source = kVertexSource;
-#ifdef PRISMA_APP_SPIRV
-    shaderDesc.spirv = triangle_vert;
-    shaderDesc.spirvSize = sizeof(triangle_vert);
-#endif
-    const prisma::ShaderHandle vertexShader = driver->createShader(shaderDesc);
-    shaderDesc.stage = prisma::ShaderStage::Fragment;
-    shaderDesc.source = kFragmentSource;
-#ifdef PRISMA_APP_SPIRV
-    shaderDesc.spirv = triangle_frag;
-    shaderDesc.spirvSize = sizeof(triangle_frag);
-#endif
-    const prisma::ShaderHandle fragmentShader = driver->createShader(shaderDesc);
+    const prisma::ShaderHandle vertexShader = zenapp::createShader(driver, triangle_vert);
+    const prisma::ShaderHandle fragmentShader = zenapp::createShader(driver, triangle_frag);
 
     prisma::PipelineDesc pipelineDesc;
     pipelineDesc.vertexShader = vertexShader;

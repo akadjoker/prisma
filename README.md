@@ -5,10 +5,15 @@ A rendering backend library in C++14. It gives one interface over OpenGL 4.6, Op
 ## Features
 
 - One `Driver` interface for every backend.
-- Buffers (vertex, index, uniform), textures (2D, 2D array, cube, 3D), samplers with anisotropic filtering, shaders and pipelines, all referenced by 32-bit handles.
+- Buffers (vertex, index, uniform, storage, indirect), textures (2D, 2D array, cube, cube array, 3D), samplers with anisotropic filtering and depth comparison, shaders and pipelines, all referenced by 32-bit handles.
+- Compressed textures (BC1-7, ETC2/EAC, ASTC), partial texture updates, copies between textures and between buffers.
 - Several vertex buffers per pipeline, compact vertex formats and instancing.
-- Pipelines carry depth, cull and blend state.
+- Pipelines carry depth, stencil, cull, blend, colour mask and depth bias state.
 - Render passes with load and store operations, drawing to the window or to offscreen targets: several colour targets, depth, HDR and sRGB formats, any mip level or layer of a texture.
+- Multisampled render targets resolved at the end of the pass.
+- Compute pipelines, storage buffers and storage textures, indirect draws and indirect dispatch.
+- Occlusion queries and GPU time queries whose results never block.
+- Shaders written once: the build turns each one into SPIR-V, GLSL 4.60 and GLSL ES, together with the list of resources it binds.
 - Pixel readback from the window or from a texture.
 - Viewport and scissor with a top-left origin.
 - The same conventions on every backend: clip depth from 0 to 1, linear colour with sRGB encoding on sRGB targets.
@@ -33,6 +38,8 @@ The same test, with checks made by reading pixels back, runs on OpenGL 4.6, Open
 
 Requires CMake 3.21, a C++14 compiler and the OpenGL development files. The Vulkan backend is built when the Vulkan SDK is found.
 
+The samples and the GPU tests also need `glslangValidator` (it comes with the Vulkan SDK and with the `glslang-tools` package) to compile their shaders. `spirv-cross` is taken from the system when installed and built from the submodule otherwise. The library itself needs neither.
+
 ```sh
 git clone --recursive https://github.com/akadjoker/prisma.git
 cd prisma
@@ -48,6 +55,23 @@ ctest --test-dir build
 | `PRISMA_VULKAN` | `ON` when Vulkan is found | Build the Vulkan backend |
 | `PRISMA_BUILD_APPS` | `ON` | Build the samples |
 | `PRISMA_BUILD_TESTS` | `ON` | Build the tests |
+
+## Shaders
+
+A shader is written once, in GLSL for Vulkan (`#version 450`). Uniform blocks use set 0, textures set 1, storage buffers set 2 and storage textures set 3, and the binding number is the slot the application binds to.
+
+```cmake
+include(cmake/PrismaShaders.cmake)
+prisma_shaders(my_target shaders/mesh.vert shaders/mesh.frag)
+```
+
+Each file becomes a header with a `prisma::ShaderBlob` named after the file (`mesh_vert`, `mesh_frag`):
+
+```cpp
+#include "mesh.vert.h"
+
+prisma::ShaderHandle shader = driver->createShader(prisma::shaderDesc(mesh_vert, driver->caps()));
+```
 
 ## Samples
 
@@ -105,6 +129,7 @@ The library never calls the window library. The application fills `GLPlatform` o
 | `external/containers` | the library |
 | `external/zen_plataform` | samples and tests (window and input) |
 | `external/math` | samples |
+| `external/SPIRV-Cross` | the build only: turns SPIR-V into GLSL for the samples and tests (Apache-2.0) |
 
 ## License
 
