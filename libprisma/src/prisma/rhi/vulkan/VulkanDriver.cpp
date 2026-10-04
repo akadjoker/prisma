@@ -59,6 +59,7 @@ struct VulkanBuffer
     bool gpuWritten = false;
     BufferUsage usage = BufferUsage::Vertex;
     IndexFormat indexFormat = IndexFormat::UInt16;
+    ct::Vector<unsigned char> shadow;
 };
 
 struct VulkanShader
@@ -741,7 +742,14 @@ public:
         const bool visible = desc.update != BufferUpdate::Static;
         if (!createVersion(buffer, desc.debugName, visible)) return BufferHandle();
         buffer.gpuWritten = !visible;
-        if (desc.data && visible) memcpy(buffer.versions[0].mapped, desc.data, desc.size);
+        if (visible)
+        {
+            buffer.shadow.resize(desc.size);
+            if (desc.data) memcpy(buffer.shadow.data(), desc.data, desc.size);
+            else
+                memset(buffer.shadow.data(), 0, desc.size);
+            memcpy(buffer.versions[0].mapped, buffer.shadow.data(), desc.size);
+        }
         if (desc.data && !visible)
         {
             const VkBuffer staging = stagingBuffer(desc.data, desc.size);
@@ -887,6 +895,7 @@ public:
             return;
         }
 
+        memcpy(buffer->shadow.data() + offset, data, size);
         const std::uint32_t previous = buffer->current;
         if (buffer->versions[previous].lastUsedFrame != kNeverUsed)
         {
@@ -904,13 +913,10 @@ public:
             }
             if (next != previous)
             {
-                const char* from = static_cast<const char*>(buffer->versions[previous].mapped);
-                char* to = static_cast<char*>(buffer->versions[next].mapped);
-                const std::uint32_t end = offset + size;
-                if (offset > 0) memcpy(to, from, offset);
-                if (end < buffer->size) memcpy(to + end, from + end, buffer->size - end);
+                memcpy(buffer->versions[next].mapped, buffer->shadow.data(), buffer->size);
                 buffer->versions[next].lastUsedFrame = kNeverUsed;
                 buffer->current = next;
+                return;
             }
         }
         memcpy(static_cast<char*>(buffer->versions[buffer->current].mapped) + offset, data, size);
