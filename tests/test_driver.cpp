@@ -19,6 +19,9 @@
 #include "instanced.frag.h"
 #include "instanced.vert.h"
 #include "lod.frag.h"
+#include <ct/vector.hpp>
+
+#include "blocks.frag.h"
 #include "no_buffer.vert.h"
 #include "notch.tesc.h"
 #include "notch.tese.h"
@@ -1398,6 +1401,57 @@ int main(int argc, char** argv)
             CHECK(messages == 0);
             if (messages) printf("unexpected: %s\n", lastMessage);
             driver->destroy(many);
+        }
+
+        {
+            const ShaderHandle blocksVertex = makeShader(driver, no_buffer_vert);
+            const ShaderHandle blocksFragment = makeShader(driver, blocks_frag);
+            PipelineDesc blocksDesc;
+            blocksDesc.vertexShader = blocksVertex;
+            blocksDesc.fragmentShader = blocksFragment;
+            blocksDesc.debugName = "six uniform blocks";
+            messages = 0;
+            const PipelineHandle blocksPipeline = driver->createPipeline(blocksDesc);
+            CHECK(blocksPipeline.valid());
+            CHECK(messages == 0);
+            if (messages) printf("unexpected: %s\n", lastMessage);
+
+            const std::uint32_t blockStride =
+                    (16 + driver->caps().uniformBufferOffsetAlignment - 1) /
+                    driver->caps().uniformBufferOffsetAlignment *
+                    driver->caps().uniformBufferOffsetAlignment;
+            ct::Vector<unsigned char> blockBytes;
+            blockBytes.resize(blockStride * 6);
+            memset(blockBytes.data(), 0, blockBytes.size());
+            const float blockValues[6][4] = { { 0.1f, 0, 0, 0 }, { 0, 0.2f, 0, 0 },
+                { 0, 0, 0.3f, 0 }, { 0, 0, 0, 0 }, { 0, 0.1f, 0, 0 }, { 0.2f, 0, 0, 0 } };
+            const float fourth[4] = { 0, 0, 0.4f, 0 };
+            memcpy(blockBytes.data() + 0 * blockStride, blockValues[0], 16);
+            memcpy(blockBytes.data() + 1 * blockStride, blockValues[1], 16);
+            memcpy(blockBytes.data() + 2 * blockStride, blockValues[2], 16);
+            memcpy(blockBytes.data() + 3 * blockStride, fourth, 16);
+            memcpy(blockBytes.data() + 4 * blockStride, blockValues[4], 16);
+            memcpy(blockBytes.data() + 5 * blockStride, blockValues[5], 16);
+            BufferDesc blocksBufferDesc;
+            blocksBufferDesc.usage = BufferUsage::Uniform;
+            blocksBufferDesc.size = static_cast<std::uint32_t>(blockBytes.size());
+            blocksBufferDesc.data = blockBytes.data();
+            const BufferHandle blocksBuffer = driver->createBuffer(blocksBufferDesc);
+            CHECK(blocksBuffer.valid());
+
+            driver->beginRenderPass(black);
+            driver->bindPipeline(blocksPipeline);
+            const std::uint32_t slots[6] = { 0, 1, 2, 3, 5, 9 };
+            for (std::uint32_t i = 0; i < 6; ++i)
+                driver->bindUniformBuffer(slots[i], blocksBuffer, i * blockStride, 16);
+            driver->draw(3, 0);
+            driver->endRenderPass();
+            CHECK(pixelIs(160, 120, 77, 77, 179, 2));
+            CHECK(messages == 0);
+            driver->destroy(blocksBuffer);
+            driver->destroy(blocksPipeline);
+            driver->destroy(blocksVertex);
+            driver->destroy(blocksFragment);
         }
 
         driver->beginRenderPass(mipPass);

@@ -780,6 +780,7 @@ public:
             return PipelineHandle();
         }
 
+        slotOverflow_ = false;
         VulkanPipeline pipeline;
         pipeline.compute = true;
         pipeline.uniformCount = desc.uniformBlockCount;
@@ -805,6 +806,7 @@ public:
         mergeSlots(pipeline.imageSlots, pipeline.imageCount,
                 ComputePipelineDesc::kMaxStorageTextures, ComputePipelineDesc::kMaxStorageTextures,
                 *shader, BindingKind::StorageTexture);
+        if (slotOverflow_) return PipelineHandle();
         sortSlots(pipeline.uniformSlots, pipeline.uniformCount);
         sortSlots(pipeline.textureSlots, pipeline.textureCount);
 
@@ -1163,6 +1165,7 @@ public:
         for (std::uint32_t i = 0; i < desc.vertexBufferCount; ++i)
             pipeline.vertexBuffers[i] = desc.vertexBuffers[i];
 
+        slotOverflow_ = false;
         pipeline.uniformCount = desc.uniformBlockCount;
         for (std::uint32_t i = 0; i < desc.uniformBlockCount; ++i)
             pipeline.uniformSlots[i] = desc.uniformBlocks[i].slot;
@@ -1182,6 +1185,7 @@ public:
             mergeSlots(pipeline.uniformSlots, pipeline.uniformCount,
                     PipelineDesc::kMaxUniformBlocks, kMaxUniformSlots, *evaluation,
                     BindingKind::UniformBlock);
+        if (slotOverflow_) return PipelineHandle();
         for (std::uint32_t i = 1; i < pipeline.uniformCount; ++i)
             for (std::uint32_t j = i;
                     j > 0 && pipeline.uniformSlots[j - 1] > pipeline.uniformSlots[j]; --j)
@@ -1226,6 +1230,11 @@ public:
         if (evaluation)
             mergeSlots(pipeline.textureSlots, pipeline.textureCount, PipelineDesc::kMaxTextures,
                     kMaxTextureSlots, *evaluation, BindingKind::Texture);
+        if (slotOverflow_)
+        {
+            vkDestroyDescriptorSetLayout(device_, pipeline.setLayout, nullptr);
+            return PipelineHandle();
+        }
         for (std::uint32_t i = 1; i < pipeline.textureCount; ++i)
             for (std::uint32_t j = i;
                     j > 0 && pipeline.textureSlots[j - 1] > pipeline.textureSlots[j]; --j)
@@ -1274,6 +1283,12 @@ public:
             mergeSlots(pipeline.storageSlots, pipeline.storageCount,
                     PipelineDesc::kMaxStorageBuffers, PipelineDesc::kMaxStorageBuffers, *evaluation,
                     BindingKind::StorageBuffer);
+        if (slotOverflow_)
+        {
+            vkDestroyDescriptorSetLayout(device_, pipeline.setLayout, nullptr);
+            vkDestroyDescriptorSetLayout(device_, pipeline.textureSetLayout, nullptr);
+            return PipelineHandle();
+        }
         if (!createSlotLayout(pipeline.storageSlots, pipeline.storageCount,
                     VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, graphicsStages(),
                     &pipeline.storageSetLayout))
@@ -3511,7 +3526,7 @@ private:
     }
 
     void mergeSlots(std::uint32_t* slots, std::uint32_t& count, std::uint32_t capacity,
-            std::uint32_t slotLimit, const VulkanShader& shader, BindingKind kind) const
+            std::uint32_t slotLimit, const VulkanShader& shader, BindingKind kind)
     {
         const std::uint32_t index = static_cast<std::uint32_t>(kind);
         for (std::uint32_t i = 0; i < shader.slotCount[index]; ++i)
@@ -3524,6 +3539,7 @@ private:
             if (count >= capacity || slot >= slotLimit)
             {
                 log("createPipeline: a shader uses too many bindings or a slot out of range");
+                slotOverflow_ = true;
                 continue;
             }
             slots[count++] = slot;
@@ -4374,6 +4390,7 @@ private:
 
     Frame frames_[kFramesInFlight];
     std::uint32_t frameIndex_ = 0;
+    bool slotOverflow_ = false;
     bool frameReady_ = false;
     bool passActive_ = false;
     bool computeActive_ = false;
