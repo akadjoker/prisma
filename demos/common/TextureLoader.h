@@ -182,13 +182,29 @@ inline prisma::TextureHandle createTextureFromDds(prisma::Driver* driver, const 
     desc.debugName = name;
 
     const bool autoMips = generateMips && info.mipLevels == 1 && !isBlockCompressed(format) &&
-                          info.type == prisma::TextureType::Texture2D && !info.swapRedBlue &&
+                          info.type == prisma::TextureType::Texture2D &&
                           format != prisma::TextureFormat::R32UInt;
     if (autoMips)
     {
         desc.mipLevels = 0;
         desc.generateMipmaps = true;
         desc.data = data + header.mip_offset(0, 0);
+        ct::Vector<unsigned char> swapped;
+        if (info.swapRedBlue)
+        {
+            const size_t bytes = static_cast<size_t>(header.mip_size(0));
+            swapped.resize(bytes);
+            for (size_t i = 0; i + 3 < bytes; i += 4)
+            {
+                swapped[i] = static_cast<const unsigned char*>(desc.data)[i + 2];
+                swapped[i + 1] = static_cast<const unsigned char*>(desc.data)[i + 1];
+                swapped[i + 2] = static_cast<const unsigned char*>(desc.data)[i];
+                swapped[i + 3] = info.opaqueAlpha
+                                         ? 255
+                                         : static_cast<const unsigned char*>(desc.data)[i + 3];
+            }
+            desc.data = swapped.data();
+        }
         return driver->createTexture(desc);
     }
 

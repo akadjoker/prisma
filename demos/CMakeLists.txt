@@ -19,11 +19,24 @@ function(prisma_demo folder name)
   endif()
 endfunction()
 
-prisma_demo(01_clear clear)
-prisma_demo(02_triangle triangle
-            SHADERS 02_triangle/shaders/triangle.vert 02_triangle/shaders/triangle.frag)
-prisma_demo(03_cube cube
-            SHADERS 03_cube/shaders/cube.vert 03_cube/shaders/cube.frag
-                    03_cube/shaders/copy.vert 03_cube/shaders/copy.frag)
-prisma_demo(04_two_cubes two_cubes
-            SHADERS 04_two_cubes/shaders/two_cubes.vert 04_two_cubes/shaders/two_cubes.frag)
+file(GLOB demo_folders RELATIVE ${CMAKE_CURRENT_SOURCE_DIR} CONFIGURE_DEPENDS
+     ${CMAKE_CURRENT_SOURCE_DIR}/[0-9][0-9]_*)
+list(SORT demo_folders)
+foreach(folder ${demo_folders})
+  if(NOT EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/${folder}/main.cpp)
+    continue()
+  endif()
+  string(REGEX REPLACE "^[0-9]+_" "" name ${folder})
+  file(GLOB shaders RELATIVE ${CMAKE_CURRENT_SOURCE_DIR} CONFIGURE_DEPENDS
+       ${CMAKE_CURRENT_SOURCE_DIR}/${folder}/shaders/*.vert
+       ${CMAKE_CURRENT_SOURCE_DIR}/${folder}/shaders/*.frag
+       ${CMAKE_CURRENT_SOURCE_DIR}/${folder}/shaders/*.comp
+       ${CMAKE_CURRENT_SOURCE_DIR}/${folder}/shaders/*.geom
+       ${CMAKE_CURRENT_SOURCE_DIR}/${folder}/shaders/*.tesc
+       ${CMAKE_CURRENT_SOURCE_DIR}/${folder}/shaders/*.tese)
+  if(shaders)
+    prisma_demo(${folder} ${name} SHADERS ${shaders})
+  else()
+    prisma_demo(${folder} ${name})
+  endif()
+endforeach()
