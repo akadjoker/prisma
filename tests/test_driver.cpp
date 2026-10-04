@@ -865,6 +865,47 @@ int main(int argc, char** argv)
             driver->destroy(edited);
         }
 
+        {
+            const std::uint32_t side = 2048;
+            ct::Vector<unsigned char> texels;
+            texels.resize(static_cast<size_t>(side) * side * 4);
+            TextureDesc largeDesc;
+            largeDesc.width = side;
+            largeDesc.height = side;
+            TextureHandle large[5];
+            messages = 0;
+            for (int t = 0; t < 5; ++t)
+            {
+                for (size_t i = 0; i < texels.size(); i += 4)
+                {
+                    texels[i] = static_cast<unsigned char>(40 * (t + 1));
+                    texels[i + 1] = static_cast<unsigned char>(200 - 30 * t);
+                    texels[i + 2] = static_cast<unsigned char>(10 * t);
+                    texels[i + 3] = 255;
+                }
+                largeDesc.data = texels.data();
+                large[t] = driver->createTexture(largeDesc);
+                CHECK(large[t].valid());
+            }
+            pump(window);
+            driver->beginFrame();
+            for (int t = 0; t < 5; ++t)
+            {
+                driver->beginRenderPass(black);
+                driver->bindPipeline(textured);
+                driver->bindVertexBuffer(0, buffer, 0);
+                driver->bindTexture(3, large[t], nearest);
+                driver->draw(3, 0);
+                driver->endRenderPass();
+                CHECK(pixelIs(160, 120, 40 * (t + 1), 200 - 30 * t, 10 * t));
+            }
+            driver->endFrame();
+            driver->present();
+            CHECK(messages == 0);
+            if (messages) printf("unexpected: %s\n", lastMessage);
+            for (int t = 0; t < 5; ++t) driver->destroy(large[t]);
+        }
+
         if (driver->caps().floatColorTargets)
         {
             TextureDesc hdrDesc;

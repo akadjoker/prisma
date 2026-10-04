@@ -16,6 +16,7 @@ namespace
 {
 
 const std::uint32_t kFramesInFlight = 2;
+const std::uint64_t kStagingBudget = 64u * 1024u * 1024u;
 const char* const kValidationLayer = "VK_LAYER_KHRONOS_validation";
 
 struct Frame
@@ -751,6 +752,7 @@ public:
                 region.size = desc.size;
                 vkCmdCopyBuffer(commands, staging, buffer.versions[0].buffer, 1, &region);
                 transferBarrier(commands);
+                stagingUsed(desc.size);
             }
         }
         return handleCast<BufferHandle>(buffers_.insert(buffer));
@@ -881,6 +883,7 @@ public:
             region.size = size;
             vkCmdCopyBuffer(commands, staging, version.buffer, 1, &region);
             transferBarrier(commands);
+            stagingUsed(size);
             return;
         }
 
@@ -2519,6 +2522,7 @@ public:
         submit.pSignalSemaphores = signals;
         if (vkQueueSubmit(queue_, 1, &submit, frame.inFlight) != VK_SUCCESS)
             log("Vulkan: could not submit the frame");
+        stagingBytes_ = 0;
 
         if (pendingTransfer_)
         {
@@ -3165,6 +3169,7 @@ private:
             buffers[count++] = frames_[frameIndex_].commands;
         }
         if (count == 0) return;
+        stagingBytes_ = 0;
 
         VkSemaphore waits[kMaxWindows];
         VkPipelineStageFlags stages[kMaxWindows];
@@ -3274,6 +3279,15 @@ private:
                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
         imageBarrier(commands, texture.image, VK_IMAGE_ASPECT_COLOR_BIT, mip, 1, firstLayer, 1,
                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        stagingUsed(staging.size);
+    }
+
+    void stagingUsed(std::uint64_t bytes)
+    {
+        stagingBytes_ += bytes;
+        if (frameReady_ || stagingBytes_ < kStagingBudget) return;
+        flush();
+        collectGarbage(true);
     }
 
     void recordMipmaps(const VulkanTexture& texture)
@@ -4412,6 +4426,7 @@ private:
     std::uint32_t passWidth_ = 0;
     std::uint32_t passHeight_ = 0;
     std::uint64_t frameNumber_ = 0;
+    std::uint64_t stagingBytes_ = 0;
 
     PFN_vkSetDebugUtilsObjectNameEXT setObjectName_ = nullptr;
 
