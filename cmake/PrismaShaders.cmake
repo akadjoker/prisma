@@ -24,7 +24,7 @@ else()
 endif()
 
 function(prisma_shaders target)
-  set(directory ${CMAKE_CURRENT_BINARY_DIR}/shaders)
+  set(directory ${CMAKE_CURRENT_BINARY_DIR}/shaders/${target})
   foreach(shader ${ARGN})
     get_filename_component(name ${shader} NAME)
     string(REPLACE "." "_" variable ${name})

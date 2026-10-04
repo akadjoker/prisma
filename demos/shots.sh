@@ -37,5 +37,8 @@ done <<LIST
 15_soldier soldier 10
 16_tessellation tessellation 10
 17_point_sprites point_sprites 10
+21_pn_triangles pn_triangles 10
+22_displacement displacement 10
+23_fluid fluid 400
 LIST
 exit $status
