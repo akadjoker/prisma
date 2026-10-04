@@ -42,14 +42,14 @@ int main(int argc, char** argv)
 
     if (!platform_init())
     {
-        printf("platform: %s\n", platform_get_error());
+        log_error("platform: %s", platform_get_error());
         return 1;
     }
 
     PlatformWindow* window = zenapp::openWindow("prisma triangle", driverType);
     if (!window)
     {
-        printf("window: %s\n", platform_get_error());
+        log_error("window: %s", platform_get_error());
         platform_shutdown();
         return 1;
     }
@@ -94,7 +94,7 @@ int main(int argc, char** argv)
     driver->destroy(fragmentShader);
 
     const bool ready = vertexBuffer.valid() && pipeline.valid();
-    if (!ready) printf("triangle: resource creation failed\n");
+    if (!ready) log_error("triangle: resource creation failed");
 
     prisma::RenderPassDesc pass;
     pass.clearColor[0] = 0.08f;

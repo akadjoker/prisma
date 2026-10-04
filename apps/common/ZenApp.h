@@ -3,12 +3,11 @@
 #include "platform.h"
 #include "prisma/rhi/Driver.h"
 
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #ifdef PRISMA_GLES
-#define ZENAPP_SHADER_HEADER "#version 300 es\nprecision mediump float;\n"
+#define ZENAPP_SHADER_HEADER "#version 300 es\nprecision highp float;\n"
 #else
 #define ZENAPP_SHADER_HEADER "#version 460 core\n"
 #endif
@@ -69,19 +68,20 @@ inline bool createSurface(void* user, void* instance, std::uint64_t* surface)
     return vulkan_create_surface(static_cast<PlatformWindow*>(user), instance, nullptr, surface);
 }
 
-inline void log(const char* message) { printf("prisma: %s\n", message); }
+inline void log(const char* message) { log_error("prisma: %s", message); }
 
-inline PlatformWindow* openWindow(const char* title, prisma::DriverType type)
+inline PlatformWindow* openWindowEx(const char* title, prisma::DriverType type, int width,
+        int height, int x, int y, int monitor, bool resizable, bool vsync)
 {
     WindowConfig config = {};
     config.title = title;
-    config.width = 1280;
-    config.height = 720;
-    config.x = WINDOW_POS_CENTERED;
-    config.y = WINDOW_POS_CENTERED;
-    config.monitor = MONITOR_CURRENT;
-    config.resizable = true;
-    config.vsync = true;
+    config.width = width;
+    config.height = height;
+    config.x = x;
+    config.y = y;
+    config.monitor = monitor;
+    config.resizable = resizable;
+    config.vsync = vsync;
 
     if (type == prisma::DriverType::Vulkan)
     {
@@ -110,6 +110,12 @@ inline PlatformWindow* openWindow(const char* title, prisma::DriverType type)
 #endif
 }
 
+inline PlatformWindow* openWindow(const char* title, prisma::DriverType type)
+{
+    return openWindowEx(title, type, 1280, 720, WINDOW_POS_CENTERED, WINDOW_POS_CENTERED,
+            MONITOR_CURRENT, true, true);
+}
+
 inline prisma::Driver* createDriver(PlatformWindow* window, prisma::DriverType type)
 {
     prisma::GLPlatform gl;
@@ -134,7 +140,7 @@ inline prisma::Driver* createDriver(PlatformWindow* window, prisma::DriverType t
 
     prisma::DriverError error = prisma::DriverError::None;
     prisma::Driver* driver = prisma::createDriver(desc, &error);
-    if (!driver) printf("driver: %s\n", prisma::driverErrorText(error));
+    if (!driver) log_error("driver: %s", prisma::driverErrorText(error));
     return driver;
 }
 

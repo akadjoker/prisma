@@ -145,14 +145,14 @@ int main(int argc, char** argv)
 
     if (!platform_init())
     {
-        printf("platform: %s\n", platform_get_error());
+        log_error("platform: %s", platform_get_error());
         return 1;
     }
 
     PlatformWindow* window = zenapp::openWindow("prisma cube", driverType);
     if (!window)
     {
-        printf("window: %s\n", platform_get_error());
+        log_error("window: %s", platform_get_error());
         platform_shutdown();
         return 1;
     }
@@ -260,7 +260,7 @@ int main(int argc, char** argv)
 
     const bool ready = vertexBuffer.valid() && indexBuffer.valid() && uniformBuffer.valid() &&
                        pipeline.valid() && texture.valid() && sampler.valid();
-    if (!ready) printf("cube: resource creation failed\n");
+    if (!ready) log_error("cube: resource creation failed");
 
     const std::uint32_t kTargetWidth = 320;
     const std::uint32_t kTargetHeight = 180;

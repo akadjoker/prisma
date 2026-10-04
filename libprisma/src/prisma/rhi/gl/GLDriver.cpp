@@ -285,10 +285,15 @@ public:
 #endif
 
         glGenVertexArrays(1, &scratchVertexArray_);
+#ifndef PRISMA_GLES
+        glEnable(GL_PRIMITIVE_RESTART_FIXED_INDEX);
+        glEnable(GL_PROGRAM_POINT_SIZE);
+#endif
     }
 
     ~GLDriver() override
     {
+        if (debug_) glDebugMessageCallback(nullptr, nullptr);
         for (GLPipeline& pipeline: pipelines_)
         {
             glDeleteProgram(pipeline.program);
@@ -325,7 +330,7 @@ public:
             std::uint32_t size) override
     {
         const GLBuffer* buffer = buffers_.get(handleCast<BufferSlot>(handle));
-        if (!buffer || !data || offset + size > buffer->size)
+        if (!buffer || !data || static_cast<std::uint64_t>(offset) + size > buffer->size)
         {
             log("updateBuffer: invalid buffer handle or range");
             return;
@@ -581,6 +586,11 @@ public:
             state_.bindFramebuffer(0);
         }
         passActive_ = true;
+        pipeline_ = PipelineHandle();
+        vertexBuffer_ = BufferHandle();
+        indexBuffer_ = BufferHandle();
+        vertexDirty_ = true;
+        indexDirty_ = true;
         passWidth_ = width;
         passHeight_ = height;
         state_.viewport(0, 0, static_cast<std::int32_t>(width), static_cast<std::int32_t>(height));
@@ -650,7 +660,8 @@ public:
             std::uint32_t size) override
     {
         const GLBuffer* buffer = buffers_.get(handleCast<BufferSlot>(handle));
-        if (!buffer || buffer->usage != BufferUsage::Uniform || offset + size > buffer->size ||
+        if (!buffer || buffer->usage != BufferUsage::Uniform || size == 0 ||
+                static_cast<std::uint64_t>(offset) + size > buffer->size ||
                 slot >= GLState::kMaxUniformSlots)
         {
             log("bindUniformBuffer: invalid buffer handle, range or slot");
@@ -675,7 +686,8 @@ public:
 
     void draw(std::uint32_t vertexCount, std::uint32_t firstVertex) override
     {
-        const GLPipeline* pipeline = prepareDraw();
+        const GLPipeline* pipeline =
+                prepareDraw(static_cast<std::uint64_t>(firstVertex) + vertexCount);
         if (!pipeline) return;
         glDrawArrays(pipeline->topology, static_cast<GLint>(firstVertex),
                 static_cast<GLsizei>(vertexCount));
@@ -683,7 +695,7 @@ public:
 
     void drawIndexed(std::uint32_t indexCount, std::uint32_t firstIndex) override
     {
-        const GLPipeline* pipeline = prepareDraw();
+        const GLPipeline* pipeline = prepareDraw(0);
         if (!pipeline) return;
 
         const GLBuffer* indices = buffers_.get(handleCast<BufferSlot>(indexBuffer_));
@@ -844,14 +856,29 @@ private:
         return GL_ARRAY_BUFFER;
     }
 
-    const GLPipeline* prepareDraw()
+    const GLPipeline* prepareDraw(std::uint64_t vertexEnd)
     {
         const GLPipeline* pipeline = pipelines_.get(handleCast<PipelineSlot>(pipeline_));
-        const GLBuffer* buffer = buffers_.get(handleCast<BufferSlot>(vertexBuffer_));
-        if (!passActive_ || !pipeline || !buffer || buffer->usage != BufferUsage::Vertex)
+        if (!passActive_ || !pipeline)
         {
-            log("draw: no active render pass, pipeline or vertex buffer");
+            log("draw: no active render pass or no pipeline bound in this pass");
             return nullptr;
+        }
+
+        const GLBuffer* buffer = nullptr;
+        if (pipeline->attributeCount > 0)
+        {
+            buffer = buffers_.get(handleCast<BufferSlot>(vertexBuffer_));
+            if (!buffer || buffer->usage != BufferUsage::Vertex)
+            {
+                log("draw: the pipeline has vertex attributes and no vertex buffer is bound");
+                return nullptr;
+            }
+            if (vertexOffset_ + vertexEnd * pipeline->vertexStride > buffer->size)
+            {
+                log("draw: vertex range is outside the vertex buffer");
+                return nullptr;
+            }
         }
 
         state_.useProgram(pipeline->program);
@@ -866,7 +893,7 @@ private:
                     pipeline->blendFunc[3]);
 
         state_.bindVertexArray(pipeline->vertexArray);
-        if (vertexDirty_)
+        if (buffer && vertexDirty_)
         {
             state_.bindArrayBuffer(buffer->id);
             for (std::uint32_t i = 0; i < pipeline->attributeCount; ++i)

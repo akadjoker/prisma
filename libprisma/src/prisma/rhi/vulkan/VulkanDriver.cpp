@@ -104,8 +104,10 @@ public:
         std::uint32_t height = 0;
         platform_.framebufferSize(platform_.user, &width, &height);
         if (width == 0 || height == 0) return;
-        if (!swapchain_ || width != extent_.width || height != extent_.height)
+        if (!swapchain_ || width != requestedWidth_ || height != requestedHeight_)
         {
+            requestedWidth_ = width;
+            requestedHeight_ = height;
             if (!createSwapchain()) return;
         }
 
@@ -147,9 +149,10 @@ public:
 
         VkCommandBuffer commands = frames_[frameIndex_].commands;
         SwapchainImage& target = images_[imageIndex_];
-        transition(commands, target,
-                desc.colorLoad == LoadOp::Load ? target.layout : VK_IMAGE_LAYOUT_UNDEFINED,
-                VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+        if (target.layout != VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL)
+            transition(commands, target,
+                    desc.colorLoad == LoadOp::Load ? target.layout : VK_IMAGE_LAYOUT_UNDEFINED,
+                    VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
 
         VkRenderingAttachmentInfo color = {};
         color.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
@@ -224,8 +227,7 @@ public:
         info.pImageIndices = &imageIndex_;
         const VkResult presented = vkQueuePresentKHR(queue_, &info);
         frameIndex_ = (frameIndex_ + 1) % kFramesInFlight;
-        if (presented == VK_ERROR_OUT_OF_DATE_KHR || presented == VK_SUBOPTIMAL_KHR)
-            createSwapchain();
+        if (presented == VK_ERROR_OUT_OF_DATE_KHR) createSwapchain();
     }
 
 private:
@@ -641,6 +643,8 @@ private:
     Frame frames_[kFramesInFlight];
     std::uint32_t frameIndex_ = 0;
     std::uint32_t imageIndex_ = 0;
+    std::uint32_t requestedWidth_ = 0;
+    std::uint32_t requestedHeight_ = 0;
     bool frameReady_ = false;
     bool passActive_ = false;
 };

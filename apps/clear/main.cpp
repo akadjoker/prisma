@@ -9,14 +9,14 @@ int main(int argc, char** argv)
 
     if (!platform_init())
     {
-        printf("platform: %s\n", platform_get_error());
+        log_error("platform: %s", platform_get_error());
         return 1;
     }
 
     PlatformWindow* window = zenapp::openWindow("prisma clear", driverType);
     if (!window)
     {
-        printf("window: %s\n", platform_get_error());
+        log_error("window: %s", platform_get_error());
         platform_shutdown();
         return 1;
     }
@@ -30,7 +30,7 @@ int main(int argc, char** argv)
     }
 
     const prisma::Caps& caps = driver->caps();
-    printf("%s %u.%u: max texture %u, max color targets %u, compute %d, debug %d\n",
+    log_info("%s %u.%u: max texture %u, max color targets %u, compute %d, debug %d",
             driver->type() == prisma::DriverType::Vulkan ? "Vulkan"
             : caps.gles                                  ? "OpenGL ES"
                                                          : "OpenGL",

@@ -6,7 +6,7 @@
 #include <string.h>
 
 #ifdef PRISMA_GLES
-#define SHADER_HEADER "#version 300 es\nprecision mediump float;\n"
+#define SHADER_HEADER "#version 300 es\nprecision highp float;\n"
 #else
 #define SHADER_HEADER "#version 460 core\n"
 #endif
@@ -84,6 +84,13 @@ const char* kTwoTargetsFragmentSource = SHADER_HEADER
         "layout(location = 0) out vec4 oFirst;\n"
         "layout(location = 1) out vec4 oSecond;\n"
         "void main() { oFirst = vec4(1.0, 0.0, 0.0, 1.0); oSecond = vec4(0.0, 1.0, 0.0, 1.0); }\n";
+
+const char* kNoBufferVertexSource = SHADER_HEADER
+        "void main()\n"
+        "{\n"
+        "    vec2 corner = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));\n"
+        "    gl_Position = vec4(corner * 2.0 - 1.0, 0.0, 1.0);\n"
+        "}\n";
 
 const unsigned char kFourTexels[16] = {
     255,
@@ -393,6 +400,40 @@ int main()
         driver->present();
         CHECK(messages == 0);
         if (messages) printf("unexpected: %s\n", lastMessage);
+
+        ShaderDesc noBufferDesc;
+        noBufferDesc.source = kNoBufferVertexSource;
+        const ShaderHandle noBufferVertex = driver->createShader(noBufferDesc);
+        PipelineDesc noBufferPipelineDesc;
+        noBufferPipelineDesc.vertexShader = noBufferVertex;
+        noBufferPipelineDesc.fragmentShader = fragmentShader;
+        const PipelineHandle noBuffer = driver->createPipeline(noBufferPipelineDesc);
+        CHECK(noBuffer.valid());
+
+        messages = 0;
+        window_begin_frame(window);
+        driver->beginFrame();
+        driver->beginRenderPass(black);
+        driver->draw(3, 0);
+        CHECK(messages == 1);
+        messages = 0;
+        driver->bindPipeline(noBuffer);
+        driver->draw(3, 0);
+        CHECK(pixelIs(160, 120, 255, 0, 0));
+        CHECK(pixelIs(2, 2, 255, 0, 0));
+        CHECK(messages == 0);
+        driver->bindPipeline(pipeline);
+        driver->bindVertexBuffer(buffer, 0);
+        driver->draw(1000, 0);
+        CHECK(messages == 1);
+        messages = 0;
+        driver->updateBuffer(params, 0xFFFFFFF0u, &green, 0x20u);
+        CHECK(messages == 1);
+        driver->endRenderPass();
+        driver->endFrame();
+        driver->present();
+        driver->destroy(noBuffer);
+        driver->destroy(noBufferVertex);
 
         TextureDesc textureDesc;
         textureDesc.width = 2;
