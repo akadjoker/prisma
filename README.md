@@ -77,22 +77,41 @@ prisma::ShaderHandle shader = driver->createShader(prisma::shaderDesc(mesh_vert,
 
 ## Demos
 
-```sh
-./build/demos/clear            # a window cleared to one colour
-./build/demos/triangle         # one triangle
-./build/demos/cube             # a spinning textured cube
-./build/demos/cube offscreen   # the cube drawn to an HDR target, then copied to the window
-./build/demos/cube vulkan      # any demo runs on Vulkan with this argument
-```
+Numbered, one concept each. Run any of them on Vulkan with the `vulkan` argument; a number sets the number of frames; `still` freezes time.
 
-Escape closes a demo.
+| Demo | Shows |
+|---|---|
+| `01_clear` | a window cleared to one colour |
+| `02_triangle` | one triangle |
+| `03_cube` | a textured cube, `offscreen` draws it to an HDR target first |
+| `04_two_cubes` | depth testing, several draws sharing one uniform buffer |
+| `05_lighting` | two directional lights |
+| `06_texture` | a DDS texture with mip chain and anisotropy |
+| `07_model` | a mesh file with materials and textures |
+| `08_reflection` | cube map reflection |
+| `09_blend_stencil` | blend modes and stencil masks |
+| `10_instancing` | 4000 cubes in one draw |
+| `11_offscreen_msaa` | multisampled offscreen target with resolve |
+| `12_particles` | 16384 particles simulated by a compute shader |
+| `13_hdr` | HDR scene, bloom and tone mapping |
+| `14_shadow_map` | shadow mapping with a comparison sampler |
+| `15_soldier` | animated skinned characters |
+| `16_tessellation` | a Bezier surface on the tessellator |
+| `17_point_sprites` | a geometry shader turns points into quads |
+
+The demos that load meshes and textures read them from a media folder: set `PRISMA_MEDIA` or the CMake option `PRISMA_MEDIA_DIR`. A demo whose feature is missing on the GPU prints a line and exits.
+
+```sh
+./build/demos/cube
+./build/demos/particles vulkan
+```
 
 ## Layout
 
 ```text
 libprisma/include/prisma/rhi/   public headers: Driver.h, Types.h, Caps.h
 libprisma/src/prisma/rhi/       backends: gl/, vulkan/, null/
-demos/                          numbered demos (01_clear, 02_triangle, 03_cube)
+demos/                          numbered demos and their loaders
 tests/                          tests
 external/                       submodules
 ```
