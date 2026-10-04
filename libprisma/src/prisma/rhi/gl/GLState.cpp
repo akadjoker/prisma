@@ -312,6 +312,14 @@ void GLState::depthBias(float constant, float slope)
     known_ |= kDepthBias;
 }
 
+void GLState::alphaToCoverage(bool enabled)
+{
+    if (same(kAlphaToCoverage, alphaToCoverage_, enabled)) return;
+    if (enabled) glEnable(GL_SAMPLE_ALPHA_TO_COVERAGE);
+    else
+        glDisable(GL_SAMPLE_ALPHA_TO_COVERAGE);
+}
+
 void GLState::wireframe(bool enabled)
 {
 #ifdef PRISMA_GLES

@@ -1083,6 +1083,7 @@ public:
 
         VkPipelineMultisampleStateCreateInfo multisample = {};
         multisample.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+        multisample.alphaToCoverageEnable = desc.alphaToCoverage;
         multisample.rasterizationSamples =
                 desc.targets.window ? VK_SAMPLE_COUNT_1_BIT : toSampleCount(desc.targets.samples);
 

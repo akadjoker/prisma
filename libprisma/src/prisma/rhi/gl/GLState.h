@@ -60,6 +60,7 @@ public:
     void clearStencil(std::uint32_t value);
     void depthBias(float constant, float slope);
     void wireframe(bool enabled);
+    void alphaToCoverage(bool enabled);
     void blendFunc(std::uint32_t srcColor, std::uint32_t dstColor, std::uint32_t srcAlpha,
             std::uint32_t dstAlpha);
 
@@ -99,7 +100,8 @@ private:
         kStencil = 1u << 23,
         kClearStencil = 1u << 24,
         kDepthBias = 1u << 25,
-        kWireframe = 1u << 26
+        kWireframe = 1u << 26,
+        kAlphaToCoverage = 1u << 27
     };
 
     struct UniformRange
@@ -149,6 +151,7 @@ private:
     std::uint32_t clearStencil_ = 0;
     float depthBias_[2] = { 0.0f, 0.0f };
     bool wireframe_ = false;
+    bool alphaToCoverage_ = false;
     std::uint32_t blendFunc_[4] = { 0, 0, 0, 0 };
 };
 

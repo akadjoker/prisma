@@ -152,6 +152,7 @@ enum ParamIndex
     kParamCubeOneNegativeY,
     kParamQuad,
     kParamLevelOne,
+    kParamCoverage,
     kParamLevelTwo,
     kParamCount
 };
@@ -426,6 +427,8 @@ int main(int argc, char** argv)
         setParams(paramBytes, stride, kParamQuad, quadParams);
         const Params levelOne = { { 1.0f, 1.0f, 0.0f, 1.0f }, { 1.0f, 0.0f, 0.25f, 0.0f } };
         setParams(paramBytes, stride, kParamLevelOne, levelOne);
+        const Params coverage = { { 1.0f, 0.0f, 0.0f, 0.5f }, { 0.0f, 0.0f, 0.5f, 0.0f } };
+        setParams(paramBytes, stride, kParamCoverage, coverage);
         const Params levelTwo = { { 1.0f, 1.0f, 0.0f, 1.0f }, { 2.0f, 0.0f, 0.25f, 0.0f } };
         setParams(paramBytes, stride, kParamLevelTwo, levelTwo);
         const Params cubeNegativeZ = { { 0.0f, 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, -1.0f, 0.0f } };
@@ -3018,6 +3021,82 @@ int main(int argc, char** argv)
             driver->destroy(unsignedStorage);
             printf("float formats: colour targets %d, linear 32-bit filtering %d\n",
                     driver->caps().floatColorTargets, driver->caps().floatLinearFiltering);
+        }
+
+        {
+            TextureDesc coverageMsaaDesc;
+            coverageMsaaDesc.width = 16;
+            coverageMsaaDesc.height = 16;
+            coverageMsaaDesc.samples = 4;
+            coverageMsaaDesc.usage = kTextureRenderTarget;
+            const TextureHandle coverageMsaa = driver->createTexture(coverageMsaaDesc);
+            TextureDesc coverageResolvedDesc;
+            coverageResolvedDesc.width = 16;
+            coverageResolvedDesc.height = 16;
+            coverageResolvedDesc.usage = kTextureSampled | kTextureRenderTarget;
+            const TextureHandle coverageResolved = driver->createTexture(coverageResolvedDesc);
+            CHECK(coverageMsaa.valid());
+            CHECK(coverageResolved.valid());
+
+            PipelineDesc coverageDesc = flatPipelineDesc;
+            coverageDesc.blend = false;
+            coverageDesc.depthTest = false;
+            coverageDesc.targets = TargetFormats();
+            coverageDesc.targets.window = false;
+            coverageDesc.targets.colorCount = 1;
+            coverageDesc.targets.colors[0] = TextureFormat::RGBA8;
+            coverageDesc.targets.samples = 4;
+            const PipelineHandle plainCoverage = driver->createPipeline(coverageDesc);
+            coverageDesc.alphaToCoverage = true;
+            const PipelineHandle alphaCoverage = driver->createPipeline(coverageDesc);
+            CHECK(plainCoverage.valid());
+            CHECK(alphaCoverage.valid());
+
+            RenderPassDesc coveragePass;
+            coveragePass.colors[0].texture = coverageMsaa;
+            coveragePass.colorCount = 1;
+            coveragePass.resolves[0].texture = coverageResolved;
+            coveragePass.colorStore = StoreOp::Discard;
+            RenderTarget coverageTarget;
+            coverageTarget.texture = coverageResolved;
+            Rect coveragePixel;
+            coveragePixel.x = 8;
+            coveragePixel.y = 8;
+            coveragePixel.width = 1;
+            coveragePixel.height = 1;
+
+            messages = 0;
+            window_begin_frame(window);
+            driver->beginFrame();
+            unsigned char plainResult[4] = { 0, 0, 0, 0 };
+            unsigned char alphaResult[4] = { 0, 0, 0, 0 };
+            driver->beginRenderPass(coveragePass);
+            driver->bindUniformBuffer(2, params, kParamCoverage * stride, sizeof(Params));
+            driver->bindPipeline(plainCoverage);
+            driver->bindVertexBuffer(0, buffer, 0);
+            driver->draw(3, 0);
+            driver->endRenderPass();
+            CHECK(driver->readPixels(coverageTarget, coveragePixel, plainResult));
+            driver->beginRenderPass(coveragePass);
+            driver->bindUniformBuffer(2, params, kParamCoverage * stride, sizeof(Params));
+            driver->bindPipeline(alphaCoverage);
+            driver->bindVertexBuffer(0, buffer, 0);
+            driver->draw(3, 0);
+            driver->endRenderPass();
+            CHECK(driver->readPixels(coverageTarget, coveragePixel, alphaResult));
+            driver->endFrame();
+            driver->present();
+            CHECK(plainResult[0] == 255);
+            CHECK(alphaResult[0] > 60 && alphaResult[0] < 200);
+            CHECK(alphaResult[1] == 0 && alphaResult[2] == 0);
+            CHECK(messages == 0);
+            if (messages) printf("unexpected: %s\n", lastMessage);
+            printf("alpha to coverage: plain %d, enabled %d\n", plainResult[0], alphaResult[0]);
+
+            driver->destroy(alphaCoverage);
+            driver->destroy(plainCoverage);
+            driver->destroy(coverageResolved);
+            driver->destroy(coverageMsaa);
         }
 
         CHECK(driver->caps().occlusionQueries);

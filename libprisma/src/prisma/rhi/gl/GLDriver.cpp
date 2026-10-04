@@ -343,6 +343,7 @@ struct GLPipeline
     float depthBiasConstant = 0.0f;
     float depthBiasSlope = 0.0f;
     bool wireframe = false;
+    bool alphaToCoverage = false;
     TargetFormats targets;
 };
 
@@ -1207,6 +1208,7 @@ public:
         pipeline.depthBiasConstant = desc.depthBiasConstant;
         pipeline.depthBiasSlope = desc.depthBiasSlope;
         pipeline.wireframe = desc.wireframe && caps_.wireframe;
+        pipeline.alphaToCoverage = desc.alphaToCoverage;
 
         for (std::uint32_t i = 0; i < desc.uniformBlockCount; ++i)
         {
@@ -2579,6 +2581,7 @@ private:
         state_.stencil(stencil);
         state_.depthBias(pipeline->depthBiasConstant, pipeline->depthBiasSlope);
         state_.wireframe(pipeline->wireframe);
+        state_.alphaToCoverage(pipeline->alphaToCoverage);
 
         state_.bindVertexArray(pipeline->vertexArray);
         if (vertexDirty_)

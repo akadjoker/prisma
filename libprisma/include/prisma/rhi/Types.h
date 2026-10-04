@@ -561,6 +561,7 @@ struct PipelineDesc
     float depthBiasConstant = 0.0f;
     float depthBiasSlope = 0.0f;
     bool wireframe = false;
+    bool alphaToCoverage = false;
 
     const char* debugName = nullptr;
 };
