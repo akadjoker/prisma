@@ -25,3 +25,5 @@ prisma_demo(02_triangle triangle
 prisma_demo(03_cube cube
             SHADERS 03_cube/shaders/cube.vert 03_cube/shaders/cube.frag
                     03_cube/shaders/copy.vert 03_cube/shaders/copy.frag)
+prisma_demo(04_two_cubes two_cubes
+            SHADERS 04_two_cubes/shaders/two_cubes.vert 04_two_cubes/shaders/two_cubes.frag)
