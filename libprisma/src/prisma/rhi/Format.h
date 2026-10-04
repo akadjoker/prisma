@@ -132,6 +132,12 @@ inline bool validRegion(TextureFormat format, std::uint32_t levelWidth, std::uin
     return true;
 }
 
+inline bool isAdjacency(Topology topology)
+{
+    return topology == Topology::LinesAdjacency || topology == Topology::LineStripAdjacency ||
+           topology == Topology::TrianglesAdjacency || topology == Topology::TriangleStripAdjacency;
+}
+
 inline bool isStorageFormat(TextureFormat format, bool gles)
 {
     if (format == TextureFormat::RGBA8 || format == TextureFormat::RGBA16F) return true;

@@ -489,6 +489,14 @@ VkPrimitiveTopology toVkTopology(Topology topology)
             return VK_PRIMITIVE_TOPOLOGY_LINE_STRIP;
         case Topology::Points:
             return VK_PRIMITIVE_TOPOLOGY_POINT_LIST;
+        case Topology::LinesAdjacency:
+            return VK_PRIMITIVE_TOPOLOGY_LINE_LIST_WITH_ADJACENCY;
+        case Topology::LineStripAdjacency:
+            return VK_PRIMITIVE_TOPOLOGY_LINE_STRIP_WITH_ADJACENCY;
+        case Topology::TrianglesAdjacency:
+            return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST_WITH_ADJACENCY;
+        case Topology::TriangleStripAdjacency:
+            return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP_WITH_ADJACENCY;
     }
     return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 }
@@ -925,6 +933,10 @@ public:
     {
         const VulkanShader* vertex = shaders_.get(handleCast<ShaderSlot>(desc.vertexShader));
         const VulkanShader* fragment = shaders_.get(handleCast<ShaderSlot>(desc.fragmentShader));
+        const VulkanShader* geometry =
+                desc.geometryShader.valid()
+                        ? shaders_.get(handleCast<ShaderSlot>(desc.geometryShader))
+                        : nullptr;
         bool valid = vertex && fragment && desc.attributeCount <= PipelineDesc::kMaxAttributes &&
                      desc.vertexBufferCount <= PipelineDesc::kMaxVertexBuffers &&
                      desc.targets.colorCount <= TargetFormats::kMaxColors &&
@@ -939,13 +951,18 @@ public:
             if (desc.uniformBlocks[i].slot >= kMaxUniformSlots) valid = false;
         for (std::uint32_t i = 0; valid && i < desc.attributeCount; ++i)
             if (desc.attributes[i].buffer >= desc.vertexBufferCount) valid = false;
+        if (desc.geometryShader.valid() &&
+                (!geometry || geometry->stage != ShaderStage::Geometry || !caps_.geometryShaders))
+            valid = false;
+        if (isAdjacency(desc.topology) && !geometry) valid = false;
         if (!valid)
         {
             log("createPipeline: invalid shader handle or vertex input");
             return PipelineHandle();
         }
 
-        VkPipelineShaderStageCreateInfo stages[2] = {};
+        VkPipelineShaderStageCreateInfo stages[3] = {};
+        std::uint32_t stageCount = 2;
         stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
         stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
         stages[0].module = vertex->module;
@@ -954,6 +971,14 @@ public:
         stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
         stages[1].module = fragment->module;
         stages[1].pName = "main";
+        if (geometry)
+        {
+            stages[2].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+            stages[2].stage = VK_SHADER_STAGE_GEOMETRY_BIT;
+            stages[2].module = geometry->module;
+            stages[2].pName = "main";
+            stageCount = 3;
+        }
 
         VkVertexInputBindingDescription bindings[PipelineDesc::kMaxVertexBuffers] = {};
         for (std::uint32_t i = 0; i < desc.vertexBufferCount; ++i)
@@ -982,8 +1007,10 @@ public:
         VkPipelineInputAssemblyStateCreateInfo assembly = {};
         assembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
         assembly.topology = toVkTopology(desc.topology);
-        assembly.primitiveRestartEnable =
-                desc.topology == Topology::TriangleStrip || desc.topology == Topology::LineStrip;
+        assembly.primitiveRestartEnable = desc.topology == Topology::TriangleStrip ||
+                                          desc.topology == Topology::LineStrip ||
+                                          desc.topology == Topology::LineStripAdjacency ||
+                                          desc.topology == Topology::TriangleStripAdjacency;
 
         VkPipelineViewportStateCreateInfo viewport = {};
         viewport.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
@@ -1083,6 +1110,10 @@ public:
                 kMaxUniformSlots, *vertex, BindingKind::UniformBlock);
         mergeSlots(pipeline.uniformSlots, pipeline.uniformCount, PipelineDesc::kMaxUniformBlocks,
                 kMaxUniformSlots, *fragment, BindingKind::UniformBlock);
+        if (geometry)
+            mergeSlots(pipeline.uniformSlots, pipeline.uniformCount,
+                    PipelineDesc::kMaxUniformBlocks, kMaxUniformSlots, *geometry,
+                    BindingKind::UniformBlock);
         for (std::uint32_t i = 1; i < pipeline.uniformCount; ++i)
             for (std::uint32_t j = i;
                     j > 0 && pipeline.uniformSlots[j - 1] > pipeline.uniformSlots[j]; --j)
@@ -1098,7 +1129,7 @@ public:
             setBindings[i].binding = pipeline.uniformSlots[i];
             setBindings[i].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
             setBindings[i].descriptorCount = 1;
-            setBindings[i].stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+            setBindings[i].stageFlags = graphicsStages();
         }
         VkDescriptorSetLayoutCreateInfo setLayout = {};
         setLayout.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -1118,6 +1149,9 @@ public:
                 kMaxTextureSlots, *vertex, BindingKind::Texture);
         mergeSlots(pipeline.textureSlots, pipeline.textureCount, PipelineDesc::kMaxTextures,
                 kMaxTextureSlots, *fragment, BindingKind::Texture);
+        if (geometry)
+            mergeSlots(pipeline.textureSlots, pipeline.textureCount, PipelineDesc::kMaxTextures,
+                    kMaxTextureSlots, *geometry, BindingKind::Texture);
         for (std::uint32_t i = 1; i < pipeline.textureCount; ++i)
             for (std::uint32_t j = i;
                     j > 0 && pipeline.textureSlots[j - 1] > pipeline.textureSlots[j]; --j)
@@ -1133,8 +1167,7 @@ public:
             textureBindings[i].binding = pipeline.textureSlots[i];
             textureBindings[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
             textureBindings[i].descriptorCount = 1;
-            textureBindings[i].stageFlags =
-                    VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+            textureBindings[i].stageFlags = graphicsStages();
         }
         VkDescriptorSetLayoutCreateInfo textureSetLayout = {};
         textureSetLayout.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -1155,9 +1188,12 @@ public:
                 PipelineDesc::kMaxStorageBuffers, *vertex, BindingKind::StorageBuffer);
         mergeSlots(pipeline.storageSlots, pipeline.storageCount, PipelineDesc::kMaxStorageBuffers,
                 PipelineDesc::kMaxStorageBuffers, *fragment, BindingKind::StorageBuffer);
+        if (geometry)
+            mergeSlots(pipeline.storageSlots, pipeline.storageCount,
+                    PipelineDesc::kMaxStorageBuffers, PipelineDesc::kMaxStorageBuffers, *geometry,
+                    BindingKind::StorageBuffer);
         if (!createSlotLayout(pipeline.storageSlots, pipeline.storageCount,
-                    VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                    VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                    VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, graphicsStages(),
                     &pipeline.storageSetLayout))
         {
             log("createPipeline: could not create the storage set layout");
@@ -1184,7 +1220,7 @@ public:
         VkGraphicsPipelineCreateInfo info = {};
         info.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
         info.pNext = &rendering;
-        info.stageCount = 2;
+        info.stageCount = stageCount;
         info.pStages = stages;
         info.pVertexInputState = &vertexInput;
         info.pInputAssemblyState = &assembly;
@@ -3297,6 +3333,13 @@ private:
         return pipeline;
     }
 
+    VkShaderStageFlags graphicsStages() const
+    {
+        VkShaderStageFlags stages = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+        if (caps_.geometryShaders) stages |= VK_SHADER_STAGE_GEOMETRY_BIT;
+        return stages;
+    }
+
     static VkPipelineBindPoint bindPoint(const VulkanPipeline& pipeline)
     {
         return pipeline.compute ? VK_PIPELINE_BIND_POINT_COMPUTE : VK_PIPELINE_BIND_POINT_GRAPHICS;
@@ -3732,6 +3775,7 @@ private:
                 caps_.textureETC2 = features.features.textureCompressionETC2;
                 caps_.textureASTC = features.features.textureCompressionASTC_LDR;
                 caps_.cubeArrays = features.features.imageCubeArray;
+                caps_.geometryShaders = features.features.geometryShader;
                 multiDrawIndirect_ = features.features.multiDrawIndirect;
                 caps_.storageBufferOffsetAlignment = static_cast<std::uint32_t>(
                         properties.limits.minStorageBufferOffsetAlignment);
@@ -3787,6 +3831,7 @@ private:
         enabled.textureCompressionETC2 = caps_.textureETC2;
         enabled.textureCompressionASTC_LDR = caps_.textureASTC;
         enabled.imageCubeArray = caps_.cubeArrays;
+        enabled.geometryShader = caps_.geometryShaders;
         enabled.multiDrawIndirect = multiDrawIndirect_;
 
         const char* const extension = VK_KHR_SWAPCHAIN_EXTENSION_NAME;

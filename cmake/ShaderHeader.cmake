@@ -22,6 +22,8 @@ elseif(mode STREQUAL "frag")
   set(stage Fragment)
 elseif(mode STREQUAL "comp")
   set(stage Compute)
+elseif(mode STREQUAL "geom")
+  set(stage Geometry)
 else()
   message(FATAL_ERROR "${SOURCE}: unsupported shader stage '${mode}'")
 endif()
@@ -29,6 +31,8 @@ endif()
 set(min_es 300)
 if(stage STREQUAL "Compute")
   set(min_es 310)
+elseif(stage STREQUAL "Geometry")
+  set(min_es 320)
 endif()
 
 set(bindings "")
@@ -71,6 +75,8 @@ if(stage STREQUAL "Vertex")
   set(fixup --fixup-clipspace)
 endif()
 
+set(emit_fixup "{ gl_Position.z = 2.0 * gl_Position.z - gl_Position.w; EmitVertex(); }")
+
 execute_process(COMMAND ${SPIRV_CROSS} ${spv} --no-es --version 460
                 RESULT_VARIABLE result OUTPUT_VARIABLE glsl ERROR_VARIABLE log)
 if(NOT result EQUAL 0)
@@ -96,10 +102,24 @@ foreach(version 300 310 320)
   if(NOT result EQUAL 0)
     continue()
   endif()
+  if(stage STREQUAL "Geometry")
+    string(REPLACE "EmitVertex();" "${emit_fixup}" essl "${essl}")
+  endif()
   string(APPEND text
          "static const char ${NAME}_essl${version}[] = R\"prisma(${essl})prisma\";\n\n")
   set(essl${version} "${NAME}_essl${version}")
 endforeach()
+
+set(essl320_inner "nullptr")
+if(stage STREQUAL "Vertex")
+  execute_process(COMMAND ${SPIRV_CROSS} ${spv} --es --version 320
+                  RESULT_VARIABLE result OUTPUT_VARIABLE inner ERROR_VARIABLE log)
+  if(result EQUAL 0)
+    string(APPEND text
+           "static const char ${NAME}_essl320_inner[] = R\"prisma(${inner})prisma\";\n\n")
+    set(essl320_inner "${NAME}_essl320_inner")
+  endif()
+endif()
 
 set(binding_table "nullptr")
 if(binding_count GREATER 0)
@@ -110,6 +130,6 @@ endif()
 
 string(APPEND text
        "static const prisma::ShaderBlob ${NAME} = { prisma::ShaderStage::${stage}, ${NAME}_spirv,\n"
-       "    sizeof(${NAME}_spirv), ${NAME}_glsl, ${essl300}, ${essl310}, ${essl320}, ${binding_table},\n"
+       "    sizeof(${NAME}_spirv), ${NAME}_glsl, ${essl300}, ${essl310}, ${essl320}, ${essl320_inner}, ${binding_table},\n"
        "    ${binding_count} };\n")
 file(WRITE ${OUTPUT} "${text}")

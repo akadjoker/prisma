@@ -6,6 +6,7 @@
 
 #include <string.h>
 
+#include "adjacency.geom.h"
 #include "array.frag.h"
 #include "cube.frag.h"
 #include "cube_array.frag.h"
@@ -17,6 +18,7 @@
 #include "lod.frag.h"
 #include "no_buffer.vert.h"
 #include "plain.vert.h"
+#include "points.geom.h"
 #include "red.frag.h"
 #include "scaled.frag.h"
 #include "shadow.frag.h"
@@ -146,6 +148,7 @@ enum ParamIndex
     kParamRedMid,
     kParamGreenMid,
     kParamCubeOneNegativeY,
+    kParamQuad,
     kParamCount
 };
 
@@ -415,6 +418,8 @@ int main(int argc, char** argv)
         setParams(paramBytes, stride, kParamCubeNegativeY, cubeNegativeY);
         const Params cubeOneNegativeY = { { 0.0f, 0.0f, 0.0f, 0.0f }, { 0.0f, -1.0f, 0.0f, 1.0f } };
         setParams(paramBytes, stride, kParamCubeOneNegativeY, cubeOneNegativeY);
+        const Params quadParams = { { 1.0f, 0.0f, 1.0f, 1.0f }, { 0.5f, 0.0f, 0.25f, 0.0f } };
+        setParams(paramBytes, stride, kParamQuad, quadParams);
         const Params cubeNegativeZ = { { 0.0f, 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, -1.0f, 0.0f } };
         setParams(paramBytes, stride, kParamCubeNegativeZ, cubeNegativeZ);
 
@@ -2663,6 +2668,102 @@ int main(int argc, char** argv)
                 CHECK(messages == 1);
                 window_destroy(secondWindow);
             }
+        }
+
+        {
+            CHECK(driver->caps().geometryShaders);
+            const ShaderHandle pointsGeometry = makeShader(driver, points_geom);
+            const ShaderHandle adjacencyGeometry = makeShader(driver, adjacency_geom);
+            CHECK(pointsGeometry.valid());
+            CHECK(adjacencyGeometry.valid());
+
+            const float kPoint[2] = { 0.0f, 0.0f };
+            BufferDesc pointDesc;
+            pointDesc.size = sizeof(kPoint);
+            pointDesc.data = kPoint;
+            const BufferHandle pointBuffer = driver->createBuffer(pointDesc);
+            const float kAdjacent[12] = { -1.0f, -1.0f, -1.0f, -1.0f, 3.0f, -1.0f, -1.0f, -1.0f,
+                -1.0f, 3.0f, -1.0f, -1.0f };
+            BufferDesc adjacentDesc;
+            adjacentDesc.size = sizeof(kAdjacent);
+            adjacentDesc.data = kAdjacent;
+            const BufferHandle adjacentBuffer = driver->createBuffer(adjacentDesc);
+            CHECK(pointBuffer.valid());
+            CHECK(adjacentBuffer.valid());
+
+            PipelineDesc geometryDesc = flatPipelineDesc;
+            geometryDesc.targets = TargetFormats();
+            geometryDesc.blend = false;
+            geometryDesc.depthTest = false;
+            geometryDesc.topology = Topology::Points;
+            geometryDesc.geometryShader = pointsGeometry;
+            const PipelineHandle pointsPipeline = driver->createPipeline(geometryDesc);
+            geometryDesc.depthTest = true;
+            const PipelineHandle pointsDepthPipeline = driver->createPipeline(geometryDesc);
+            geometryDesc.depthTest = false;
+            geometryDesc.topology = Topology::TrianglesAdjacency;
+            geometryDesc.geometryShader = adjacencyGeometry;
+            const PipelineHandle adjacencyPipeline = driver->createPipeline(geometryDesc);
+            CHECK(pointsPipeline.valid());
+            CHECK(pointsDepthPipeline.valid());
+            CHECK(adjacencyPipeline.valid());
+
+            messages = 0;
+            geometryDesc.geometryShader = ShaderHandle();
+            CHECK(!driver->createPipeline(geometryDesc).valid());
+            CHECK(messages == 1);
+            geometryDesc.topology = Topology::Points;
+            geometryDesc.geometryShader = flatFragment;
+            CHECK(!driver->createPipeline(geometryDesc).valid());
+            CHECK(messages == 2);
+
+            messages = 0;
+            window_begin_frame(window);
+            driver->beginFrame();
+            driver->beginRenderPass(black);
+            driver->bindUniformBuffer(2, params, kParamQuad * stride, sizeof(Params));
+            driver->bindPipeline(pointsPipeline);
+            driver->bindVertexBuffer(0, pointBuffer, 0);
+            driver->draw(1, 0);
+            driver->endRenderPass();
+            CHECK(pixelIs(160, 120, 255, 0, 255));
+            CHECK(pixelIs(210, 120, 255, 0, 255));
+            CHECK(pixelIs(270, 120, 0, 0, 0));
+            CHECK(pixelIs(20, 20, 0, 0, 0));
+
+            driver->beginRenderPass(black);
+            driver->bindUniformBuffer(2, params, kParamQuad * stride, sizeof(Params));
+            driver->bindPipeline(pointsDepthPipeline);
+            driver->bindVertexBuffer(0, pointBuffer, 0);
+            driver->draw(1, 0);
+            driver->bindUniformBuffer(2, params, kParamGreenMid * stride, sizeof(Params));
+            driver->bindPipeline(flatDepth);
+            driver->bindVertexBuffer(0, buffer, 0);
+            driver->draw(3, 0);
+            driver->endRenderPass();
+            CHECK(pixelIs(160, 120, 255, 0, 255));
+            CHECK(pixelIs(270, 120, 0, 255, 0));
+
+            driver->beginRenderPass(black);
+            driver->bindUniformBuffer(2, params, kParamGreen * stride, sizeof(Params));
+            driver->bindPipeline(adjacencyPipeline);
+            driver->bindVertexBuffer(0, adjacentBuffer, 0);
+            driver->draw(6, 0);
+            driver->endRenderPass();
+            CHECK(pixelIs(160, 120, 0, 255, 0));
+            CHECK(pixelIs(20, 20, 0, 255, 0));
+            driver->endFrame();
+            driver->present();
+            CHECK(messages == 0);
+            if (messages) printf("unexpected: %s\n", lastMessage);
+
+            driver->destroy(adjacencyPipeline);
+            driver->destroy(pointsDepthPipeline);
+            driver->destroy(pointsPipeline);
+            driver->destroy(adjacentBuffer);
+            driver->destroy(pointBuffer);
+            driver->destroy(adjacencyGeometry);
+            driver->destroy(pointsGeometry);
         }
 
         CHECK(driver->caps().occlusionQueries);

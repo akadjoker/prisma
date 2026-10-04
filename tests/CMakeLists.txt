@@ -17,7 +17,8 @@ if(PRISMA_OPENGL AND PRISMA_BUILD_APPS AND PRISMA_SHADER_TOOLS)
     shaders/two_targets.frag shaders/instanced.vert shaders/instanced.frag
     shaders/no_buffer.vert shaders/array.frag shaders/cube.frag shaders/volume.frag
     shaders/lod.frag shaders/shadow.frag shaders/cube_array.frag
-    shaders/fill.comp shaders/vertices.comp shaders/storage.frag)
+    shaders/fill.comp shaders/vertices.comp shaders/storage.frag
+    shaders/points.geom shaders/adjacency.geom)
   add_test(NAME gl_driver COMMAND test_driver)
   set_tests_properties(gl_driver PROPERTIES LABELS gpu)
   if(PRISMA_VULKAN)

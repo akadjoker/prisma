@@ -15,6 +15,7 @@ struct ShaderBlob
     const char* essl300;
     const char* essl310;
     const char* essl320;
+    const char* essl320Inner;
     const ShaderBinding* bindings;
     std::uint32_t bindingCount;
 };
@@ -29,7 +30,10 @@ inline ShaderDesc shaderDesc(const ShaderBlob& blob, const Caps& caps)
     desc.bindingCount = blob.bindingCount;
     if (!caps.gles) desc.source = blob.glsl;
     else if (caps.versionMajor > 3 || caps.versionMinor >= 2)
+    {
         desc.source = blob.essl320;
+        desc.innerSource = blob.essl320Inner;
+    }
     else if (caps.versionMinor == 1)
         desc.source = blob.essl310;
     else

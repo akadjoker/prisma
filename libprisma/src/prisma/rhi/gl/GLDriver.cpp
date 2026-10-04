@@ -33,6 +33,7 @@ struct GLBinding
 struct GLShader
 {
     GLuint id = 0;
+    GLuint innerId = 0;
     ShaderStage stage = ShaderStage::Vertex;
     std::uint32_t bindingCount = 0;
     GLBinding bindings[ShaderDesc::kMaxBindings];
@@ -391,6 +392,14 @@ GLenum toGLTopology(Topology topology)
             return GL_LINE_STRIP;
         case Topology::Points:
             return GL_POINTS;
+        case Topology::LinesAdjacency:
+            return GL_LINES_ADJACENCY;
+        case Topology::LineStripAdjacency:
+            return GL_LINE_STRIP_ADJACENCY;
+        case Topology::TrianglesAdjacency:
+            return GL_TRIANGLES_ADJACENCY;
+        case Topology::TriangleStripAdjacency:
+            return GL_TRIANGLE_STRIP_ADJACENCY;
     }
     return GL_TRIANGLES;
 }
@@ -577,6 +586,11 @@ public:
 #endif
         caps_.compressedTextureCopy = copyImage_;
         caps_.indirectDraw = caps_.compute;
+#ifdef PRISMA_GLES
+        caps_.geometryShaders = major > 3 || (major == 3 && minor >= 2);
+#else
+        caps_.geometryShaders = true;
+#endif
 #if !defined(__EMSCRIPTEN__) && !defined(__ANDROID__)
         caps_.multipleWindows = true;
 #endif
@@ -767,25 +781,27 @@ public:
             log("createShader: compute shaders are not supported");
             return ShaderHandle();
         }
+        if (desc.stage == ShaderStage::Geometry && !caps_.geometryShaders)
+        {
+            log("createShader: geometry shaders are not supported");
+            return ShaderHandle();
+        }
         GLShader shader;
         shader.stage = desc.stage;
-        shader.id = glCreateShader(desc.stage == ShaderStage::Vertex     ? GL_VERTEX_SHADER
-                                   : desc.stage == ShaderStage::Fragment ? GL_FRAGMENT_SHADER
-                                                                         : GL_COMPUTE_SHADER);
-        label(GL_SHADER, shader.id, desc.debugName);
-        const char* source = desc.source;
-        glShaderSource(shader.id, 1, &source, nullptr);
-        glCompileShader(shader.id);
-
-        GLint compiled = GL_FALSE;
-        glGetShaderiv(shader.id, GL_COMPILE_STATUS, &compiled);
-        if (!compiled)
+        const GLenum type = desc.stage == ShaderStage::Vertex     ? GL_VERTEX_SHADER
+                            : desc.stage == ShaderStage::Fragment ? GL_FRAGMENT_SHADER
+                            : desc.stage == ShaderStage::Geometry ? GL_GEOMETRY_SHADER
+                                                                  : GL_COMPUTE_SHADER;
+        shader.id = compileShader(type, desc.source, desc.debugName);
+        if (!shader.id) return ShaderHandle();
+        if (desc.innerSource && desc.stage == ShaderStage::Vertex)
         {
-            char message[1024];
-            glGetShaderInfoLog(shader.id, sizeof(message), nullptr, message);
-            log(message);
-            glDeleteShader(shader.id);
-            return ShaderHandle();
+            shader.innerId = compileShader(type, desc.innerSource, desc.debugName);
+            if (!shader.innerId)
+            {
+                glDeleteShader(shader.id);
+                return ShaderHandle();
+            }
         }
         for (std::uint32_t i = 0; i < desc.bindingCount; ++i)
         {
@@ -1052,7 +1068,15 @@ public:
     {
         const GLShader* vertex = shaders_.get(handleCast<ShaderSlot>(desc.vertexShader));
         const GLShader* fragment = shaders_.get(handleCast<ShaderSlot>(desc.fragmentShader));
-        if (!vertex || !fragment || desc.attributeCount > PipelineDesc::kMaxAttributes ||
+        const GLShader* geometry =
+                desc.geometryShader.valid()
+                        ? shaders_.get(handleCast<ShaderSlot>(desc.geometryShader))
+                        : nullptr;
+        const bool badGeometry = (desc.geometryShader.valid() &&
+                                         (!geometry || geometry->stage != ShaderStage::Geometry)) ||
+                                 (isAdjacency(desc.topology) && !geometry);
+        if (!vertex || !fragment || badGeometry ||
+                desc.attributeCount > PipelineDesc::kMaxAttributes ||
                 desc.uniformBlockCount > PipelineDesc::kMaxUniformBlocks ||
                 desc.textureCount > PipelineDesc::kMaxTextures ||
                 desc.storageBufferCount > PipelineDesc::kMaxStorageBuffers ||
@@ -1065,11 +1089,14 @@ public:
 
         GLPipeline pipeline;
         pipeline.program = glCreateProgram();
-        glAttachShader(pipeline.program, vertex->id);
+        const GLuint vertexId = geometry && vertex->innerId ? vertex->innerId : vertex->id;
+        glAttachShader(pipeline.program, vertexId);
         glAttachShader(pipeline.program, fragment->id);
+        if (geometry) glAttachShader(pipeline.program, geometry->id);
         glLinkProgram(pipeline.program);
-        glDetachShader(pipeline.program, vertex->id);
+        glDetachShader(pipeline.program, vertexId);
         glDetachShader(pipeline.program, fragment->id);
+        if (geometry) glDetachShader(pipeline.program, geometry->id);
 
         GLint linked = GL_FALSE;
         glGetProgramiv(pipeline.program, GL_LINK_STATUS, &linked);
@@ -1144,7 +1171,8 @@ public:
         if (!mapStorageBuffers(pipeline.program, desc.storageBuffers, desc.storageBufferCount,
                     true) ||
                 !applyBindings(pipeline.program, *vertex) ||
-                !applyBindings(pipeline.program, *fragment))
+                !applyBindings(pipeline.program, *fragment) ||
+                (geometry && !applyBindings(pipeline.program, *geometry)))
         {
             state_.programDeleted(pipeline.program);
             glDeleteProgram(pipeline.program);
@@ -1180,6 +1208,7 @@ public:
         const GLShader* shader = shaders_.get(slot);
         if (!shader) return;
         glDeleteShader(shader->id);
+        if (shader->innerId) glDeleteShader(shader->innerId);
         shaders_.erase(slot);
     }
 
@@ -1968,6 +1997,22 @@ private:
         if (family == FormatFamily::BC) return caps_.textureBC;
         if (family == FormatFamily::ETC2) return caps_.textureETC2;
         return caps_.textureASTC;
+    }
+
+    GLuint compileShader(GLenum type, const char* source, const char* name)
+    {
+        const GLuint id = glCreateShader(type);
+        label(GL_SHADER, id, name);
+        glShaderSource(id, 1, &source, nullptr);
+        glCompileShader(id);
+        GLint compiled = GL_FALSE;
+        glGetShaderiv(id, GL_COMPILE_STATUS, &compiled);
+        if (compiled) return id;
+        char message[1024];
+        glGetShaderInfoLog(id, sizeof(message), nullptr, message);
+        log(message);
+        glDeleteShader(id);
+        return 0;
     }
 
     bool mapStorageTexture(GLuint program, const char* name, std::uint32_t slot, bool required)

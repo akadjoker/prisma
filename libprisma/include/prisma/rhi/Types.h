@@ -256,7 +256,8 @@ enum class ShaderStage : std::uint8_t
 {
     Vertex,
     Fragment,
-    Compute
+    Compute,
+    Geometry
 };
 
 enum class BindingKind : std::uint8_t
@@ -283,6 +284,7 @@ struct ShaderDesc
 
     ShaderStage stage = ShaderStage::Vertex;
     const char* source = nullptr;
+    const char* innerSource = nullptr;
     const void* spirv = nullptr;
     std::uint32_t spirvSize = 0;
     const ShaderBinding* bindings = nullptr;
@@ -335,7 +337,11 @@ enum class Topology : std::uint8_t
     TriangleStrip,
     Lines,
     LineStrip,
-    Points
+    Points,
+    LinesAdjacency,
+    LineStripAdjacency,
+    TrianglesAdjacency,
+    TriangleStripAdjacency
 };
 
 enum class CullMode : std::uint8_t
@@ -502,6 +508,7 @@ struct PipelineDesc
 
     ShaderHandle vertexShader;
     ShaderHandle fragmentShader;
+    ShaderHandle geometryShader;
     VertexAttribute attributes[kMaxAttributes];
     std::uint32_t attributeCount = 0;
     VertexBufferLayout vertexBuffers[kMaxVertexBuffers];
