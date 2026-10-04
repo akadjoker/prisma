@@ -1,24 +1,33 @@
 cmake_minimum_required(VERSION 3.21)
-project(prisma VERSION 0.1.0 LANGUAGES CXX)
+project(prisma VERSION 0.1.0 LANGUAGES C CXX)
 
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 14)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
-if(NOT CMAKE_BUILD_TYPE)
-  set(CMAKE_BUILD_TYPE Release)
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+  set(CMAKE_BUILD_TYPE Release CACHE STRING "" FORCE)
 endif()
 
-find_package(SDL2 REQUIRED)
+option(PRISMA_OPENGL "Build the OpenGL backend" ON)
+option(PRISMA_BUILD_APPS "Build the prisma sample apps" ON)
+option(PRISMA_BUILD_TESTS "Build the prisma tests" ON)
 
-# --- RHI -------------------------------------------------------------------
-add_library(prisma_rhi STATIC
-  src/rhi/gl/GLLoader.cpp
-  src/rhi/gl/GLDevice.cpp
-)
-target_include_directories(prisma_rhi PUBLIC src)
-target_link_libraries(prisma_rhi PUBLIC SDL2::SDL2)
-target_compile_options(prisma_rhi PRIVATE -Wall -Wextra)
+if(PRISMA_OPENGL)
+  add_library(gl STATIC external/opengl/OpenGL.cpp)
+  target_include_directories(gl PUBLIC external/opengl)
+  target_link_libraries(gl PUBLIC ${CMAKE_DL_LIBS})
+endif()
 
-# --- apps ------------------------------------------------------------------
-add_executable(triangle apps/triangle/main.cpp)
-target_link_libraries(triangle PRIVATE prisma_rhi)
+add_subdirectory(libprisma)
+
+if(PRISMA_BUILD_APPS)
+  set(PLATFORM_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+  set(PLATFORM_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+  add_subdirectory(external/zen_plataform EXCLUDE_FROM_ALL)
+  add_subdirectory(apps)
+endif()
+
+if(PRISMA_BUILD_TESTS)
+  enable_testing()
+  add_subdirectory(tests)
+endif()

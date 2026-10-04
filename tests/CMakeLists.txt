@@ -1,0 +1,3 @@
+add_executable(test_null_driver test_null_driver.cpp)
+target_link_libraries(test_null_driver PRIVATE prisma)
+add_test(NAME null_driver COMMAND test_null_driver)
