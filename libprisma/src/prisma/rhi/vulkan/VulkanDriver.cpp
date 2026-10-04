@@ -725,6 +725,11 @@ public:
             log("createTexture: invalid size");
             return TextureHandle();
         }
+        if (desc.type != TextureType::Texture2D)
+        {
+            log("Vulkan: only 2D textures are implemented yet");
+            return TextureHandle();
+        }
 
         const bool depth = isDepthFormat(desc.format);
         const std::uint32_t fullChain = fullMipCount(desc.width, desc.height);
@@ -811,8 +816,14 @@ public:
                                                               : VK_SAMPLER_MIPMAP_MODE_NEAREST;
         info.addressModeU = toVkAddress(desc.addressU);
         info.addressModeV = toVkAddress(desc.addressV);
-        info.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        info.addressModeW = toVkAddress(desc.addressW);
         info.maxAnisotropy = 1.0f;
+        if (desc.maxAnisotropy > 1.0f && caps_.maxAnisotropy > 1.0f)
+        {
+            info.anisotropyEnable = VK_TRUE;
+            info.maxAnisotropy = desc.maxAnisotropy < caps_.maxAnisotropy ? desc.maxAnisotropy
+                                                                          : caps_.maxAnisotropy;
+        }
         info.maxLod = desc.mipFilter == MipFilter::None ? 0.25f : VK_LOD_CLAMP_NONE;
 
         VulkanSampler sampler;
@@ -823,6 +834,16 @@ public:
         }
         setName(VK_OBJECT_TYPE_SAMPLER, (std::uint64_t) sampler.sampler, desc.debugName);
         return handleCast<SamplerHandle>(samplers_.insert(sampler));
+    }
+
+    void updateTexture(TextureHandle, std::uint32_t, std::uint32_t, const void*) override
+    {
+        log("Vulkan: updateTexture is not implemented yet");
+    }
+
+    void generateMipmaps(TextureHandle) override
+    {
+        log("Vulkan: generateMipmaps is not implemented yet");
     }
 
     void destroy(BufferHandle handle) override
@@ -940,7 +961,7 @@ public:
     {
         passActive_ = false;
         if (!frameReady_) return;
-        if (desc.colorCount > 0 || desc.depth.valid())
+        if (desc.colorCount > 0 || desc.depth.texture.valid())
         {
             log("Vulkan: offscreen render targets are not implemented yet");
             return;
@@ -1774,6 +1795,9 @@ private:
                 caps_.versionMinor = VK_API_VERSION_MINOR(properties.apiVersion);
                 caps_.maxTextureSize = properties.limits.maxImageDimension2D;
                 caps_.maxColorTargets = properties.limits.maxColorAttachments;
+                caps_.maxAnisotropy = features.features.samplerAnisotropy
+                                              ? properties.limits.maxSamplerAnisotropy
+                                              : 1.0f;
                 caps_.uniformBufferOffsetAlignment = static_cast<std::uint32_t>(
                         properties.limits.minUniformBufferOffsetAlignment);
             }
@@ -1802,10 +1826,14 @@ private:
         features13.dynamicRendering = VK_TRUE;
         features13.synchronization2 = VK_TRUE;
 
+        VkPhysicalDeviceFeatures enabled = {};
+        enabled.samplerAnisotropy = caps_.maxAnisotropy > 1.0f;
+
         const char* const extension = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
         VkDeviceCreateInfo info = {};
         info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
         info.pNext = &features13;
+        info.pEnabledFeatures = &enabled;
         info.queueCreateInfoCount = 1;
         info.pQueueCreateInfos = &queue;
         info.enabledExtensionCount = 1;

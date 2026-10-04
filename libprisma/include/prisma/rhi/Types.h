@@ -112,11 +112,21 @@ enum TextureUsage : std::uint32_t
     kTextureRenderTarget = 1u << 1
 };
 
+enum class TextureType : std::uint8_t
+{
+    Texture2D,
+    Texture2DArray,
+    TextureCube,
+    Texture3D
+};
+
 struct TextureDesc
 {
+    TextureType type = TextureType::Texture2D;
     TextureFormat format = TextureFormat::RGBA8;
     std::uint32_t width = 0;
     std::uint32_t height = 0;
+    std::uint32_t depth = 1;
     std::uint32_t mipLevels = 1;
     std::uint32_t usage = kTextureSampled;
     const void* data = nullptr;
@@ -151,6 +161,8 @@ struct SamplerDesc
     MipFilter mipFilter = MipFilter::Linear;
     AddressMode addressU = AddressMode::Repeat;
     AddressMode addressV = AddressMode::Repeat;
+    AddressMode addressW = AddressMode::Repeat;
+    float maxAnisotropy = 1.0f;
     const char* debugName = nullptr;
 };
 
@@ -354,6 +366,13 @@ enum class StoreOp : std::uint8_t
     Discard
 };
 
+struct RenderTarget
+{
+    TextureHandle texture;
+    std::uint32_t mip = 0;
+    std::uint32_t layer = 0;
+};
+
 struct RenderPassDesc
 {
     enum : std::uint32_t
@@ -361,9 +380,9 @@ struct RenderPassDesc
         kMaxColorTargets = 4
     };
 
-    TextureHandle colors[kMaxColorTargets];
+    RenderTarget colors[kMaxColorTargets];
     std::uint32_t colorCount = 0;
-    TextureHandle depth;
+    RenderTarget depth;
 
     LoadOp colorLoad = LoadOp::Clear;
     LoadOp depthLoad = LoadOp::Clear;

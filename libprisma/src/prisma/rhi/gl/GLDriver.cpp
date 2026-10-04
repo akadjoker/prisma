@@ -30,23 +30,96 @@ struct GLShader
 struct GLTexture
 {
     GLuint id = 0;
+    GLenum target = GL_TEXTURE_2D;
+    TextureType type = TextureType::Texture2D;
     std::uint32_t width = 0;
     std::uint32_t height = 0;
+    std::uint32_t depth = 1;
+    std::uint32_t mipLevels = 1;
     TextureFormat format = TextureFormat::RGBA8;
     std::uint32_t usage = 0;
+};
+
+struct GLAttachment
+{
+    std::uint32_t texture = 0;
+    std::uint32_t mip = 0;
+    std::uint32_t layer = 0;
 };
 
 struct GLFramebuffer
 {
     GLuint id = 0;
-    std::uint32_t colors[RenderPassDesc::kMaxColorTargets] = {};
+    GLAttachment colors[RenderPassDesc::kMaxColorTargets];
     std::uint32_t colorCount = 0;
-    std::uint32_t depth = 0;
+    GLAttachment depth;
     std::uint32_t width = 0;
     std::uint32_t height = 0;
     bool stencil = false;
     TargetFormats formats;
 };
+
+const GLenum kTextureMaxAnisotropy = 0x84FE;
+const GLenum kMaxTextureMaxAnisotropy = 0x84FF;
+
+bool sameAttachment(const GLAttachment& attachment, const RenderTarget& target)
+{
+    return attachment.texture == target.texture.bits() && attachment.mip == target.mip &&
+           attachment.layer == target.layer;
+}
+
+std::uint32_t mipSize(std::uint32_t size, std::uint32_t mip)
+{
+    const std::uint32_t reduced = size >> mip;
+    return reduced > 0 ? reduced : 1;
+}
+
+std::uint32_t bytesPerPixel(TextureFormat format)
+{
+    switch (format)
+    {
+        case TextureFormat::R8:
+            return 1;
+        case TextureFormat::RG8:
+            return 2;
+        case TextureFormat::RGBA16F:
+            return 8;
+        default:
+            return 4;
+    }
+}
+
+GLenum toGLTarget(TextureType type)
+{
+    switch (type)
+    {
+        case TextureType::Texture2D:
+            return GL_TEXTURE_2D;
+        case TextureType::Texture2DArray:
+            return GL_TEXTURE_2D_ARRAY;
+        case TextureType::TextureCube:
+            return GL_TEXTURE_CUBE_MAP;
+        case TextureType::Texture3D:
+            return GL_TEXTURE_3D;
+    }
+    return GL_TEXTURE_2D;
+}
+
+std::uint32_t layerCount(const GLTexture& texture, std::uint32_t mip)
+{
+    switch (texture.type)
+    {
+        case TextureType::Texture2D:
+            return 1;
+        case TextureType::Texture2DArray:
+            return texture.depth;
+        case TextureType::TextureCube:
+            return 6;
+        case TextureType::Texture3D:
+            return mipSize(texture.depth, mip);
+    }
+    return 1;
+}
 
 static_assert(static_cast<std::uint32_t>(TargetFormats::kMaxColors) ==
                       static_cast<std::uint32_t>(RenderPassDesc::kMaxColorTargets),
@@ -324,6 +397,13 @@ public:
         glGetIntegerv(GL_UNIFORM_BUFFER_OFFSET_ALIGNMENT, &value);
         caps_.uniformBufferOffsetAlignment = static_cast<std::uint32_t>(value);
 #ifdef PRISMA_GLES
+        const bool anisotropy = glESExt::EXT_texture_filter_anisotropic;
+#else
+        const bool anisotropy = true;
+#endif
+        if (anisotropy) glGetFloatv(kMaxTextureMaxAnisotropy, &caps_.maxAnisotropy);
+        if (caps_.maxAnisotropy < 1.0f) caps_.maxAnisotropy = 1.0f;
+#ifdef PRISMA_GLES
         caps_.gles = true;
         caps_.compute = major > 3 || (major == 3 && minor >= 1);
 #else
@@ -448,36 +528,82 @@ public:
 
     TextureHandle createTexture(const TextureDesc& desc) override
     {
+        const std::uint32_t largest = desc.width > desc.height ? desc.width : desc.height;
         if (desc.format == TextureFormat::None || desc.width == 0 || desc.height == 0 ||
-                desc.width > caps_.maxTextureSize || desc.height > caps_.maxTextureSize)
+                desc.depth == 0 || largest > caps_.maxTextureSize ||
+                (desc.type == TextureType::TextureCube && desc.width != desc.height))
         {
-            log("createTexture: invalid size");
+            log("createTexture: invalid format or size");
             return TextureHandle();
         }
 
-        const GLFormat format = toGLFormat(desc.format);
-        const std::uint32_t fullChain = fullMipCount(desc.width, desc.height);
-        std::uint32_t levels = desc.mipLevels == 0 ? fullChain : desc.mipLevels;
-        if (levels > fullChain) levels = fullChain;
-
         GLTexture texture;
+        texture.type = desc.type;
+        texture.target = toGLTarget(desc.type);
         texture.width = desc.width;
         texture.height = desc.height;
+        texture.depth =
+                desc.type == TextureType::Texture2DArray || desc.type == TextureType::Texture3D
+                        ? desc.depth
+                        : 1;
         texture.format = desc.format;
         texture.usage = desc.usage;
+
+        const std::uint32_t volume = desc.type == TextureType::Texture3D ? texture.depth : 1;
+        const std::uint32_t fullChain = fullMipCount(largest > volume ? largest : volume, 1);
+        texture.mipLevels = desc.mipLevels == 0 ? fullChain : desc.mipLevels;
+        if (texture.mipLevels > fullChain) texture.mipLevels = fullChain;
+
+        const GLFormat format = toGLFormat(desc.format);
         glGenTextures(1, &texture.id);
-        state_.bindTexture(0, GL_TEXTURE_2D, texture.id);
-        glTexStorage2D(GL_TEXTURE_2D, static_cast<GLsizei>(levels), format.internal,
-                static_cast<GLsizei>(desc.width), static_cast<GLsizei>(desc.height));
+        state_.bindTexture(0, texture.target, texture.id);
+        if (desc.type == TextureType::Texture2DArray || desc.type == TextureType::Texture3D)
+            glTexStorage3D(texture.target, static_cast<GLsizei>(texture.mipLevels), format.internal,
+                    static_cast<GLsizei>(desc.width), static_cast<GLsizei>(desc.height),
+                    static_cast<GLsizei>(texture.depth));
+        else
+            glTexStorage2D(texture.target, static_cast<GLsizei>(texture.mipLevels), format.internal,
+                    static_cast<GLsizei>(desc.width), static_cast<GLsizei>(desc.height));
+
         if (desc.data && !isDepthFormat(desc.format))
         {
-            glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, static_cast<GLsizei>(desc.width),
-                    static_cast<GLsizei>(desc.height), format.format, format.type, desc.data);
-            if (desc.generateMipmaps && levels > 1) glGenerateMipmap(GL_TEXTURE_2D);
+            const std::uint32_t images =
+                    desc.type == TextureType::Texture3D ? 1 : layerCount(texture, 0);
+            const std::size_t imageBytes =
+                    static_cast<std::size_t>(desc.width) * desc.height * bytesPerPixel(desc.format);
+            for (std::uint32_t i = 0; i < images; ++i)
+                uploadLevel(texture, 0, i, static_cast<const char*>(desc.data) + i * imageBytes);
+            if (desc.generateMipmaps && texture.mipLevels > 1) glGenerateMipmap(texture.target);
         }
         label(GL_TEXTURE, texture.id, desc.debugName);
         return handleCast<TextureHandle>(textures_.insert(texture));
+    }
+
+    void updateTexture(TextureHandle handle, std::uint32_t mip, std::uint32_t layer,
+            const void* data) override
+    {
+        const GLTexture* texture = textures_.get(handleCast<TextureSlot>(handle));
+        if (passActive_ || !texture || !data || isDepthFormat(texture->format) ||
+                mip >= texture->mipLevels ||
+                (texture->type != TextureType::Texture3D && layer >= layerCount(*texture, mip)))
+        {
+            log("updateTexture: invalid handle, mip or layer, or called inside a render pass");
+            return;
+        }
+        uploadLevel(*texture, mip, layer, data);
+    }
+
+    void generateMipmaps(TextureHandle handle) override
+    {
+        const GLTexture* texture = textures_.get(handleCast<TextureSlot>(handle));
+        if (passActive_ || !texture || isDepthFormat(texture->format))
+        {
+            log("generateMipmaps: invalid handle, or called inside a render pass");
+            return;
+        }
+        if (texture->mipLevels < 2) return;
+        state_.bindTexture(0, texture->target, texture->id);
+        glGenerateMipmap(texture->target);
     }
 
     SamplerHandle createSampler(const SamplerDesc& desc) override
@@ -490,6 +616,11 @@ public:
                 desc.magFilter == Filter::Linear ? GL_LINEAR : GL_NEAREST);
         glSamplerParameteri(sampler.id, GL_TEXTURE_WRAP_S, toGLAddress(desc.addressU));
         glSamplerParameteri(sampler.id, GL_TEXTURE_WRAP_T, toGLAddress(desc.addressV));
+        glSamplerParameteri(sampler.id, GL_TEXTURE_WRAP_R, toGLAddress(desc.addressW));
+        if (desc.maxAnisotropy > 1.0f && caps_.maxAnisotropy > 1.0f)
+            glSamplerParameterf(sampler.id, kTextureMaxAnisotropy,
+                    desc.maxAnisotropy < caps_.maxAnisotropy ? desc.maxAnisotropy
+                                                             : caps_.maxAnisotropy);
         label(GL_SAMPLER, sampler.id, desc.debugName);
         return handleCast<SamplerHandle>(samplers_.insert(sampler));
     }
@@ -647,7 +778,7 @@ public:
         std::uint32_t width = 0;
         std::uint32_t height = 0;
         passActive_ = false;
-        passOffscreen_ = desc.colorCount > 0 || desc.depth.valid();
+        passOffscreen_ = desc.colorCount > 0 || desc.depth.texture.valid();
         passColorCount_ = desc.colorCount;
         passHasDepth_ = true;
         passStencil_ = false;
@@ -666,7 +797,7 @@ public:
             state_.bindFramebuffer(framebuffer->id);
             width = framebuffer->width;
             height = framebuffer->height;
-            passHasDepth_ = desc.depth.valid();
+            passHasDepth_ = desc.depth.texture.valid();
             passStencil_ = framebuffer->stencil;
             passFormats_ = framebuffer->formats;
         }
@@ -781,7 +912,7 @@ public:
             log("bindTexture: invalid texture handle, sampler handle or slot");
             return;
         }
-        state_.bindTexture(slot, GL_TEXTURE_2D, texture->id);
+        state_.bindTexture(slot, texture->target, texture->id);
         state_.bindSampler(slot, sampler->id);
     }
 
@@ -869,10 +1000,41 @@ private:
 
     static bool framebufferUses(const GLFramebuffer& framebuffer, std::uint32_t texture)
     {
-        if (framebuffer.depth == texture) return true;
+        if (framebuffer.depth.texture == texture) return true;
         for (std::uint32_t i = 0; i < framebuffer.colorCount; ++i)
-            if (framebuffer.colors[i] == texture) return true;
+            if (framebuffer.colors[i].texture == texture) return true;
         return false;
+    }
+
+    void uploadLevel(const GLTexture& texture, std::uint32_t mip, std::uint32_t layer,
+            const void* data)
+    {
+        const GLFormat format = toGLFormat(texture.format);
+        const GLsizei width = static_cast<GLsizei>(mipSize(texture.width, mip));
+        const GLsizei height = static_cast<GLsizei>(mipSize(texture.height, mip));
+        const GLint level = static_cast<GLint>(mip);
+        state_.bindTexture(0, texture.target, texture.id);
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+        switch (texture.type)
+        {
+            case TextureType::Texture2D:
+                glTexSubImage2D(GL_TEXTURE_2D, level, 0, 0, width, height, format.format,
+                        format.type, data);
+                break;
+            case TextureType::TextureCube:
+                glTexSubImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + layer, level, 0, 0, width, height,
+                        format.format, format.type, data);
+                break;
+            case TextureType::Texture2DArray:
+                glTexSubImage3D(GL_TEXTURE_2D_ARRAY, level, 0, 0, static_cast<GLint>(layer), width,
+                        height, 1, format.format, format.type, data);
+                break;
+            case TextureType::Texture3D:
+                glTexSubImage3D(GL_TEXTURE_3D, level, 0, 0, 0, width, height,
+                        static_cast<GLsizei>(mipSize(texture.depth, mip)), format.format,
+                        format.type, data);
+                break;
+        }
     }
 
     const GLFramebuffer* findFramebuffer(const RenderPassDesc& desc) const
@@ -880,14 +1042,45 @@ private:
         for (std::size_t i = 0; i < framebuffers_.size(); ++i)
         {
             const GLFramebuffer& framebuffer = framebuffers_[i];
-            if (framebuffer.colorCount != desc.colorCount || framebuffer.depth != desc.depth.bits())
+            if (framebuffer.colorCount != desc.colorCount ||
+                    !sameAttachment(framebuffer.depth, desc.depth))
                 continue;
             bool same = true;
             for (std::uint32_t c = 0; c < desc.colorCount; ++c)
-                if (framebuffer.colors[c] != desc.colors[c].bits()) same = false;
+                if (!sameAttachment(framebuffer.colors[c], desc.colors[c])) same = false;
             if (same) return &framebuffer;
         }
         return nullptr;
+    }
+
+    const GLTexture* attachable(const RenderTarget& target, bool depth) const
+    {
+        const GLTexture* texture = textures_.get(handleCast<TextureSlot>(target.texture));
+        if (!texture || !(texture->usage & kTextureRenderTarget) ||
+                isDepthFormat(texture->format) != depth || target.mip >= texture->mipLevels ||
+                target.layer >= layerCount(*texture, target.mip))
+            return nullptr;
+        return texture;
+    }
+
+    static void attach(GLenum point, const GLTexture& texture, const RenderTarget& target)
+    {
+        const GLint mip = static_cast<GLint>(target.mip);
+        switch (texture.type)
+        {
+            case TextureType::Texture2D:
+                glFramebufferTexture2D(GL_FRAMEBUFFER, point, GL_TEXTURE_2D, texture.id, mip);
+                break;
+            case TextureType::TextureCube:
+                glFramebufferTexture2D(GL_FRAMEBUFFER, point,
+                        GL_TEXTURE_CUBE_MAP_POSITIVE_X + target.layer, texture.id, mip);
+                break;
+            case TextureType::Texture2DArray:
+            case TextureType::Texture3D:
+                glFramebufferTextureLayer(GL_FRAMEBUFFER, point, texture.id, mip,
+                        static_cast<GLint>(target.layer));
+                break;
+        }
     }
 
     const GLFramebuffer* createFramebuffer(const RenderPassDesc& desc)
@@ -898,31 +1091,32 @@ private:
 
         GLFramebuffer framebuffer;
         framebuffer.colorCount = desc.colorCount;
-        framebuffer.depth = desc.depth.bits();
         framebuffer.formats.window = false;
         framebuffer.formats.colorCount = desc.colorCount;
 
         const GLTexture* colors[RenderPassDesc::kMaxColorTargets] = {};
         for (std::uint32_t i = 0; i < desc.colorCount; ++i)
         {
-            colors[i] = textures_.get(handleCast<TextureSlot>(desc.colors[i]));
-            if (!colors[i] || !(colors[i]->usage & kTextureRenderTarget) ||
-                    isDepthFormat(colors[i]->format))
-                return nullptr;
-            framebuffer.colors[i] = desc.colors[i].bits();
+            colors[i] = attachable(desc.colors[i], false);
+            if (!colors[i]) return nullptr;
+            framebuffer.colors[i].texture = desc.colors[i].texture.bits();
+            framebuffer.colors[i].mip = desc.colors[i].mip;
+            framebuffer.colors[i].layer = desc.colors[i].layer;
             framebuffer.formats.colors[i] = colors[i]->format;
-            framebuffer.width = colors[i]->width;
-            framebuffer.height = colors[i]->height;
+            framebuffer.width = mipSize(colors[i]->width, desc.colors[i].mip);
+            framebuffer.height = mipSize(colors[i]->height, desc.colors[i].mip);
         }
 
         const GLTexture* depth = nullptr;
-        if (desc.depth.valid())
+        if (desc.depth.texture.valid())
         {
-            depth = textures_.get(handleCast<TextureSlot>(desc.depth));
-            if (!depth || !(depth->usage & kTextureRenderTarget) || !isDepthFormat(depth->format))
-                return nullptr;
-            framebuffer.width = depth->width;
-            framebuffer.height = depth->height;
+            depth = attachable(desc.depth, true);
+            if (!depth) return nullptr;
+            framebuffer.depth.texture = desc.depth.texture.bits();
+            framebuffer.depth.mip = desc.depth.mip;
+            framebuffer.depth.layer = desc.depth.layer;
+            framebuffer.width = mipSize(depth->width, desc.depth.mip);
+            framebuffer.height = mipSize(depth->height, desc.depth.mip);
             framebuffer.stencil = depth->format == TextureFormat::Depth24Stencil8;
             framebuffer.formats.depth = depth->format;
         }
@@ -933,14 +1127,12 @@ private:
             GL_NONE };
         for (std::uint32_t i = 0; i < desc.colorCount; ++i)
         {
-            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0 + i, GL_TEXTURE_2D,
-                    colors[i]->id, 0);
+            attach(GL_COLOR_ATTACHMENT0 + i, *colors[i], desc.colors[i]);
             drawBuffers[i] = GL_COLOR_ATTACHMENT0 + i;
         }
         if (depth)
-            glFramebufferTexture2D(GL_FRAMEBUFFER,
-                    framebuffer.stencil ? GL_DEPTH_STENCIL_ATTACHMENT : GL_DEPTH_ATTACHMENT,
-                    GL_TEXTURE_2D, depth->id, 0);
+            attach(framebuffer.stencil ? GL_DEPTH_STENCIL_ATTACHMENT : GL_DEPTH_ATTACHMENT, *depth,
+                    desc.depth);
         glDrawBuffers(desc.colorCount > 0 ? static_cast<GLsizei>(desc.colorCount) : 1, drawBuffers);
 
         if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)

@@ -351,9 +351,9 @@ int main(int argc, char** argv)
     prisma::RenderPassDesc scenePass = pass;
     if (offscreen)
     {
-        scenePass.colors[0] = colorTarget;
+        scenePass.colors[0].texture = colorTarget;
         scenePass.colorCount = 1;
-        scenePass.depth = depthTarget;
+        scenePass.depth.texture = depthTarget;
         scenePass.depthStore = prisma::StoreOp::Discard;
         pass.depthLoad = prisma::LoadOp::DontCare;
     }

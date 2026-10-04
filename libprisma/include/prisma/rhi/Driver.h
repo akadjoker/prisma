@@ -21,6 +21,9 @@ public:
     virtual SamplerHandle createSampler(const SamplerDesc& desc) = 0;
     virtual void updateBuffer(BufferHandle handle, std::uint32_t offset, const void* data,
             std::uint32_t size) = 0;
+    virtual void updateTexture(TextureHandle handle, std::uint32_t mip, std::uint32_t layer,
+            const void* data) = 0;
+    virtual void generateMipmaps(TextureHandle handle) = 0;
     virtual void destroy(BufferHandle handle) = 0;
     virtual void destroy(ShaderHandle handle) = 0;
     virtual void destroy(PipelineHandle handle) = 0;
