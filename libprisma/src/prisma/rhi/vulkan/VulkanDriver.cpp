@@ -2715,10 +2715,14 @@ public:
         VulkanBuffer staging;
         staging.size = rect.width * rect.height * 4;
         staging.vkUsage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-        if (!createVersion(staging, nullptr) || !beginImmediate()) return false;
+        if (!createVersion(staging, nullptr)) return false;
 
-        recordRead(immediateCommands_, read, rect, staging.versions[0].buffer);
-        const bool done = endImmediate();
+        bool done = beginImmediate();
+        if (done)
+        {
+            recordRead(immediateCommands_, read, rect, staging.versions[0].buffer);
+            done = endImmediate();
+        }
         if (done)
             copyRows(static_cast<const unsigned char*>(staging.versions[0].mapped), rect.width,
                     rect.height, read.fromTexture, read.swapRedBlue, rgba);
@@ -2821,13 +2825,17 @@ public:
         VulkanBuffer staging;
         staging.size = size;
         staging.vkUsage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-        if (!createVersion(staging, nullptr) || !beginImmediate()) return false;
-        VkBufferCopy region = {};
-        region.srcOffset = offset;
-        region.size = size;
-        vkCmdCopyBuffer(immediateCommands_, source->versions[source->current].buffer,
-                staging.versions[0].buffer, 1, &region);
-        const bool done = endImmediate();
+        if (!createVersion(staging, nullptr)) return false;
+        bool done = beginImmediate();
+        if (done)
+        {
+            VkBufferCopy region = {};
+            region.srcOffset = offset;
+            region.size = size;
+            vkCmdCopyBuffer(immediateCommands_, source->versions[source->current].buffer,
+                    staging.versions[0].buffer, 1, &region);
+            done = endImmediate();
+        }
         if (done) memcpy(data, staging.versions[0].mapped, size);
         vkDestroyBuffer(device_, staging.versions[0].buffer, nullptr);
         memory_.free(staging.versions[0].allocation);
@@ -3848,6 +3856,18 @@ private:
         if (destroy) destroy(instance, messenger, nullptr);
     }
 
+    static bool hasInstanceExtension(const char* layer, const char* name)
+    {
+        std::uint32_t count = 0;
+        vkEnumerateInstanceExtensionProperties(layer, &count, nullptr);
+        ct::Vector<VkExtensionProperties> found;
+        found.resize(count);
+        vkEnumerateInstanceExtensionProperties(layer, &count, found.data());
+        for (std::uint32_t i = 0; i < count; ++i)
+            if (strcmp(found[i].extensionName, name) == 0) return true;
+        return false;
+    }
+
     bool createInstance(bool debug)
     {
         std::uint32_t version = VK_API_VERSION_1_0;
@@ -3866,6 +3886,7 @@ private:
             extensions.push_back(platformExtensions[i]);
 
         bool validation = false;
+        bool utils = false;
         if (debug)
         {
             std::uint32_t layerCount = 0;
@@ -3875,7 +3896,10 @@ private:
             vkEnumerateInstanceLayerProperties(&layerCount, layers.data());
             for (std::uint32_t i = 0; i < layerCount; ++i)
                 if (strcmp(layers[i].layerName, kValidationLayer) == 0) validation = true;
-            extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+            utils = hasInstanceExtension(nullptr, VK_EXT_DEBUG_UTILS_EXTENSION_NAME) ||
+                    (validation &&
+                            hasInstanceExtension(kValidationLayer, VK_EXT_DEBUG_UTILS_EXTENSION_NAME));
+            if (utils) extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
         }
 
         VkApplicationInfo application = {};
@@ -3899,7 +3923,7 @@ private:
             return false;
         }
 
-        if (debug)
+        if (utils)
         {
             VkDebugUtilsMessengerCreateInfoEXT messenger = {};
             messenger.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
@@ -4076,12 +4100,6 @@ private:
         vkGetDeviceQueue(device_, queueFamily_, 0, &queue_);
         memory_.init(physicalDevice_, device_);
         VkFormatProperties depthProperties;
-        vkGetPhysicalDeviceFormatProperties(physicalDevice_, VK_FORMAT_D32_SFLOAT,
-                &depthProperties);
-        depthFormat_ = (depthProperties.optimalTilingFeatures &
-                               VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT)
-                               ? VK_FORMAT_D32_SFLOAT
-                               : VK_FORMAT_X8_D24_UNORM_PACK32;
         vkGetPhysicalDeviceFormatProperties(physicalDevice_, VK_FORMAT_D24_UNORM_S8_UINT,
                 &depthProperties);
         depthStencilFormat_ = (depthProperties.optimalTilingFeatures &
@@ -4320,7 +4338,10 @@ private:
                 (capabilities.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) != 0;
         if (window_->canRead) info.imageUsage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
         info.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
-        info.preTransform = capabilities.currentTransform;
+        info.preTransform =
+                (capabilities.supportedTransforms & VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR)
+                        ? VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR
+                        : capabilities.currentTransform;
         info.compositeAlpha = alpha;
         info.presentMode = VK_PRESENT_MODE_FIFO_KHR;
         info.clipped = VK_TRUE;
