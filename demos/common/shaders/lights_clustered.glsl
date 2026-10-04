@@ -54,8 +54,11 @@ vec3 evaluateLights(PbrSurface surface, vec3 n, vec3 v, vec3 worldPosition, vec3
     uint first = entry >> 16u;
     uint count = entry & 0xFFu;
     for (uint i = 0u; i < count; ++i)
-        color += surfaceShading(surface, punctualLight(uLights[lightIndexAt(first + i)],
-                worldPosition), n, v);
+    {
+        Light light = punctualLight(uLights[lightIndexAt(first + i)], worldPosition);
+        if (light.attenuation <= 0.0 || dot(n, light.l) <= 0.0) continue;
+        color += surfaceShading(surface, light, n, v);
+    }
     return color;
 }
 
@@ -66,6 +69,10 @@ vec3 evaluateAllLights(PbrSurface surface, vec3 n, vec3 v, vec3 worldPosition)
         color += surfaceShading(surface, directionalLight(uSunDirection, uSunColorIntensity), n, v);
     int count = int(uCounts.w);
     for (int i = 0; i < count; ++i)
-        color += surfaceShading(surface, punctualLight(uLights[i], worldPosition), n, v);
+    {
+        Light light = punctualLight(uLights[i], worldPosition);
+        if (light.attenuation <= 0.0 || dot(n, light.l) <= 0.0) continue;
+        color += surfaceShading(surface, light, n, v);
+    }
     return color;
 }
