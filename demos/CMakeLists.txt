@@ -5,10 +5,6 @@ endif()
 add_library(mathc STATIC ${PROJECT_SOURCE_DIR}/external/math/mathc.cpp)
 target_include_directories(mathc PUBLIC ${PROJECT_SOURCE_DIR}/external/math)
 
-add_library(demo_common STATIC common/stb_impl.cpp)
-target_include_directories(demo_common PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/common)
-target_compile_options(demo_common PRIVATE -w)
-
 function(prisma_demo folder name)
   cmake_parse_arguments(DEMO "" "" "SHADERS" ${ARGN})
   if(DEMO_SHADERS AND NOT PRISMA_SHADER_TOOLS)

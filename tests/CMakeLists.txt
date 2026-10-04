@@ -4,9 +4,15 @@ add_test(NAME null_driver COMMAND test_null_driver)
 
 add_executable(test_texture_loader test_texture_loader.cpp)
 target_include_directories(test_texture_loader PRIVATE ${PROJECT_SOURCE_DIR}/demos/common)
-target_link_libraries(test_texture_loader PRIVATE prisma)
+target_link_libraries(test_texture_loader PRIVATE prisma demo_common ct)
 target_compile_definitions(test_texture_loader PRIVATE PRISMA_MEDIA_DIR="${PRISMA_MEDIA_DIR}")
 add_test(NAME texture_loader COMMAND test_texture_loader)
+
+add_executable(test_sdkmesh test_sdkmesh.cpp)
+target_include_directories(test_sdkmesh PRIVATE ${PROJECT_SOURCE_DIR}/demos/common)
+target_link_libraries(test_sdkmesh PRIVATE prisma demo_common ct)
+target_compile_definitions(test_sdkmesh PRIVATE PRISMA_MEDIA_DIR="${PRISMA_MEDIA_DIR}")
+add_test(NAME sdkmesh COMMAND test_sdkmesh)
 
 add_executable(test_free_ranges test_free_ranges.cpp)
 target_include_directories(test_free_ranges PRIVATE ${PROJECT_SOURCE_DIR}/libprisma/src)
