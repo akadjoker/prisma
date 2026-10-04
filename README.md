@@ -106,6 +106,7 @@ Numbered, one concept each. Run any of them on Vulkan with the `vulkan` argument
 | `23_fluid` | a 2D smoothed-particle hydrodynamics fluid in compute shaders |
 | `24_nbody` | 8192 bodies attracting each other, shared-memory tiles in compute |
 | `25_oit` | order-independent transparency with per-pixel linked lists (O toggles) |
+| `26_basic_compute` | a compute shader adds two buffers, the result is read back and checked on the CPU, then drawn as a grid |
 
 See [demos/README.md](demos/README.md) for pictures of each demo. The demos that load meshes and textures read them from a media folder: set `PRISMA_MEDIA` or the CMake option `PRISMA_MEDIA_DIR`. A demo whose feature is missing on the GPU prints a line and exits.
 

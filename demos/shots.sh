@@ -45,5 +45,6 @@ done <<LIST
 23_fluid fluid 400
 24_nbody nbody 200
 25_oit oit 10
+26_basic_compute basic_compute 10
 LIST
 exit $status
