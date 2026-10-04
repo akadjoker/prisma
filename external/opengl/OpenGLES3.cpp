@@ -4,7 +4,6 @@
 #include "OpenGLES3.h"
 #include <cstdlib>
 #include <cstring>
-#include <string>
 
 #if defined( __APPLE__ )
 #include <dlfcn.h>
@@ -471,17 +470,17 @@ bool checkExtensionSupported( const char *extName )
 
 void getOpenGLESVersion()
 {
-	std::string version = ( char * ) glGetString( GL_VERSION );
+	const char *version = ( const char * ) glGetString( GL_VERSION );
+	if ( !version ) return;
 
-	size_t pos1 = version.find( "." );
-	size_t pos2 = version.find( ".", pos1 + 1 );
-	if ( pos2 == std::string::npos ) pos2 = version.find( " ", pos1 + 1 );
-	if ( pos2 == std::string::npos ) pos2 = version.length();
-	size_t pos0 = version.rfind( " ", pos1 );
-	if ( pos0 == std::string::npos ) pos0 = -1;
+	const char *dot = strchr( version, '.' );
+	if ( !dot ) return;
 
-	glESExt::majorVersion = atoi( version.substr( pos0 + 1, pos1 ).c_str() );
-	glESExt::minorVersion = atoi( version.substr( pos1 + 1, pos2 ).c_str() );
+	const char *start = dot;
+	while ( start > version && start[-1] >= '0' && start[-1] <= '9' ) --start;
+
+	glESExt::majorVersion = atoi( start );
+	glESExt::minorVersion = atoi( dot + 1 );
 }
 
 static void *( *g_proc_loader )( const char * ) = 0x0;
