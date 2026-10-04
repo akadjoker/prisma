@@ -1,4 +1,4 @@
-#include "common/FrameStats.h"
+#include "common/StatsOverlay.h"
 #include "common/GltfGpu.h"
 #include "common/Ibl.h"
 #include "common/Lights.h"
@@ -321,13 +321,17 @@ int main(int argc, char** argv)
     double lastTime = time_seconds();
     if (zenapp::hasArgument(argc, argv, "novsync")) window_set_vsync(window, false);
     static const char* const phaseNames[4] = { "cull", "uniforms", "record", "present" };
-    zenapp::FrameStats stats("gltf viewer", phaseNames, 4);
+    zenapp::FrameStats stats(4);
+    zenapp::TextOverlay overlay;
+    const bool overlayReady = overlay.create(driver);
+    bool showStats = !zenapp::hasArgument(argc, argv, "nostats");
     int frames = 0;
     while (ready && !window_should_close(window))
     {
         window_begin_frame(window);
         stats.begin();
         if (key_pressed(window, KEY_ESCAPE)) window_set_should_close(window, true);
+        if (key_pressed(window, KEY_F1)) showStats = !showStats;
 
         int width = 1;
         int height = 1;
@@ -463,6 +467,15 @@ int main(int argc, char** argv)
             driver->updateBuffer(objectBuffer, 0, objectBytes.data(),
                     static_cast<std::uint32_t>(draws.size() * objectStride));
         driver->updateBuffer(clusteredBuffer, 0, &clustered, sizeof(clustered));
+        overlay.begin(static_cast<unsigned>(width), static_cast<unsigned>(height));
+        if (overlayReady && showStats)
+        {
+            char extra[128];
+            snprintf(extra, sizeof(extra), "draws %u of %u   F1 hides this", static_cast<unsigned>(draws.size()),
+                    maxDraws);
+            zenapp::drawStatsOverlay(&overlay, stats, phaseNames, 4, extra);
+        }
+        overlay.upload(driver);
         driver->beginRenderPass(pass);
 
         driver->bindPipeline(skyPipeline);
@@ -505,6 +518,7 @@ int main(int argc, char** argv)
                     sizeof(ObjectUniforms));
             zenapp::drawGltfPrimitive(driver, gpu, model.primitives[draw.primitive]);
         }
+        overlay.draw(driver);
         driver->endRenderPass();
         stats.phase(2);
         zenapp::endFrame(driver);
@@ -515,6 +529,7 @@ int main(int argc, char** argv)
         if (maxFrames > 0 && ++frames >= maxFrames) window_set_should_close(window, true);
     }
 
+    overlay.destroy(driver);
     driver->destroy(skyPipeline);
     driver->destroy(blendPipeline);
     driver->destroy(doublePipeline);

@@ -1,8 +1,5 @@
 #pragma once
 
-#include "platform.h"
-
-#include <stdio.h>
 #include <time.h>
 
 namespace zenapp
@@ -20,11 +17,12 @@ class FrameStats
 public:
     enum
     {
-        kMaxPhases = 6
+        kMaxPhases = 6,
+        kHistory = 160
     };
 
-    FrameStats(const char* title, const char* const* names, int phaseCount)
-        : title_(title), names_(names), phaseCount_(phaseCount < kMaxPhases ? phaseCount : kMaxPhases)
+    explicit FrameStats(int phaseCount)
+        : phaseCount_(phaseCount < kMaxPhases ? phaseCount : kMaxPhases)
     {
     }
 
@@ -49,24 +47,25 @@ public:
     {
         const double now = monotonicSeconds();
         const double milliseconds = (now - frameStart_) * 1000.0;
+        history_[head_] = static_cast<float>(milliseconds);
+        head_ = (head_ + 1) % kHistory;
+        if (historyCount_ < kHistory) ++historyCount_;
+
         totalSum_ += milliseconds;
         if (milliseconds > totalWorst_) totalWorst_ = milliseconds;
         ++frames_;
-        if (milliseconds > 25.0) ++slow_;
-        if (now - windowStart_ < 1.0) return;
+        if (now - windowStart_ < 0.5) return;
 
-        char line[512];
-        int length = snprintf(line, sizeof(line), "%s: %.1f fps, frame avg %.1f ms worst %.1f ms, %d over 25 ms |",
-                title_, static_cast<double>(frames_) / (now - windowStart_), totalSum_ / frames_,
-                totalWorst_, slow_);
-        for (int i = 0; i < phaseCount_ && length > 0 && length < static_cast<int>(sizeof(line)); ++i)
-            length += snprintf(line + length, sizeof(line) - static_cast<size_t>(length),
-                    " %s %.1f/%.1f", names_[i], sum_[i] / frames_, worst_[i]);
-        log_error("%s", line);
-
+        fps_ = static_cast<float>(static_cast<double>(frames_) / (now - windowStart_));
+        average_ = static_cast<float>(totalSum_ / frames_);
+        worst_ms_ = static_cast<float>(totalWorst_);
+        for (int i = 0; i < phaseCount_; ++i)
+        {
+            phaseAverage_[i] = static_cast<float>(sum_[i] / frames_);
+            phaseWorst_[i] = static_cast<float>(worst_[i]);
+        }
         windowStart_ = now;
         frames_ = 0;
-        slow_ = 0;
         totalSum_ = 0.0;
         totalWorst_ = 0.0;
         for (int i = 0; i < kMaxPhases; ++i)
@@ -76,19 +75,35 @@ public:
         }
     }
 
+    float fps() const { return fps_; }
+    float averageMs() const { return average_; }
+    float worstMs() const { return worst_ms_; }
+    float phaseAverageMs(int i) const { return phaseAverage_[i]; }
+    float phaseWorstMs(int i) const { return phaseWorst_[i]; }
+    int historyCount() const { return historyCount_; }
+    float historyMs(int index) const
+    {
+        return history_[(head_ + kHistory - historyCount_ + index) % kHistory];
+    }
+
 private:
-    const char* title_;
-    const char* const* names_;
     int phaseCount_;
     double frameStart_ = 0.0;
     double last_ = 0.0;
     double windowStart_ = 0.0;
     int frames_ = 0;
-    int slow_ = 0;
     double totalSum_ = 0.0;
     double totalWorst_ = 0.0;
     double sum_[kMaxPhases] = {};
     double worst_[kMaxPhases] = {};
+    float fps_ = 0.0f;
+    float average_ = 0.0f;
+    float worst_ms_ = 0.0f;
+    float phaseAverage_[kMaxPhases] = {};
+    float phaseWorst_[kMaxPhases] = {};
+    float history_[kHistory] = {};
+    int head_ = 0;
+    int historyCount_ = 0;
 };
 
 } // namespace zenapp
