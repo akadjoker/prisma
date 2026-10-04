@@ -5,9 +5,11 @@ A rendering backend library in C++14. It gives one interface over OpenGL 4.6, Op
 ## Features
 
 - One `Driver` interface for every backend.
-- Buffers (vertex, index, uniform), 2D textures, samplers, shaders and pipelines, all referenced by 32-bit handles.
+- Buffers (vertex, index, uniform), textures (2D, 2D array, cube, 3D), samplers with anisotropic filtering, shaders and pipelines, all referenced by 32-bit handles.
+- Several vertex buffers per pipeline, compact vertex formats and instancing.
 - Pipelines carry depth, cull and blend state.
-- Render passes with load and store operations, drawing to the window or to offscreen targets: several colour targets, depth, HDR and sRGB formats.
+- Render passes with load and store operations, drawing to the window or to offscreen targets: several colour targets, depth, HDR and sRGB formats, any mip level or layer of a texture.
+- Pixel readback from the window or from a texture.
 - Viewport and scissor with a top-left origin.
 - The same conventions on every backend: clip depth from 0 to 1, linear colour with sRGB encoding on sRGB targets.
 - Driver debug messages delivered to the application's log function.
@@ -20,10 +22,12 @@ A rendering backend library in C++14. It gives one interface over OpenGL 4.6, Op
 |---|---|---|
 | OpenGL 4.6 | desktop | working |
 | OpenGL ES 3 | Android, web, desktop | working on desktop; Android and web not tested yet |
-| Vulkan 1.3 | desktop, Android | in progress: device, swapchain and clear |
+| Vulkan 1.3 | desktop, Android | working on desktop; Android not tested yet |
 | Null | any | working; used by tests that need no GPU |
 
 Only core features of each API are required. Extensions are optional and reported through `Caps`.
+
+The same test, with checks made by reading pixels back, runs on OpenGL 4.6, OpenGL ES 3 and Vulkan.
 
 ## Build
 
@@ -52,7 +56,7 @@ ctest --test-dir build
 ./build/apps/triangle          # one triangle
 ./build/apps/cube              # a spinning textured cube
 ./build/apps/cube offscreen    # the cube drawn to an HDR target, then copied to the window
-./build/apps/clear vulkan      # the clear sample on the Vulkan backend
+./build/apps/cube vulkan       # any sample runs on Vulkan with this argument
 ```
 
 Escape closes a sample.

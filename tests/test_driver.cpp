@@ -5,6 +5,27 @@
 
 #include <string.h>
 
+#ifdef PRISMA_APP_SPIRV
+#include "array.frag.h"
+#include "cube.frag.h"
+#include "flat.frag.h"
+#include "flat.vert.h"
+#include "instanced.frag.h"
+#include "instanced.vert.h"
+#include "lod.frag.h"
+#include "no_buffer.vert.h"
+#include "plain.vert.h"
+#include "red.frag.h"
+#include "scaled.frag.h"
+#include "textured.frag.h"
+#include "textured.vert.h"
+#include "two_targets.frag.h"
+#include "volume.frag.h"
+#define SPIRV(name) name, static_cast<std::uint32_t>(sizeof(name))
+#else
+#define SPIRV(name) nullptr, 0u
+#endif
+
 #ifdef PRISMA_GLES
 #define SHADER_HEADER "#version 300 es\nprecision highp float;\n"
 #else
@@ -31,6 +52,16 @@ bool makeCurrent(void* user)
 }
 
 void swapBuffers(void* user) { window_swap(static_cast<PlatformWindow*>(user)); }
+
+const char* const* instanceExtensions(void*, std::uint32_t* count)
+{
+    return vulkan_instance_extensions(count);
+}
+
+bool createSurface(void* user, void* instance, std::uint64_t* surface)
+{
+    return vulkan_create_surface(static_cast<PlatformWindow*>(user), instance, nullptr, surface);
+}
 
 void framebufferSize(void* user, std::uint32_t* width, std::uint32_t* height)
 {
@@ -206,10 +237,40 @@ void setParams(unsigned char* bytes, unsigned int stride, int index, const Param
     memcpy(bytes + stride * index, &value, sizeof(Params));
 }
 
+prisma::Driver* readDriver = nullptr;
+
+prisma::RenderPassDesc keep(const prisma::RenderPassDesc& pass)
+{
+    prisma::RenderPassDesc next = pass;
+    next.colorLoad = prisma::LoadOp::Load;
+    next.depthLoad = prisma::LoadOp::Load;
+    return next;
+}
+
+prisma::ShaderHandle makeShader(prisma::Driver* driver, prisma::ShaderStage stage,
+        const char* source, const void* spirv, std::uint32_t spirvSize)
+{
+    prisma::ShaderDesc desc;
+    desc.stage = stage;
+    desc.source = source;
+    desc.spirv = spirv;
+    desc.spirvSize = spirvSize;
+    return driver->createShader(desc);
+}
+
 bool pixelIs(int x, int y, int r, int g, int b, int tolerance = 1)
 {
     unsigned char pixel[4] = { 0, 0, 0, 0 };
-    glReadPixels(x, y, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, pixel);
+    prisma::Rect rect;
+    rect.x = x;
+    rect.y = 240 - 1 - y;
+    rect.width = 1;
+    rect.height = 1;
+    if (!readDriver->readPixels(prisma::RenderTarget(), rect, pixel))
+    {
+        printf("pixel (%d,%d) could not be read\n", x, y);
+        return false;
+    }
     const int dr = pixel[0] - r;
     const int dg = pixel[1] - g;
     const int db = pixel[2] - b;
@@ -221,11 +282,13 @@ bool pixelIs(int x, int y, int r, int g, int b, int tolerance = 1)
 
 } // namespace
 
-int main()
+int main(int argc, char** argv)
 {
     using namespace prisma;
 
     static unsigned char paramBytes[kMaxParamStride * kParamCount];
+
+    const bool useVulkan = argc > 1 && strcmp(argv[1], "vulkan") == 0;
 
     if (!platform_init())
     {
@@ -240,24 +303,38 @@ int main()
     config.x = WINDOW_POS_CENTERED;
     config.y = WINDOW_POS_CENTERED;
     config.monitor = MONITOR_CURRENT;
-    config.render = RENDER_GL;
-    config.gl.debug = true;
 
-#ifdef PRISMA_GLES
-    config.gl.profile = GL_PROFILE_ES;
-    config.gl.major = 3;
     PlatformWindow* window = nullptr;
-    for (int minor = 2; minor >= 0 && !window; --minor)
+    if (useVulkan)
     {
-        config.gl.minor = minor;
+        if (!vulkan_supported())
+        {
+            printf("vulkan is not supported\n");
+            platform_shutdown();
+            return 1;
+        }
+        config.render = RENDER_VULKAN;
         window = window_create(&config);
     }
+    else
+    {
+        config.render = RENDER_GL;
+        config.gl.debug = true;
+#ifdef PRISMA_GLES
+        config.gl.profile = GL_PROFILE_ES;
+        config.gl.major = 3;
+        for (int minor = 2; minor >= 0 && !window; --minor)
+        {
+            config.gl.minor = minor;
+            window = window_create(&config);
+        }
 #else
-    config.gl.profile = GL_PROFILE_CORE;
-    config.gl.major = 4;
-    config.gl.minor = 6;
-    PlatformWindow* window = window_create(&config);
+        config.gl.profile = GL_PROFILE_CORE;
+        config.gl.major = 4;
+        config.gl.minor = 6;
+        window = window_create(&config);
 #endif
+    }
     if (!window)
     {
         printf("window: %s\n", platform_get_error());
@@ -272,9 +349,16 @@ int main()
     gl.framebufferSize = framebufferSize;
     gl.getProcAddress = gl_proc_address;
 
+    VulkanPlatform vulkan;
+    vulkan.user = window;
+    vulkan.instanceExtensions = instanceExtensions;
+    vulkan.createSurface = createSurface;
+    vulkan.framebufferSize = framebufferSize;
+
     DriverDesc desc;
-    desc.type = DriverType::OpenGL;
+    desc.type = useVulkan ? DriverType::Vulkan : DriverType::OpenGL;
     desc.gl = &gl;
+    desc.vulkan = &vulkan;
     desc.log = captureLog;
     desc.debug = true;
 
@@ -285,23 +369,32 @@ int main()
 
     if (driver)
     {
-        CHECK(driver->type() == DriverType::OpenGL);
+        readDriver = driver;
+        CHECK(driver->type() == desc.type);
         CHECK(driver->caps().maxTextureSize >= 2048);
         CHECK(driver->caps().maxColorTargets >= 4);
 
-#ifdef PRISMA_GLES
-        CHECK(driver->caps().gles);
-        CHECK(driver->caps().versionMajor == 3);
-#else
-        CHECK(!driver->caps().gles);
-        CHECK(driver->caps().versionMajor == 4 && driver->caps().versionMinor == 6);
-#endif
-        if (driver->caps().debugOutput)
+        if (driver->type() == DriverType::OpenGL)
         {
-            messages = 0;
-            glEnable(0xDEAD);
-            CHECK(messages == 1);
-            CHECK(strstr(lastMessage, "GL error") != nullptr);
+#ifdef PRISMA_GLES
+            CHECK(driver->caps().gles);
+            CHECK(driver->caps().versionMajor == 3);
+#else
+            CHECK(!driver->caps().gles);
+            CHECK(driver->caps().versionMajor == 4 && driver->caps().versionMinor == 6);
+#endif
+            if (driver->caps().debugOutput)
+            {
+                messages = 0;
+                glEnable(0xDEAD);
+                CHECK(messages == 1);
+                CHECK(strstr(lastMessage, "GL error") != nullptr);
+            }
+        }
+        else
+        {
+            CHECK(!driver->caps().gles);
+            CHECK(driver->caps().versionMajor == 1 && driver->caps().versionMinor >= 3);
         }
 
         messages = 0;
@@ -316,12 +409,10 @@ int main()
         bufferDesc.debugName = "test vertices";
         const BufferHandle buffer = driver->createBuffer(bufferDesc);
 
-        ShaderDesc shaderDesc;
-        shaderDesc.source = kVertexSource;
-        const ShaderHandle vertexShader = driver->createShader(shaderDesc);
-        shaderDesc.stage = ShaderStage::Fragment;
-        shaderDesc.source = kFragmentSource;
-        const ShaderHandle fragmentShader = driver->createShader(shaderDesc);
+        const ShaderHandle vertexShader =
+                makeShader(driver, ShaderStage::Vertex, kVertexSource, SPIRV(plain_vert));
+        const ShaderHandle fragmentShader =
+                makeShader(driver, ShaderStage::Fragment, kFragmentSource, SPIRV(red_frag));
 
         PipelineDesc pipelineDesc;
         pipelineDesc.vertexShader = vertexShader;
@@ -344,13 +435,15 @@ int main()
         window_begin_frame(window);
         driver->beginFrame();
         driver->beginRenderPass(pass);
+        driver->endRenderPass();
         CHECK(pixelIs(160, 120, 26, 64, 115));
+        driver->beginRenderPass(keep(pass));
         driver->bindPipeline(pipeline);
         driver->bindVertexBuffer(0, buffer, 0);
         driver->draw(3, 0);
+        driver->endRenderPass();
         CHECK(pixelIs(160, 120, 255, 0, 0));
         CHECK(pixelIs(2, 2, 255, 0, 0));
-        driver->endRenderPass();
         driver->endFrame();
         driver->present();
         CHECK(messages == 0);
@@ -419,12 +512,10 @@ int main()
         CHECK(quadIndices.valid());
         CHECK(params.valid());
 
-        ShaderDesc flatDesc;
-        flatDesc.source = kFlatVertexSource;
-        const ShaderHandle flatVertex = driver->createShader(flatDesc);
-        flatDesc.stage = ShaderStage::Fragment;
-        flatDesc.source = kFlatFragmentSource;
-        const ShaderHandle flatFragment = driver->createShader(flatDesc);
+        const ShaderHandle flatVertex =
+                makeShader(driver, ShaderStage::Vertex, kFlatVertexSource, SPIRV(flat_vert));
+        const ShaderHandle flatFragment =
+                makeShader(driver, ShaderStage::Fragment, kFlatFragmentSource, SPIRV(flat_frag));
 
         PipelineDesc flatPipelineDesc;
         flatPipelineDesc.vertexShader = flatVertex;
@@ -461,33 +552,44 @@ int main()
         CHECK(messages == 1);
         messages = 0;
         driver->drawIndexed(6, 0);
+        driver->endRenderPass();
         CHECK(pixelIs(80, 120, 0, 255, 0));
         CHECK(pixelIs(240, 120, 0, 0, 0));
 
+        driver->beginRenderPass(keep(black));
         driver->bindUniformBuffer(2, params, kParamNearBlue * stride, sizeof(Params));
         driver->bindPipeline(flatDepth);
         driver->bindVertexBuffer(0, buffer, 0);
         driver->draw(3, 0);
         driver->bindUniformBuffer(2, params, kParamFarRed * stride, sizeof(Params));
         driver->draw(3, 0);
+        driver->endRenderPass();
         CHECK(pixelIs(160, 120, 0, 0, 255));
 
+        driver->beginRenderPass(keep(black));
         driver->bindUniformBuffer(2, params, kParamBehindNear * stride, sizeof(Params));
         driver->bindPipeline(flat);
         driver->bindVertexBuffer(0, buffer, 0);
         driver->draw(3, 0);
-        CHECK(pixelIs(160, 120, 0, 0, 255));
-        driver->bindUniformBuffer(2, params, kParamBeyondFar * stride, sizeof(Params));
-        driver->draw(3, 0);
+        driver->endRenderPass();
         CHECK(pixelIs(160, 120, 0, 0, 255));
 
+        driver->beginRenderPass(keep(black));
+        driver->bindUniformBuffer(2, params, kParamBeyondFar * stride, sizeof(Params));
+        driver->bindPipeline(flat);
+        driver->bindVertexBuffer(0, buffer, 0);
+        driver->draw(3, 0);
+        driver->endRenderPass();
+        CHECK(pixelIs(160, 120, 0, 0, 255));
+
+        driver->beginRenderPass(keep(black));
         driver->bindUniformBuffer(2, params, kParamHalfWhite * stride, sizeof(Params));
         driver->bindPipeline(flatBlend);
         driver->bindVertexBuffer(0, buffer, 0);
         driver->draw(3, 0);
+        driver->endRenderPass();
         CHECK(pixelIs(160, 120, 128, 128, 255, 2));
 
-        driver->endRenderPass();
         driver->endFrame();
         driver->present();
         CHECK(messages == 0);
@@ -506,10 +608,14 @@ int main()
         topLeft.height = 120;
         driver->setScissor(topLeft);
         driver->draw(3, 0);
+        driver->endRenderPass();
         CHECK(pixelIs(80, 180, 255, 0, 0));
         CHECK(pixelIs(80, 60, 0, 0, 0));
         CHECK(pixelIs(240, 180, 0, 0, 0));
 
+        driver->beginRenderPass(keep(black));
+        driver->bindPipeline(flat);
+        driver->bindVertexBuffer(0, buffer, 0);
         Rect whole;
         whole.width = 320;
         whole.height = 240;
@@ -522,16 +628,16 @@ int main()
         bottomRight.height = 120.0f;
         driver->setViewport(bottomRight);
         driver->draw(3, 0);
+        driver->endRenderPass();
         CHECK(pixelIs(240, 60, 0, 255, 0));
         CHECK(pixelIs(80, 180, 255, 0, 0));
         CHECK(pixelIs(240, 180, 0, 0, 0));
         CHECK(pixelIs(80, 60, 0, 0, 0));
-        driver->endRenderPass();
 
         driver->beginRenderPass(black);
+        driver->endRenderPass();
         CHECK(pixelIs(80, 180, 0, 0, 0));
         CHECK(pixelIs(240, 60, 0, 0, 0));
-        driver->endRenderPass();
         driver->endFrame();
         driver->present();
         CHECK(messages == 0);
@@ -542,12 +648,10 @@ int main()
         instanceDesc.data = kInstances;
         const BufferHandle instanceBuffer = driver->createBuffer(instanceDesc);
 
-        ShaderDesc instancedDesc;
-        instancedDesc.source = kInstancedVertexSource;
-        const ShaderHandle instancedVertex = driver->createShader(instancedDesc);
-        instancedDesc.stage = ShaderStage::Fragment;
-        instancedDesc.source = kInstancedFragmentSource;
-        const ShaderHandle instancedFragment = driver->createShader(instancedDesc);
+        const ShaderHandle instancedVertex = makeShader(driver, ShaderStage::Vertex,
+                kInstancedVertexSource, SPIRV(instanced_vert));
+        const ShaderHandle instancedFragment = makeShader(driver, ShaderStage::Fragment,
+                kInstancedFragmentSource, SPIRV(instanced_frag));
 
         PipelineDesc instancedPipelineDesc;
         instancedPipelineDesc.vertexShader = instancedVertex;
@@ -583,18 +687,24 @@ int main()
         driver->bindVertexBuffer(0, buffer, 0);
         driver->bindVertexBuffer(1, instanceBuffer, 0);
         driver->draw(3, 0, 2);
+        driver->endRenderPass();
         CHECK(pixelIs(64, 108, 255, 0, 0));
         CHECK(pixelIs(224, 108, 0, 0, 255));
-        driver->endRenderPass();
 
         driver->beginRenderPass(black);
         driver->bindPipeline(instanced);
         driver->bindVertexBuffer(0, buffer, 0);
         driver->bindVertexBuffer(1, instanceBuffer, sizeof(Instance));
         driver->draw(3, 0, 1);
+        driver->endRenderPass();
         CHECK(pixelIs(224, 108, 0, 0, 255));
         CHECK(pixelIs(64, 108, 0, 0, 0));
         CHECK(messages == 0);
+
+        driver->beginRenderPass(keep(black));
+        driver->bindPipeline(instanced);
+        driver->bindVertexBuffer(0, buffer, 0);
+        driver->bindVertexBuffer(1, instanceBuffer, sizeof(Instance));
         driver->draw(3, 0, 2);
         CHECK(messages == 1);
         driver->endRenderPass();
@@ -606,9 +716,8 @@ int main()
         driver->destroy(instancedFragment);
         driver->destroy(instanceBuffer);
 
-        ShaderDesc noBufferDesc;
-        noBufferDesc.source = kNoBufferVertexSource;
-        const ShaderHandle noBufferVertex = driver->createShader(noBufferDesc);
+        const ShaderHandle noBufferVertex = makeShader(driver, ShaderStage::Vertex,
+                kNoBufferVertexSource, SPIRV(no_buffer_vert));
         PipelineDesc noBufferPipelineDesc;
         noBufferPipelineDesc.vertexShader = noBufferVertex;
         noBufferPipelineDesc.fragmentShader = fragmentShader;
@@ -624,9 +733,11 @@ int main()
         messages = 0;
         driver->bindPipeline(noBuffer);
         driver->draw(3, 0);
+        driver->endRenderPass();
         CHECK(pixelIs(160, 120, 255, 0, 0));
         CHECK(pixelIs(2, 2, 255, 0, 0));
         CHECK(messages == 0);
+        driver->beginRenderPass(keep(black));
         driver->bindPipeline(pipeline);
         driver->bindVertexBuffer(0, buffer, 0);
         driver->draw(1000, 0);
@@ -673,12 +784,10 @@ int main()
         const SamplerHandle nearest = driver->createSampler(samplerDesc);
         CHECK(nearest.valid());
 
-        ShaderDesc texturedDesc;
-        texturedDesc.source = kTexturedVertexSource;
-        const ShaderHandle texturedVertex = driver->createShader(texturedDesc);
-        texturedDesc.stage = ShaderStage::Fragment;
-        texturedDesc.source = kTexturedFragmentSource;
-        const ShaderHandle texturedFragment = driver->createShader(texturedDesc);
+        const ShaderHandle texturedVertex = makeShader(driver, ShaderStage::Vertex,
+                kTexturedVertexSource, SPIRV(textured_vert));
+        const ShaderHandle texturedFragment = makeShader(driver, ShaderStage::Fragment,
+                kTexturedFragmentSource, SPIRV(textured_frag));
 
         PipelineDesc texturedPipelineDesc;
         texturedPipelineDesc.vertexShader = texturedVertex;
@@ -701,11 +810,11 @@ int main()
         driver->bindVertexBuffer(0, buffer, 0);
         driver->bindTexture(3, texture, nearest);
         driver->draw(3, 0);
+        driver->endRenderPass();
         CHECK(pixelIs(80, 60, 255, 0, 0));
         CHECK(pixelIs(240, 60, 0, 255, 0));
         CHECK(pixelIs(80, 180, 0, 0, 255));
         CHECK(pixelIs(240, 180, 255, 255, 255));
-        driver->endRenderPass();
         driver->endFrame();
         driver->present();
         CHECK(messages == 0);
@@ -725,10 +834,8 @@ int main()
             CHECK(hdr.valid());
             CHECK(hdrDepth.valid());
 
-            ShaderDesc scaledDesc;
-            scaledDesc.stage = ShaderStage::Fragment;
-            scaledDesc.source = kScaledFragmentSource;
-            const ShaderHandle scaledFragment = driver->createShader(scaledDesc);
+            const ShaderHandle scaledFragment = makeShader(driver, ShaderStage::Fragment,
+                    kScaledFragmentSource, SPIRV(scaled_frag));
             texturedPipelineDesc.fragmentShader = scaledFragment;
             const PipelineHandle scaled = driver->createPipeline(texturedPipelineDesc);
             texturedPipelineDesc.fragmentShader = texturedFragment;
@@ -766,8 +873,8 @@ int main()
             driver->bindVertexBuffer(0, buffer, 0);
             driver->bindTexture(3, hdr, nearest);
             driver->draw(3, 0);
-            CHECK(pixelIs(160, 120, 255, 128, 32, 2));
             driver->endRenderPass();
+            CHECK(pixelIs(160, 120, 255, 128, 32, 2));
             driver->endFrame();
             driver->present();
             CHECK(messages == 0);
@@ -837,11 +944,16 @@ int main()
         driver->bindVertexBuffer(0, buffer, 0);
         driver->bindTexture(3, srgbTarget, nearest);
         driver->draw(3, 0);
+        driver->endRenderPass();
         CHECK(pixelIs(160, 120, 128, 128, 128, 2));
+
+        driver->beginRenderPass(keep(black));
+        driver->bindPipeline(textured);
+        driver->bindVertexBuffer(0, buffer, 0);
         driver->bindTexture(3, tenBitTarget, nearest);
         driver->draw(3, 0);
-        CHECK(pixelIs(160, 120, 128, 128, 128, 2));
         driver->endRenderPass();
+        CHECK(pixelIs(160, 120, 128, 128, 128, 2));
         driver->endFrame();
         driver->present();
         CHECK(messages == 0);
@@ -860,10 +972,8 @@ int main()
         CHECK(first.valid());
         CHECK(second.valid());
 
-        ShaderDesc twoTargetsDesc;
-        twoTargetsDesc.stage = ShaderStage::Fragment;
-        twoTargetsDesc.source = kTwoTargetsFragmentSource;
-        const ShaderHandle twoTargetsFragment = driver->createShader(twoTargetsDesc);
+        const ShaderHandle twoTargetsFragment = makeShader(driver, ShaderStage::Fragment,
+                kTwoTargetsFragmentSource, SPIRV(two_targets_frag));
         PipelineDesc twoTargetsPipelineDesc;
         twoTargetsPipelineDesc.vertexShader = vertexShader;
         twoTargetsPipelineDesc.fragmentShader = twoTargetsFragment;
@@ -897,11 +1007,16 @@ int main()
         driver->bindVertexBuffer(0, buffer, 0);
         driver->bindTexture(3, first, nearest);
         driver->draw(3, 0);
+        driver->endRenderPass();
         CHECK(pixelIs(160, 120, 255, 0, 0));
+
+        driver->beginRenderPass(keep(black));
+        driver->bindPipeline(textured);
+        driver->bindVertexBuffer(0, buffer, 0);
         driver->bindTexture(3, second, nearest);
         driver->draw(3, 0);
-        CHECK(pixelIs(160, 120, 0, 255, 0));
         driver->endRenderPass();
+        CHECK(pixelIs(160, 120, 0, 255, 0));
         driver->endFrame();
         driver->present();
         CHECK(messages == 0);
@@ -921,16 +1036,14 @@ int main()
         const SamplerHandle anisotropic = driver->createSampler(anisotropicDesc);
         CHECK(anisotropic.valid());
 
-        ShaderDesc layeredDesc;
-        layeredDesc.stage = ShaderStage::Fragment;
-        layeredDesc.source = kArrayFragmentSource;
-        const ShaderHandle arrayFragment = driver->createShader(layeredDesc);
-        layeredDesc.source = kCubeFragmentSource;
-        const ShaderHandle cubeFragment = driver->createShader(layeredDesc);
-        layeredDesc.source = kVolumeFragmentSource;
-        const ShaderHandle volumeFragment = driver->createShader(layeredDesc);
-        layeredDesc.source = kLodFragmentSource;
-        const ShaderHandle lodFragment = driver->createShader(layeredDesc);
+        const ShaderHandle arrayFragment =
+                makeShader(driver, ShaderStage::Fragment, kArrayFragmentSource, SPIRV(array_frag));
+        const ShaderHandle cubeFragment =
+                makeShader(driver, ShaderStage::Fragment, kCubeFragmentSource, SPIRV(cube_frag));
+        const ShaderHandle volumeFragment = makeShader(driver, ShaderStage::Fragment,
+                kVolumeFragmentSource, SPIRV(volume_frag));
+        const ShaderHandle lodFragment =
+                makeShader(driver, ShaderStage::Fragment, kLodFragmentSource, SPIRV(lod_frag));
 
         texturedPipelineDesc.uniformBlockCount = 1;
         texturedPipelineDesc.uniformBlocks[0].name = "Params";
@@ -1076,11 +1189,17 @@ int main()
         driver->bindTexture(3, arrayTexture, nearest);
         driver->bindUniformBuffer(2, params, kParamSliceZero * stride, sizeof(Params));
         driver->draw(3, 0);
+        driver->endRenderPass();
         CHECK(pixelIs(160, 120, 255, 0, 0));
+
+        driver->beginRenderPass(keep(black));
+        driver->bindPipeline(arrayPipeline);
+        driver->bindVertexBuffer(0, buffer, 0);
+        driver->bindTexture(3, arrayTexture, nearest);
         driver->bindUniformBuffer(2, params, kParamSliceOne * stride, sizeof(Params));
         driver->draw(3, 0);
-        CHECK(pixelIs(160, 120, 0, 255, 0));
         driver->endRenderPass();
+        CHECK(pixelIs(160, 120, 0, 255, 0));
 
         driver->updateTexture(arrayTexture, 0, 1, kBlueTexels);
         driver->beginRenderPass(black);
@@ -1089,15 +1208,21 @@ int main()
         driver->bindTexture(3, arrayTexture, nearest);
         driver->bindUniformBuffer(2, params, kParamSliceOne * stride, sizeof(Params));
         driver->draw(3, 0);
+        driver->endRenderPass();
         CHECK(pixelIs(160, 120, 0, 0, 255));
+
+        driver->beginRenderPass(keep(black));
+        driver->bindPipeline(arrayPipeline);
+        driver->bindVertexBuffer(0, buffer, 0);
+        driver->bindTexture(3, arrayTexture, nearest);
         driver->bindUniformBuffer(2, params, kParamSliceZero * stride, sizeof(Params));
         driver->draw(3, 0);
-        CHECK(pixelIs(160, 120, 255, 0, 0));
         messages = 0;
         driver->updateTexture(arrayTexture, 0, 1, kBlueTexels);
         CHECK(messages == 1);
         messages = 0;
         driver->endRenderPass();
+        CHECK(pixelIs(160, 120, 255, 0, 0));
 
         driver->beginRenderPass(black);
         driver->bindPipeline(cubePipeline);
@@ -1105,14 +1230,26 @@ int main()
         driver->bindTexture(3, cubeTexture, nearest);
         driver->bindUniformBuffer(2, params, kParamCubePositiveX * stride, sizeof(Params));
         driver->draw(3, 0);
+        driver->endRenderPass();
         CHECK(pixelIs(160, 120, 255, 0, 0));
+
+        driver->beginRenderPass(keep(black));
+        driver->bindPipeline(cubePipeline);
+        driver->bindVertexBuffer(0, buffer, 0);
+        driver->bindTexture(3, cubeTexture, nearest);
         driver->bindUniformBuffer(2, params, kParamCubeNegativeY * stride, sizeof(Params));
         driver->draw(3, 0);
+        driver->endRenderPass();
         CHECK(pixelIs(160, 120, 255, 255, 0));
+
+        driver->beginRenderPass(keep(black));
+        driver->bindPipeline(cubePipeline);
+        driver->bindVertexBuffer(0, buffer, 0);
+        driver->bindTexture(3, cubeTexture, nearest);
         driver->bindUniformBuffer(2, params, kParamCubeNegativeZ * stride, sizeof(Params));
         driver->draw(3, 0);
-        CHECK(pixelIs(160, 120, 255, 0, 255));
         driver->endRenderPass();
+        CHECK(pixelIs(160, 120, 255, 0, 255));
 
         driver->beginRenderPass(black);
         driver->bindPipeline(volumePipeline);
@@ -1120,11 +1257,17 @@ int main()
         driver->bindTexture(3, volumeTexture, volumeSampler);
         driver->bindUniformBuffer(2, params, kParamSliceQuarter * stride, sizeof(Params));
         driver->draw(3, 0);
+        driver->endRenderPass();
         CHECK(pixelIs(160, 120, 255, 0, 0));
+
+        driver->beginRenderPass(keep(black));
+        driver->bindPipeline(volumePipeline);
+        driver->bindVertexBuffer(0, buffer, 0);
+        driver->bindTexture(3, volumeTexture, volumeSampler);
         driver->bindUniformBuffer(2, params, kParamSliceThreeQuarters * stride, sizeof(Params));
         driver->draw(3, 0);
-        CHECK(pixelIs(160, 120, 0, 0, 255));
         driver->endRenderPass();
+        CHECK(pixelIs(160, 120, 0, 0, 255));
         driver->endFrame();
         driver->present();
         CHECK(messages == 0);
@@ -1140,11 +1283,17 @@ int main()
         driver->bindTexture(3, explicitMips, lodSampler);
         driver->bindUniformBuffer(2, params, kParamSliceZero * stride, sizeof(Params));
         driver->draw(3, 0);
+        driver->endRenderPass();
         CHECK(pixelIs(160, 120, 255, 0, 0));
+
+        driver->beginRenderPass(keep(black));
+        driver->bindPipeline(lodPipeline);
+        driver->bindVertexBuffer(0, buffer, 0);
+        driver->bindTexture(3, explicitMips, lodSampler);
         driver->bindUniformBuffer(2, params, kParamSliceOne * stride, sizeof(Params));
         driver->draw(3, 0);
-        CHECK(pixelIs(160, 120, 0, 0, 255));
         driver->endRenderPass();
+        CHECK(pixelIs(160, 120, 0, 0, 255));
 
         unsigned char halfTexels[16];
         for (int i = 0; i < 4; ++i)
@@ -1161,12 +1310,12 @@ int main()
         driver->bindTexture(3, explicitMips, lodSampler);
         driver->bindUniformBuffer(2, params, kParamSliceOne * stride, sizeof(Params));
         driver->draw(3, 0);
-        CHECK(pixelIs(160, 120, 128, 0, 128, 3));
         messages = 0;
         driver->generateMipmaps(explicitMips);
         CHECK(messages == 1);
         messages = 0;
         driver->endRenderPass();
+        CHECK(pixelIs(160, 120, 128, 0, 128, 3));
         driver->endFrame();
         driver->present();
         CHECK(messages == 0);
@@ -1190,11 +1339,17 @@ int main()
         driver->bindTexture(3, layers, nearest);
         driver->bindUniformBuffer(2, params, kParamSliceZero * stride, sizeof(Params));
         driver->draw(3, 0);
+        driver->endRenderPass();
         CHECK(pixelIs(160, 120, 0, 0, 255));
+
+        driver->beginRenderPass(keep(black));
+        driver->bindPipeline(arrayPipeline);
+        driver->bindVertexBuffer(0, buffer, 0);
+        driver->bindTexture(3, layers, nearest);
         driver->bindUniformBuffer(2, params, kParamSliceOne * stride, sizeof(Params));
         driver->draw(3, 0);
-        CHECK(pixelIs(160, 120, 0, 255, 0));
         driver->endRenderPass();
+        CHECK(pixelIs(160, 120, 0, 255, 0));
 
         driver->beginRenderPass(mipPass);
         driver->endRenderPass();
@@ -1204,8 +1359,8 @@ int main()
         driver->bindTexture(3, mipTarget, lodSampler);
         driver->bindUniformBuffer(2, params, kParamSliceOne * stride, sizeof(Params));
         driver->draw(3, 0);
-        CHECK(pixelIs(160, 120, 255, 0, 0));
         driver->endRenderPass();
+        CHECK(pixelIs(160, 120, 255, 0, 0));
         driver->endFrame();
         driver->present();
         CHECK(messages == 0);
