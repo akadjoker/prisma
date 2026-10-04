@@ -823,7 +823,7 @@ public:
             return;
         }
         if (buffer->stream && buffer->updatedFrame != frameNumber_)
-            rotateStreamBuffer(buffer, offset == 0 && size == buffer->size);
+            rotateStreamBuffer(buffer, offset, size);
         const GLenum target = bindForEdit(*buffer);
         glBufferSubData(target, offset, size, data);
     }
@@ -2591,26 +2591,24 @@ private:
         return true;
     }
 
-    void rotateStreamBuffer(GLBuffer* buffer, bool overwritten)
+    void rotateStreamBuffer(GLBuffer* buffer, std::uint32_t offset, std::uint32_t size)
     {
         const std::uint32_t next = (buffer->current + 1) % GLBuffer::kVersions;
-        if (!buffer->versions[next])
-        {
-            glGenBuffers(1, &buffer->versions[next]);
-            glBindBuffer(GL_COPY_WRITE_BUFFER, buffer->versions[next]);
+        const std::uint32_t end = offset + size;
+        const bool whole = offset == 0 && size == buffer->size;
+        const bool created = buffer->versions[next] == 0;
+        if (created) glGenBuffers(1, &buffer->versions[next]);
+        glBindBuffer(GL_COPY_WRITE_BUFFER, buffer->versions[next]);
+        if (created || whole)
             glBufferData(GL_COPY_WRITE_BUFFER, buffer->size, nullptr, GL_STREAM_DRAW);
-            overwritten = false;
-        }
-        if (!overwritten)
+        if (!whole)
         {
             glBindBuffer(GL_COPY_READ_BUFFER, buffer->versions[buffer->current]);
-            glBindBuffer(GL_COPY_WRITE_BUFFER, buffer->versions[next]);
-            glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, 0, 0, buffer->size);
-        }
-        else
-        {
-            glBindBuffer(GL_COPY_WRITE_BUFFER, buffer->versions[next]);
-            glBufferData(GL_COPY_WRITE_BUFFER, buffer->size, nullptr, GL_STREAM_DRAW);
+            if (offset > 0)
+                glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, 0, 0, offset);
+            if (end < buffer->size)
+                glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, end, end,
+                        buffer->size - end);
         }
         buffer->current = next;
         buffer->id = buffer->versions[next];
