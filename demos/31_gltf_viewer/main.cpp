@@ -2,6 +2,7 @@
 #include "common/StatsOverlay.h"
 #include "common/GltfGpu.h"
 #include "common/Ibl.h"
+#include "common/LightShadows.h"
 #include "common/Lights.h"
 #include "common/Projection.h"
 #include "common/ZenApp.h"
@@ -157,6 +158,9 @@ int main(int argc, char** argv)
     const bool noBlend = zenapp::hasArgument(argc, argv, "noblend");
     const bool noMask = zenapp::hasArgument(argc, argv, "nomask");
     const bool autoWalk = zenapp::hasArgument(argc, argv, "autowalk");
+    const unsigned shadowLights = static_cast<unsigned>(numberArgument(argc, argv, "shadows", 8.0f));
+    const unsigned shadowSize =
+            static_cast<unsigned>(numberArgument(argc, argv, "shadowsize", 512.0f));
 
     zenapp::GltfModel model;
     if (!zenapp::loadGltf(modelPath, &model))
@@ -316,6 +320,7 @@ int main(int argc, char** argv)
     const prisma::ShaderHandle depthMaskFragment = zenapp::createShader(driver, depth_frag);
     const prisma::ShaderHandle depthOpaqueFragment = zenapp::createShader(driver, depth_opaque_frag);
     prisma::PipelineHandle depthPipelines[4];
+    prisma::PipelineHandle shadowPipelines[4];
     for (int variant = 0; variant < 4; ++variant)
     {
         prisma::PipelineDesc depthDesc;
@@ -335,6 +340,14 @@ int main(int argc, char** argv)
         depthDesc.colorMask = 0;
         depthDesc.debugName = "gltf depth";
         depthPipelines[variant] = driver->createPipeline(depthDesc);
+
+        depthDesc.targets.window = false;
+        depthDesc.targets.colorCount = 0;
+        depthDesc.targets.depth = prisma::TextureFormat::Depth32F;
+        depthDesc.depthBiasConstant = 2.0f;
+        depthDesc.depthBiasSlope = 2.0f;
+        depthDesc.debugName = "gltf shadow";
+        shadowPipelines[variant] = driver->createPipeline(depthDesc);
     }
     driver->destroy(depthVertex);
     driver->destroy(depthMaskFragment);
@@ -344,12 +357,14 @@ int main(int argc, char** argv)
     driver->destroy(skyVertex);
     driver->destroy(skyFragment);
 
-    const bool ready = iblReady && gpuReady && frameBuffer.valid() && objectBuffer.valid() &&
-                       clusteredBuffer.valid() && opaquePipeline.valid() && doublePipeline.valid() &&
-                       depthPipelines[0].valid() && depthPipelines[1].valid() &&
-                       depthPipelines[2].valid() && depthPipelines[3].valid() &&
-                       blendPipeline.valid() && skyPipeline.valid();
-    if (!ready) log_error("gltf viewer: resource creation failed");
+    const bool baseReady = iblReady && gpuReady && frameBuffer.valid() && objectBuffer.valid() &&
+                           clusteredBuffer.valid() && opaquePipeline.valid() &&
+                           doublePipeline.valid() && depthPipelines[0].valid() &&
+                           depthPipelines[1].valid() && depthPipelines[2].valid() &&
+                           depthPipelines[3].valid() && shadowPipelines[0].valid() &&
+                           shadowPipelines[1].valid() && shadowPipelines[2].valid() &&
+                           shadowPipelines[3].valid() && blendPipeline.valid() &&
+                           skyPipeline.valid();
 
     const Math::Box bounds = modelBounds(model);
     const Math::Vec3 center = bounds.Center();
@@ -419,6 +434,67 @@ int main(int argc, char** argv)
         flyYaw = atan2f(forward.x, -forward.z);
         flyPitch = asinf(forward.y);
     }
+    zenapp::LightShadows shadows;
+    const unsigned shadowBudget = shadowLights * 6 < zenapp::ShadowUniforms::kMaxMaps
+                                          ? shadowLights * 6
+                                          : static_cast<unsigned>(zenapp::ShadowUniforms::kMaxMaps);
+    zenapp::selectLightShadows(lights, fileCamera ? flyEye : center, shadowBudget,
+            numberArgument(argc, argv, "shadownear", 0.3f), &shadows);
+    zenapp::applyLightShadows(shadows, &lights);
+    const unsigned shadowCount = static_cast<unsigned>(shadows.maps.size());
+    static zenapp::ShadowUniforms shadowUniforms;
+    zenapp::fillShadowUniforms(shadows, shadowSize, 1.5f, &shadowUniforms);
+
+    prisma::TextureDesc shadowMapDesc;
+    shadowMapDesc.type = prisma::TextureType::Texture2DArray;
+    shadowMapDesc.format = prisma::TextureFormat::Depth32F;
+    shadowMapDesc.width = shadowCount > 0 ? shadowSize : 1;
+    shadowMapDesc.height = shadowCount > 0 ? shadowSize : 1;
+    shadowMapDesc.depth = shadowCount > 0 ? shadowCount : 1;
+    shadowMapDesc.usage = prisma::kTextureSampled | prisma::kTextureRenderTarget;
+    shadowMapDesc.debugName = "light shadow maps";
+    const prisma::TextureHandle shadowMap = driver->createTexture(shadowMapDesc);
+
+    prisma::SamplerDesc shadowSamplerDesc;
+    shadowSamplerDesc.mipFilter = prisma::MipFilter::None;
+    shadowSamplerDesc.addressU = prisma::AddressMode::ClampToEdge;
+    shadowSamplerDesc.addressV = prisma::AddressMode::ClampToEdge;
+    shadowSamplerDesc.compare = true;
+    shadowSamplerDesc.compareOp = prisma::CompareOp::LessEqual;
+    shadowSamplerDesc.debugName = "light shadow sampler";
+    const prisma::SamplerHandle shadowSampler = driver->createSampler(shadowSamplerDesc);
+
+    prisma::BufferDesc shadowUniformDesc;
+    shadowUniformDesc.usage = prisma::BufferUsage::Uniform;
+    shadowUniformDesc.size = sizeof(shadowUniforms);
+    shadowUniformDesc.data = &shadowUniforms;
+    shadowUniformDesc.debugName = "light shadow uniforms";
+    const prisma::BufferHandle shadowUniformBuffer = driver->createBuffer(shadowUniformDesc);
+
+    ct::Vector<unsigned char> shadowFrameBytes;
+    shadowFrameBytes.resize(static_cast<size_t>(frameStride) * (shadowCount > 0 ? shadowCount : 1));
+    memset(shadowFrameBytes.data(), 0, shadowFrameBytes.size());
+    for (unsigned m = 0; m < shadowCount; ++m)
+    {
+        FrameUniforms shadowFrame;
+        memset(&shadowFrame, 0, sizeof(shadowFrame));
+        shadowFrame.viewProjection = shadows.maps[m].viewProjection;
+        memcpy(shadowFrameBytes.data() + static_cast<size_t>(m) * frameStride, &shadowFrame,
+                sizeof(shadowFrame));
+    }
+    prisma::BufferDesc shadowFrameDesc;
+    shadowFrameDesc.usage = prisma::BufferUsage::Uniform;
+    shadowFrameDesc.size = static_cast<std::uint32_t>(shadowFrameBytes.size());
+    shadowFrameDesc.data = shadowFrameBytes.data();
+    shadowFrameDesc.debugName = "light shadow frames";
+    const prisma::BufferHandle shadowFrameBuffer = driver->createBuffer(shadowFrameDesc);
+
+    const bool ready = baseReady && shadowMap.valid() && shadowSampler.valid() &&
+                       shadowUniformBuffer.valid() && shadowFrameBuffer.valid();
+    if (!ready) log_error("gltf viewer: resource creation failed");
+    log_info("gltf viewer: %u shadow maps of %u pixels for %u lights", shadowCount, shadowSize,
+            shadowCount / 6);
+
     if (ready && !zenapp::hasArgument(argc, argv, "nowarmup"))
     {
         ct::Vector<int> firstPrimitive;
@@ -457,6 +533,8 @@ int main(int argc, char** argv)
                     sizeof(clustered.froxels));
             driver->bindUniformBuffer(6, clusteredBuffer, offsetof(zenapp::ClusteredBuffers, records),
                     sizeof(clustered.records));
+            driver->bindUniformBuffer(8, shadowUniformBuffer, 0, sizeof(shadowUniforms));
+            driver->bindTexture(7, shadowMap, shadowSampler);
             zenapp::bindGltfGeometry(driver, gpu);
             for (size_t m = first; m < first + perFrame && m < model.materials.size(); ++m)
             {
@@ -474,6 +552,46 @@ int main(int argc, char** argv)
             driver->present();
         }
         froxelizer.setDepthRange(fileCamera ? 3.0f : radius * 0.3f, fileCamera ? 150.0f : radius * 8.0f);
+    }
+
+    if (ready && shadowCount > 0)
+    {
+        unsigned shadowDraws = 0;
+        driver->beginFrame();
+        for (unsigned m = 0; m < shadowCount; ++m)
+        {
+            const Math::Frustum lightFrustum =
+                    Math::Frustum::FromViewProjection(shadows.maps[m].cullViewProjection);
+            prisma::RenderPassDesc shadowPass;
+            shadowPass.depth.texture = shadowMap;
+            shadowPass.depth.layer = m;
+            driver->beginRenderPass(shadowPass);
+            driver->bindUniformBuffer(0, shadowFrameBuffer, m * frameStride, sizeof(FrameUniforms));
+            zenapp::bindGltfGeometry(driver, gpu);
+            int boundKind = -1;
+            for (const Candidate& candidate: candidates)
+            {
+                const Draw& draw = candidate.draw;
+                if (draw.blend || !lightFrustum.IntersectsBox(candidate.box)) continue;
+                const int kind = (draw.mask ? 1 : 0) + (draw.doubleSided ? 2 : 0);
+                if (kind != boundKind)
+                {
+                    driver->bindPipeline(shadowPipelines[kind]);
+                    boundKind = kind;
+                }
+                if (draw.mask) zenapp::bindGltfMaterial(driver, gpu, model, draw.material);
+                driver->bindUniformBuffer(2, objectBuffer, draw.node * objectStride,
+                        sizeof(ObjectUniforms));
+                zenapp::drawGltfPrimitive(driver, gpu, model.primitives[draw.primitive]);
+                ++shadowDraws;
+            }
+            driver->endRenderPass();
+        }
+        driver->beginRenderPass(pass);
+        driver->endRenderPass();
+        driver->endFrame();
+        driver->present();
+        log_info("gltf viewer: shadow maps drawn with %u draws", shadowDraws);
     }
 
     Math::Vec3 previousEye = flyEye;
@@ -685,6 +803,8 @@ int main(int argc, char** argv)
         driver->bindUniformBuffer(6, clusteredBuffer, offsetof(zenapp::ClusteredBuffers, records),
                 sizeof(clustered.records));
         driver->bindUniformBuffer(0, frameBuffer, 0, sizeof(FrameUniforms));
+        driver->bindUniformBuffer(8, shadowUniformBuffer, 0, sizeof(shadowUniforms));
+        driver->bindTexture(7, shadowMap, shadowSampler);
         zenapp::bindGltfGeometry(driver, gpu);
 
         if (usePrepass)
@@ -771,6 +891,11 @@ int main(int argc, char** argv)
     overlay.destroy(driver);
     driver->destroy(gpuQuery);
     for (int i = 0; i < 4; ++i) driver->destroy(depthPipelines[i]);
+    for (int i = 0; i < 4; ++i) driver->destroy(shadowPipelines[i]);
+    driver->destroy(shadowFrameBuffer);
+    driver->destroy(shadowUniformBuffer);
+    driver->destroy(shadowSampler);
+    driver->destroy(shadowMap);
     driver->destroy(skyPipeline);
     driver->destroy(blendPipeline);
     driver->destroy(doublePipeline);

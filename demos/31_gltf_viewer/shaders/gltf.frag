@@ -31,7 +31,9 @@ layout(set = 1, binding = 4) uniform sampler2D uNormalTexture;
 layout(set = 1, binding = 5) uniform sampler2D uOcclusionTexture;
 layout(set = 1, binding = 6) uniform sampler2D uEmissiveTexture;
 
+#define LIGHT_SHADOWS
 #include "../../common/shaders/pbr.glsl"
+#include "../../common/shaders/light_shadows.glsl"
 #include "../../common/shaders/lights_clustered.glsl"
 #include "../../common/shaders/tonemap.glsl"
 
@@ -46,6 +48,7 @@ void main()
         discard;
 
     vec3 n = normalize(vNormal);
+    vec3 geometricNormal = (uModes.z > 0.5 && !gl_FrontFacing) ? -n : n;
     if (uFlags.z > 0.5)
     {
         vec3 t = normalize(vTangent.xyz);
@@ -86,7 +89,7 @@ void main()
 
     float occlusion = uFlags.w > 0.5 ? texture(uOcclusionTexture, vUv).r : 1.0;
     vec3 color = evaluateIbl(surface, n, v) * (uExposure.z * occlusion) +
-                 evaluateLights(surface, n, v, vWorld, vClip);
+                 evaluateLights(surface, n, v, vWorld, vClip, geometricNormal);
     vec3 emissive = uEmissive.rgb;
     if (uModes.x > 0.5)
         emissive *= texture(uEmissiveTexture, vUv).rgb;

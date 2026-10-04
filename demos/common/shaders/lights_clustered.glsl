@@ -43,7 +43,11 @@ uint lightIndexAt(uint record)
     return (word >> ((record & 3u) * 8u)) & 0xFFu;
 }
 
-vec3 evaluateLights(PbrSurface surface, vec3 n, vec3 v, vec3 worldPosition, vec3 clipXyw)
+vec3 evaluateLights(PbrSurface surface, vec3 n, vec3 v, vec3 worldPosition, vec3 clipXyw
+#ifdef LIGHT_SHADOWS
+        , vec3 geometricNormal
+#endif
+)
 {
     vec3 color = vec3(0.0);
     if (uSunColorIntensity.w > 0.0)
@@ -55,8 +59,13 @@ vec3 evaluateLights(PbrSurface surface, vec3 n, vec3 v, vec3 worldPosition, vec3
     uint count = entry & 0xFFu;
     for (uint i = 0u; i < count; ++i)
     {
-        Light light = punctualLight(uLights[lightIndexAt(first + i)], worldPosition);
+        LightData data = uLights[lightIndexAt(first + i)];
+        Light light = punctualLight(data, worldPosition);
         if (light.attenuation <= 0.0 || dot(n, light.l) <= 0.0) continue;
+#ifdef LIGHT_SHADOWS
+        light.attenuation *= lightShadow(data.positionFalloff, data.direction, data.spot,
+                worldPosition, geometricNormal, light.l);
+#endif
         color += surfaceShading(surface, light, n, v);
     }
     return color;
