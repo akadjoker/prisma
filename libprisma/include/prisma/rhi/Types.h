@@ -57,6 +57,7 @@ struct TextureTag;
 struct SamplerTag;
 struct QueryTag;
 struct ReadbackTag;
+struct SwapchainTag;
 
 using BufferHandle = ct::Handle32<BufferTag>;
 using ShaderHandle = ct::Handle32<ShaderTag>;
@@ -65,6 +66,13 @@ using TextureHandle = ct::Handle32<TextureTag>;
 using SamplerHandle = ct::Handle32<SamplerTag>;
 using QueryHandle = ct::Handle32<QueryTag>;
 using ReadbackHandle = ct::Handle32<ReadbackTag>;
+using SwapchainHandle = ct::Handle32<SwapchainTag>;
+
+struct SwapchainDesc
+{
+    GLPlatform gl;
+    VulkanPlatform vulkan;
+};
 
 enum class QueryType : std::uint8_t
 {
@@ -574,6 +582,7 @@ struct RenderTarget
     TextureHandle texture;
     std::uint32_t mip = 0;
     std::uint32_t layer = 0;
+    SwapchainHandle swapchain;
 };
 
 struct RenderPassDesc
@@ -588,6 +597,7 @@ struct RenderPassDesc
     RenderTarget depth;
     RenderTarget resolves[kMaxColorTargets];
     RenderTarget depthResolve;
+    SwapchainHandle swapchain;
 
     LoadOp colorLoad = LoadOp::Clear;
     LoadOp depthLoad = LoadOp::Clear;

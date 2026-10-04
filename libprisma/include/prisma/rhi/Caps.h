@@ -11,6 +11,7 @@ struct Caps
     std::uint32_t versionMajor = 0;
     std::uint32_t versionMinor = 0;
     bool compute = false;
+    bool multipleWindows = false;
     bool indirectDraw = false;
     bool storageBuffersInGraphics = false;
     bool debugOutput = false;

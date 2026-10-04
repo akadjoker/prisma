@@ -280,6 +280,12 @@ std::uint32_t fullMipCount(std::uint32_t width, std::uint32_t height)
 const std::uint32_t kQuerySlots = 4;
 const GLenum kTimestamp = 0x8E28;
 
+struct GLSwapchain
+{
+    GLPlatform platform;
+    bool drawn = false;
+};
+
 struct GLReadback
 {
     GLuint buffer = 0;
@@ -571,6 +577,9 @@ public:
 #endif
         caps_.compressedTextureCopy = copyImage_;
         caps_.indirectDraw = caps_.compute;
+#if !defined(__EMSCRIPTEN__) && !defined(__ANDROID__)
+        caps_.multipleWindows = true;
+#endif
         if (caps_.compute)
         {
             GLint vertexBlocks = 0;
@@ -1311,7 +1320,12 @@ public:
         return true;
     }
 
-    void beginFrame() override {}
+    void beginFrame() override
+    {
+        if (!surfacesUsed_) return;
+        platform_.makeCurrent(platform_.user);
+        currentSurface_ = SwapchainHandle();
+    }
 
     void beginRenderPass(const RenderPassDesc& desc) override
     {
@@ -1354,7 +1368,13 @@ public:
         }
         else
         {
-            platform_.framebufferSize(platform_.user, &width, &height);
+            const GLPlatform* surface = useSurface(desc.swapchain, true);
+            if (!surface)
+            {
+                log("beginRenderPass: invalid swapchain");
+                return;
+            }
+            surface->framebufferSize(surface->user, &width, &height);
             state_.bindFramebuffer(0);
             passFormats_ = TargetFormats();
             passStencil_ = true;
@@ -1683,7 +1703,81 @@ public:
     }
     void endFrame() override {}
 
-    void present() override { platform_.swapBuffers(platform_.user); }
+    void present() override
+    {
+        leaveSurface();
+        if (currentSurface_.valid() || surfacesUsed_)
+        {
+            platform_.makeCurrent(platform_.user);
+            currentSurface_ = SwapchainHandle();
+        }
+        if (!mainSwapped_) platform_.swapBuffers(platform_.user);
+        mainSwapped_ = false;
+        mainDrawn_ = false;
+    }
+
+    SwapchainHandle createSwapchain(const SwapchainDesc& desc) override
+    {
+        if (!caps_.multipleWindows || !desc.gl.makeCurrent || !desc.gl.swapBuffers ||
+                !desc.gl.framebufferSize)
+        {
+            log("createSwapchain: several windows are not supported, or platform functions are "
+                "missing");
+            return SwapchainHandle();
+        }
+        GLSwapchain swapchain;
+        swapchain.platform = desc.gl;
+        surfacesUsed_ = true;
+        platform_.makeCurrent(platform_.user);
+        currentSurface_ = SwapchainHandle();
+        return handleCast<SwapchainHandle>(swapchains_.insert(swapchain));
+    }
+
+    void destroy(SwapchainHandle handle) override
+    {
+        const SwapchainSlot slot = handleCast<SwapchainSlot>(handle);
+        if (!swapchains_.contains(slot)) return;
+        swapchains_.erase(slot);
+        platform_.makeCurrent(platform_.user);
+        currentSurface_ = SwapchainHandle();
+    }
+
+    void leaveSurface()
+    {
+        GLSwapchain* current = swapchains_.get(handleCast<SwapchainSlot>(currentSurface_));
+        if (current && current->drawn)
+        {
+            current->platform.swapBuffers(current->platform.user);
+            current->drawn = false;
+        }
+        if (!currentSurface_.valid() && mainDrawn_)
+        {
+            platform_.swapBuffers(platform_.user);
+            mainDrawn_ = false;
+            mainSwapped_ = true;
+        }
+    }
+
+    const GLPlatform* useSurface(SwapchainHandle handle, bool draw)
+    {
+        const GLPlatform* surface = &platform_;
+        GLSwapchain* swapchain = nullptr;
+        if (handle.valid())
+        {
+            swapchain = swapchains_.get(handleCast<SwapchainSlot>(handle));
+            if (!swapchain) return nullptr;
+            surface = &swapchain->platform;
+        }
+        if (!(currentSurface_ == handle))
+        {
+            leaveSurface();
+            surface->makeCurrent(surface->user);
+            currentSurface_ = handle;
+        }
+        if (draw && swapchain) swapchain->drawn = true;
+        if (draw && !swapchain) mainDrawn_ = true;
+        return surface;
+    }
 
     bool readPixels(const RenderTarget& source, const Rect& rect, void* rgba) override
     {
@@ -1774,7 +1868,13 @@ public:
         GLuint temporary = 0;
         if (!source.texture.valid())
         {
-            platform_.framebufferSize(platform_.user, &width, &height);
+            const GLPlatform* surface = useSurface(source.swapchain, false);
+            if (!surface)
+            {
+                log("readPixels: invalid swapchain");
+                return false;
+            }
+            surface->framebufferSize(surface->user, &width, &height);
             state_.bindFramebuffer(0);
         }
         else
@@ -1828,6 +1928,7 @@ private:
     using SamplerSlot = ct::Handle32<GLSampler>;
     using QuerySlot = ct::Handle32<GLQuery>;
     using ReadbackSlot = ct::Handle32<GLReadback>;
+    using SwapchainSlot = ct::Handle32<GLSwapchain>;
 
     static void writeTimestamp(GLuint id)
     {
@@ -2383,6 +2484,11 @@ private:
     ct::SlotMap32<GLSampler> samplers_;
     ct::SlotMap32<GLQuery> queries_;
     ct::SlotMap32<GLReadback> readbacks_;
+    ct::SlotMap32<GLSwapchain> swapchains_;
+    SwapchainHandle currentSurface_;
+    bool surfacesUsed_ = false;
+    bool mainDrawn_ = false;
+    bool mainSwapped_ = false;
     std::uint64_t querySequence_ = 0;
     bool occlusionActive_ = false;
     ct::Vector<GLFramebuffer> framebuffers_;

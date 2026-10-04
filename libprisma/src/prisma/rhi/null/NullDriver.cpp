@@ -70,6 +70,11 @@ public:
         return handleCast<QueryHandle>(queries_.insert(0));
     }
     void destroy(QueryHandle handle) override { queries_.erase(handleCast<Slot>(handle)); }
+    SwapchainHandle createSwapchain(const SwapchainDesc&) override
+    {
+        return handleCast<SwapchainHandle>(swapchains_.insert(0));
+    }
+    void destroy(SwapchainHandle handle) override { swapchains_.erase(handleCast<Slot>(handle)); }
     ReadbackHandle requestReadback(const RenderTarget&, const Rect&) override
     {
         return handleCast<ReadbackHandle>(readbacks_.insert(0));
@@ -116,6 +121,7 @@ private:
     ct::SlotMap32<std::uint32_t> samplers_;
     ct::SlotMap32<std::uint32_t> queries_;
     ct::SlotMap32<std::uint32_t> readbacks_;
+    ct::SlotMap32<std::uint32_t> swapchains_;
 };
 
 } // namespace

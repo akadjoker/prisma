@@ -116,6 +116,28 @@ struct VulkanReadback
     bool swapRedBlue = false;
 };
 
+struct VulkanWindow
+{
+    VulkanPlatform platform;
+    VkSurfaceKHR surface = VK_NULL_HANDLE;
+    VkSwapchainKHR swapchain = VK_NULL_HANDLE;
+    VkExtent2D extent = { 0, 0 };
+    ct::Vector<SwapchainImage> images;
+    std::uint32_t imageIndex = 0;
+    std::uint32_t requestedWidth = 0;
+    std::uint32_t requestedHeight = 0;
+    bool canRead = false;
+    VkImage depthImage = VK_NULL_HANDLE;
+    VkImageView depthView = VK_NULL_HANDLE;
+    VkImageLayout depthLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    VulkanAllocation depthAllocation;
+    VkSemaphore imageAvailable[kFramesInFlight] = {};
+    bool acquired = false;
+    bool waited = false;
+};
+
+const std::uint32_t kMaxWindows = 8;
+
 struct ImageSlot
 {
     TextureHandle texture;
@@ -579,6 +601,7 @@ public:
         if (device_)
         {
             vkDeviceWaitIdle(device_);
+            for (VulkanWindow* extra: swapchains_) destroyWindow(extra);
             for (VulkanPipeline& pipeline: pipelines_)
             {
                 vkDestroyPipeline(device_, pipeline.pipeline, nullptr);
@@ -635,7 +658,7 @@ public:
             memory_.shutdown();
             vkDestroyDevice(device_, nullptr);
         }
-        if (surface_) vkDestroySurfaceKHR(instance_, surface_, nullptr);
+        if (window_->surface) vkDestroySurfaceKHR(instance_, window_->surface, nullptr);
         if (messenger_) destroyMessenger(instance_, messenger_);
         if (instance_) vkDestroyInstance(instance_, nullptr);
     }
@@ -643,6 +666,7 @@ public:
     DriverError init(bool debug)
     {
         if (!createInstance(debug)) return DriverError::ContextFailed;
+        mainWindow_.platform = platform_;
 
         std::uint64_t surface = 0;
         if (!platform_.createSurface(platform_.user, instance_, &surface))
@@ -650,13 +674,13 @@ public:
             log("Vulkan: the platform could not create a surface");
             return DriverError::ContextFailed;
         }
-        surface_ = (VkSurfaceKHR) surface;
+        window_->surface = (VkSurfaceKHR) surface;
 
         if (!pickPhysicalDevice()) return DriverError::VersionTooLow;
         if (!createDevice()) return DriverError::ContextFailed;
         if (!createFrames() || !createDescriptorPools() || !createQueryPools())
             return DriverError::ContextFailed;
-        createSwapchain();
+        rebuildSwapchain();
         return DriverError::None;
     }
 
@@ -1714,16 +1738,18 @@ public:
     {
         frameReady_ = false;
         frameSubmitted_ = false;
+        for (VulkanWindow* extra: swapchains_) extra->acquired = false;
 
         std::uint32_t width = 0;
         std::uint32_t height = 0;
-        platform_.framebufferSize(platform_.user, &width, &height);
+        window_->platform.framebufferSize(window_->platform.user, &width, &height);
         if (width == 0 || height == 0) return;
-        if (!swapchain_ || width != requestedWidth_ || height != requestedHeight_)
+        if (!window_->swapchain || width != window_->requestedWidth ||
+                height != window_->requestedHeight)
         {
-            requestedWidth_ = width;
-            requestedHeight_ = height;
-            if (!createSwapchain()) return;
+            window_->requestedWidth = width;
+            window_->requestedHeight = height;
+            if (!rebuildSwapchain()) return;
         }
 
         Frame& frame = frames_[frameIndex_];
@@ -1734,11 +1760,11 @@ public:
         lastSet_ = VK_NULL_HANDLE;
         lastTextureSet_ = VK_NULL_HANDLE;
 
-        const VkResult acquired = vkAcquireNextImageKHR(device_, swapchain_, UINT64_MAX,
-                frame.imageAvailable, VK_NULL_HANDLE, &imageIndex_);
+        const VkResult acquired = vkAcquireNextImageKHR(device_, window_->swapchain, UINT64_MAX,
+                frame.imageAvailable, VK_NULL_HANDLE, &window_->imageIndex);
         if (acquired == VK_ERROR_OUT_OF_DATE_KHR)
         {
-            createSwapchain();
+            rebuildSwapchain();
             return;
         }
         if (acquired != VK_SUCCESS && acquired != VK_SUBOPTIMAL_KHR)
@@ -1920,7 +1946,8 @@ public:
         }
         else
         {
-            SwapchainImage& target = images_[imageIndex_];
+            if (desc.swapchain.valid() && !useSwapchain(desc.swapchain)) return;
+            SwapchainImage& target = window_->images[window_->imageIndex];
             if (target.layout != VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL)
                 transition(commands, target,
                         desc.colorLoad == LoadOp::Load ? target.layout : VK_IMAGE_LAYOUT_UNDEFINED,
@@ -1937,7 +1964,7 @@ public:
             for (int c = 0; c < 4; ++c) colors[0].clearValue.color.float32[c] = desc.clearColor[c];
 
             depth.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-            depth.imageView = depthView_;
+            depth.imageView = window_->depthView;
             depth.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
             depth.loadOp = toLoadOp(desc.depthLoad);
             depth.storeOp = desc.depthStore == StoreOp::Store ? VK_ATTACHMENT_STORE_OP_STORE
@@ -1947,8 +1974,9 @@ public:
             rendering.colorAttachmentCount = 1;
             rendering.pColorAttachments = colors;
             rendering.pDepthAttachment = &depth;
-            passWidth_ = extent_.width;
-            passHeight_ = extent_.height;
+            passWidth_ = window_->extent.width;
+            passHeight_ = window_->extent.height;
+            window_ = &mainWindow_;
         }
 
         VkRenderingAttachmentInfo stencil = depth;
@@ -2297,8 +2325,21 @@ public:
         if (!frameReady_) return;
 
         Frame& frame = frames_[frameIndex_];
-        SwapchainImage& target = images_[imageIndex_];
+        VkSemaphore waits[kMaxWindows];
+        VkPipelineStageFlags stages[kMaxWindows];
+        VkSemaphore signals[kMaxWindows];
+        std::uint32_t signalCount = 0;
+        std::uint32_t waitCount = pendingWaits(waits, stages);
+        SwapchainImage& target = mainWindow_.images[mainWindow_.imageIndex];
         transition(frame.commands, target, target.layout, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+        signals[signalCount++] = target.renderFinished;
+        for (VulkanWindow* extra: swapchains_)
+        {
+            if (!extra->acquired) continue;
+            SwapchainImage& image = extra->images[extra->imageIndex];
+            transition(frame.commands, image, image.layout, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+            signals[signalCount++] = image.renderFinished;
+        }
         vkEndCommandBuffer(frame.commands);
 
         VkCommandBuffer buffers[2];
@@ -2310,19 +2351,15 @@ public:
         }
         buffers[count++] = frame.commands;
 
-        const VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
         VkSubmitInfo submit = {};
         submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-        if (!frameSubmitted_)
-        {
-            submit.waitSemaphoreCount = 1;
-            submit.pWaitSemaphores = &frame.imageAvailable;
-            submit.pWaitDstStageMask = &waitStage;
-        }
+        submit.waitSemaphoreCount = waitCount;
+        submit.pWaitSemaphores = waits;
+        submit.pWaitDstStageMask = stages;
         submit.commandBufferCount = count;
         submit.pCommandBuffers = buffers;
-        submit.signalSemaphoreCount = 1;
-        submit.pSignalSemaphores = &target.renderFinished;
+        submit.signalSemaphoreCount = signalCount;
+        submit.pSignalSemaphores = signals;
         if (vkQueueSubmit(queue_, 1, &submit, frame.inFlight) != VK_SUCCESS)
             log("Vulkan: could not submit the frame");
 
@@ -2341,17 +2378,162 @@ public:
         if (!frameReady_) return;
         frameReady_ = false;
 
+        VulkanWindow* windows[kMaxWindows];
+        VkSwapchainKHR chains[kMaxWindows];
+        std::uint32_t indices[kMaxWindows];
+        VkSemaphore finished[kMaxWindows];
+        VkResult results[kMaxWindows];
+        std::uint32_t count = 0;
+        windows[count++] = &mainWindow_;
+        for (VulkanWindow* extra: swapchains_)
+            if (extra->acquired && count < kMaxWindows) windows[count++] = extra;
+        for (std::uint32_t i = 0; i < count; ++i)
+        {
+            chains[i] = windows[i]->swapchain;
+            indices[i] = windows[i]->imageIndex;
+            finished[i] = windows[i]->images[windows[i]->imageIndex].renderFinished;
+            results[i] = VK_SUCCESS;
+            windows[i]->acquired = false;
+        }
+
         VkPresentInfoKHR info = {};
         info.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
-        info.waitSemaphoreCount = 1;
-        info.pWaitSemaphores = &images_[imageIndex_].renderFinished;
-        info.swapchainCount = 1;
-        info.pSwapchains = &swapchain_;
-        info.pImageIndices = &imageIndex_;
-        const VkResult presented = vkQueuePresentKHR(queue_, &info);
+        info.waitSemaphoreCount = count;
+        info.pWaitSemaphores = finished;
+        info.swapchainCount = count;
+        info.pSwapchains = chains;
+        info.pImageIndices = indices;
+        info.pResults = results;
+        vkQueuePresentKHR(queue_, &info);
         frameIndex_ = (frameIndex_ + 1) % kFramesInFlight;
         ++frameNumber_;
-        if (presented == VK_ERROR_OUT_OF_DATE_KHR) createSwapchain();
+        for (std::uint32_t i = 0; i < count; ++i)
+        {
+            if (results[i] != VK_ERROR_OUT_OF_DATE_KHR) continue;
+            window_ = windows[i];
+            rebuildSwapchain();
+        }
+        window_ = &mainWindow_;
+    }
+
+    SwapchainHandle createSwapchain(const SwapchainDesc& desc) override
+    {
+        const VulkanPlatform& platform = desc.vulkan;
+        if (!caps_.multipleWindows || !platform.createSurface || !platform.framebufferSize ||
+                swapchains_.size() + 2 > kMaxWindows)
+        {
+            log("createSwapchain: several windows are not supported, too many windows, or "
+                "platform functions are missing");
+            return SwapchainHandle();
+        }
+        std::uint64_t surface = 0;
+        if (!platform.createSurface(platform.user, instance_, &surface))
+        {
+            log("createSwapchain: the platform could not create a surface");
+            return SwapchainHandle();
+        }
+        VkBool32 presents = VK_FALSE;
+        vkGetPhysicalDeviceSurfaceSupportKHR(physicalDevice_, queueFamily_, (VkSurfaceKHR) surface,
+                &presents);
+        if (!presents)
+        {
+            vkDestroySurfaceKHR(instance_, (VkSurfaceKHR) surface, nullptr);
+            log("createSwapchain: the device cannot present to this window");
+            return SwapchainHandle();
+        }
+
+        VulkanWindow* window = new VulkanWindow;
+        window->platform = platform;
+        window->surface = (VkSurfaceKHR) surface;
+        VkSemaphoreCreateInfo semaphore = {};
+        semaphore.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+        for (std::uint32_t i = 0; i < kFramesInFlight; ++i)
+            vkCreateSemaphore(device_, &semaphore, nullptr, &window->imageAvailable[i]);
+        return handleCast<SwapchainHandle>(swapchains_.insert(window));
+    }
+
+    void destroy(SwapchainHandle handle) override
+    {
+        const SwapchainSlot slot = handleCast<SwapchainSlot>(handle);
+        VulkanWindow** window = swapchains_.get(slot);
+        if (!window) return;
+        if ((*window)->acquired)
+        {
+            log("destroy: the swapchain was drawn to in this frame; destroy it after present");
+            return;
+        }
+        vkDeviceWaitIdle(device_);
+        destroyWindow(*window);
+        swapchains_.erase(slot);
+    }
+
+    void destroyWindow(VulkanWindow* window)
+    {
+        window_ = window;
+        destroySwapchain();
+        window_ = &mainWindow_;
+        for (std::uint32_t i = 0; i < kFramesInFlight; ++i)
+            if (window->imageAvailable[i])
+                vkDestroySemaphore(device_, window->imageAvailable[i], nullptr);
+        vkDestroySurfaceKHR(instance_, window->surface, nullptr);
+        delete window;
+    }
+
+    std::uint32_t pendingWaits(VkSemaphore* waits, VkPipelineStageFlags* stages)
+    {
+        std::uint32_t count = 0;
+        if (!frameSubmitted_)
+        {
+            waits[count] = frames_[frameIndex_].imageAvailable;
+            stages[count++] = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        }
+        for (VulkanWindow* extra: swapchains_)
+        {
+            if (!extra->acquired || extra->waited || count >= kMaxWindows) continue;
+            extra->waited = true;
+            waits[count] = extra->imageAvailable[frameIndex_];
+            stages[count++] = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        }
+        return count;
+    }
+
+    bool useSwapchain(SwapchainHandle handle)
+    {
+        VulkanWindow** slot = swapchains_.get(handleCast<SwapchainSlot>(handle));
+        if (!slot)
+        {
+            log("beginRenderPass: invalid swapchain");
+            return false;
+        }
+        window_ = *slot;
+        if (window_->acquired) return true;
+
+        std::uint32_t width = 0;
+        std::uint32_t height = 0;
+        window_->platform.framebufferSize(window_->platform.user, &width, &height);
+        bool ready = width > 0 && height > 0;
+        if (ready && (!window_->swapchain || width != window_->requestedWidth ||
+                             height != window_->requestedHeight))
+        {
+            window_->requestedWidth = width;
+            window_->requestedHeight = height;
+            ready = rebuildSwapchain();
+        }
+        for (int attempt = 0; ready && attempt < 2; ++attempt)
+        {
+            const VkResult acquired = vkAcquireNextImageKHR(device_, window_->swapchain, UINT64_MAX,
+                    window_->imageAvailable[frameIndex_], VK_NULL_HANDLE, &window_->imageIndex);
+            if (acquired == VK_SUCCESS || acquired == VK_SUBOPTIMAL_KHR)
+            {
+                window_->acquired = true;
+                window_->waited = false;
+                return true;
+            }
+            ready = acquired == VK_ERROR_OUT_OF_DATE_KHR && rebuildSwapchain();
+        }
+        window_ = &mainWindow_;
+        log("beginRenderPass: the swapchain is not ready");
+        return false;
     }
 
     bool readPixels(const RenderTarget& source, const Rect& rect, void* rgba) override
@@ -2441,16 +2623,22 @@ public:
         }
         if (!source.texture.valid())
         {
-            if (!frameReady_ || !canReadWindow_ ||
-                    images_[imageIndex_].layout == VK_IMAGE_LAYOUT_UNDEFINED)
+            const VulkanWindow* window = &mainWindow_;
+            if (source.swapchain.valid())
+            {
+                VulkanWindow** slot = swapchains_.get(handleCast<SwapchainSlot>(source.swapchain));
+                window = slot && (*slot)->acquired ? *slot : nullptr;
+            }
+            if (!frameReady_ || !window || !window->canRead ||
+                    window->images[window->imageIndex].layout == VK_IMAGE_LAYOUT_UNDEFINED)
             {
                 log("readPixels: the window can only be read during a frame, after drawing to it");
                 return false;
             }
-            read.image = images_[imageIndex_].image;
-            read.layout = images_[imageIndex_].layout;
-            read.width = extent_.width;
-            read.height = extent_.height;
+            read.image = window->images[window->imageIndex].image;
+            read.layout = window->images[window->imageIndex].layout;
+            read.width = window->extent.width;
+            read.height = window->extent.height;
             read.swapRedBlue =
                     format_ == VK_FORMAT_B8G8R8A8_UNORM || format_ == VK_FORMAT_B8G8R8A8_SRGB;
         }
@@ -2757,15 +2945,13 @@ private:
         }
         if (count == 0) return;
 
-        const VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        VkSemaphore waits[kMaxWindows];
+        VkPipelineStageFlags stages[kMaxWindows];
         VkSubmitInfo submit = {};
         submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-        if (frameReady_ && !frameSubmitted_)
-        {
-            submit.waitSemaphoreCount = 1;
-            submit.pWaitSemaphores = &frames_[frameIndex_].imageAvailable;
-            submit.pWaitDstStageMask = &waitStage;
-        }
+        submit.waitSemaphoreCount = frameReady_ ? pendingWaits(waits, stages) : 0;
+        submit.pWaitSemaphores = waits;
+        submit.pWaitDstStageMask = stages;
         submit.commandBufferCount = count;
         submit.pCommandBuffers = buffers;
         if (vkQueueSubmit(queue_, 1, &submit, VK_NULL_HANDLE) != VK_SUCCESS)
@@ -3517,7 +3703,7 @@ private:
             for (std::uint32_t f = 0; f < familyCount && family == familyCount; ++f)
             {
                 VkBool32 presents = VK_FALSE;
-                vkGetPhysicalDeviceSurfaceSupportKHR(devices[d], f, surface_, &presents);
+                vkGetPhysicalDeviceSurfaceSupportKHR(devices[d], f, window_->surface, &presents);
                 if ((families[f].queueFlags & VK_QUEUE_GRAPHICS_BIT) && presents) family = f;
             }
             if (family == familyCount) continue;
@@ -3568,6 +3754,9 @@ private:
         }
         caps_.compute = true;
         caps_.indirectDraw = true;
+#ifndef __ANDROID__
+        caps_.multipleWindows = true;
+#endif
         caps_.storageBuffersInGraphics = true;
         caps_.floatColorTargets = true;
         return true;
@@ -3708,13 +3897,13 @@ private:
 
     void destroyDepth()
     {
-        if (depthView_) vkDestroyImageView(device_, depthView_, nullptr);
-        if (depthImage_) vkDestroyImage(device_, depthImage_, nullptr);
-        memory_.free(depthAllocation_);
-        depthView_ = VK_NULL_HANDLE;
-        depthImage_ = VK_NULL_HANDLE;
-        depthAllocation_ = VulkanAllocation();
-        depthLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
+        if (window_->depthView) vkDestroyImageView(device_, window_->depthView, nullptr);
+        if (window_->depthImage) vkDestroyImage(device_, window_->depthImage, nullptr);
+        memory_.free(window_->depthAllocation);
+        window_->depthView = VK_NULL_HANDLE;
+        window_->depthImage = VK_NULL_HANDLE;
+        window_->depthAllocation = VulkanAllocation();
+        window_->depthLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     }
 
     bool createDepth()
@@ -3723,8 +3912,8 @@ private:
         image.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
         image.imageType = VK_IMAGE_TYPE_2D;
         image.format = depthFormat_;
-        image.extent.width = extent_.width;
-        image.extent.height = extent_.height;
+        image.extent.width = window_->extent.width;
+        image.extent.height = window_->extent.height;
         image.extent.depth = 1;
         image.mipLevels = 1;
         image.arrayLayers = 1;
@@ -3733,30 +3922,31 @@ private:
         image.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
         image.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
         image.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        if (vkCreateImage(device_, &image, nullptr, &depthImage_) != VK_SUCCESS) return false;
+        if (vkCreateImage(device_, &image, nullptr, &window_->depthImage) != VK_SUCCESS)
+            return false;
 
         VkMemoryRequirements requirements;
-        vkGetImageMemoryRequirements(device_, depthImage_, &requirements);
+        vkGetImageMemoryRequirements(device_, window_->depthImage, &requirements);
         if (!memory_.allocate(requirements, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                    VulkanMemoryKind::Image, &depthAllocation_) ||
-                vkBindImageMemory(device_, depthImage_, depthAllocation_.memory,
-                        depthAllocation_.offset) != VK_SUCCESS)
+                    VulkanMemoryKind::Image, &window_->depthAllocation) ||
+                vkBindImageMemory(device_, window_->depthImage, window_->depthAllocation.memory,
+                        window_->depthAllocation.offset) != VK_SUCCESS)
             return false;
 
         VkImageViewCreateInfo view = {};
         view.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-        view.image = depthImage_;
+        view.image = window_->depthImage;
         view.viewType = VK_IMAGE_VIEW_TYPE_2D;
         view.format = depthFormat_;
         view.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
         view.subresourceRange.levelCount = 1;
         view.subresourceRange.layerCount = 1;
-        return vkCreateImageView(device_, &view, nullptr, &depthView_) == VK_SUCCESS;
+        return vkCreateImageView(device_, &view, nullptr, &window_->depthView) == VK_SUCCESS;
     }
 
     void transitionDepth(VkCommandBuffer commands)
     {
-        if (depthLayout_ == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL) return;
+        if (window_->depthLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL) return;
 
         VkImageMemoryBarrier2 barrier = {};
         barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
@@ -3769,7 +3959,7 @@ private:
         barrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
         barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        barrier.image = depthImage_;
+        barrier.image = window_->depthImage;
         barrier.subresourceRange.aspectMask =
                 VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
         barrier.subresourceRange.levelCount = 1;
@@ -3780,33 +3970,34 @@ private:
         dependency.imageMemoryBarrierCount = 1;
         dependency.pImageMemoryBarriers = &barrier;
         vkCmdPipelineBarrier2(commands, &dependency);
-        depthLayout_ = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        window_->depthLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
     }
 
     void destroySwapchain()
     {
         destroyDepth();
-        for (std::size_t i = 0; i < images_.size(); ++i)
+        for (std::size_t i = 0; i < window_->images.size(); ++i)
         {
-            vkDestroyImageView(device_, images_[i].view, nullptr);
-            vkDestroySemaphore(device_, images_[i].renderFinished, nullptr);
+            vkDestroyImageView(device_, window_->images[i].view, nullptr);
+            vkDestroySemaphore(device_, window_->images[i].renderFinished, nullptr);
         }
-        images_.clear();
-        if (swapchain_) vkDestroySwapchainKHR(device_, swapchain_, nullptr);
-        swapchain_ = VK_NULL_HANDLE;
+        window_->images.clear();
+        if (window_->swapchain) vkDestroySwapchainKHR(device_, window_->swapchain, nullptr);
+        window_->swapchain = VK_NULL_HANDLE;
     }
 
-    bool createSwapchain()
+    bool rebuildSwapchain()
     {
         vkDeviceWaitIdle(device_);
 
         VkSurfaceCapabilitiesKHR capabilities;
-        vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physicalDevice_, surface_, &capabilities);
+        vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physicalDevice_, window_->surface, &capabilities);
 
         VkExtent2D extent = capabilities.currentExtent;
         if (extent.width == UINT32_MAX)
         {
-            platform_.framebufferSize(platform_.user, &extent.width, &extent.height);
+            window_->platform.framebufferSize(window_->platform.user, &extent.width,
+                    &extent.height);
             if (extent.width < capabilities.minImageExtent.width)
                 extent.width = capabilities.minImageExtent.width;
             if (extent.width > capabilities.maxImageExtent.width)
@@ -3819,10 +4010,11 @@ private:
         if (extent.width == 0 || extent.height == 0) return false;
 
         std::uint32_t formatCount = 0;
-        vkGetPhysicalDeviceSurfaceFormatsKHR(physicalDevice_, surface_, &formatCount, nullptr);
+        vkGetPhysicalDeviceSurfaceFormatsKHR(physicalDevice_, window_->surface, &formatCount,
+                nullptr);
         ct::Vector<VkSurfaceFormatKHR> formats;
         formats.resize(formatCount);
-        vkGetPhysicalDeviceSurfaceFormatsKHR(physicalDevice_, surface_, &formatCount,
+        vkGetPhysicalDeviceSurfaceFormatsKHR(physicalDevice_, window_->surface, &formatCount,
                 formats.data());
         if (formatCount == 0) return false;
         VkSurfaceFormatKHR chosen = formats[0];
@@ -3844,18 +4036,19 @@ private:
         if (!(capabilities.supportedCompositeAlpha & alpha))
             alpha = VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR;
 
-        const VkSwapchainKHR old = swapchain_;
+        const VkSwapchainKHR old = window_->swapchain;
         VkSwapchainCreateInfoKHR info = {};
         info.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
-        info.surface = surface_;
+        info.surface = window_->surface;
         info.minImageCount = imageCount;
         info.imageFormat = chosen.format;
         info.imageColorSpace = chosen.colorSpace;
         info.imageExtent = extent;
         info.imageArrayLayers = 1;
         info.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-        canReadWindow_ = (capabilities.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) != 0;
-        if (canReadWindow_) info.imageUsage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+        window_->canRead =
+                (capabilities.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) != 0;
+        if (window_->canRead) info.imageUsage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
         info.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
         info.preTransform = capabilities.currentTransform;
         info.compositeAlpha = alpha;
@@ -3871,14 +4064,14 @@ private:
             log("Vulkan: could not create the swapchain");
             return false;
         }
-        swapchain_ = created;
-        extent_ = extent;
+        window_->swapchain = created;
+        window_->extent = extent;
         format_ = chosen.format;
 
-        vkGetSwapchainImagesKHR(device_, swapchain_, &imageCount, nullptr);
+        vkGetSwapchainImagesKHR(device_, window_->swapchain, &imageCount, nullptr);
         ct::Vector<VkImage> images;
         images.resize(imageCount);
-        vkGetSwapchainImagesKHR(device_, swapchain_, &imageCount, images.data());
+        vkGetSwapchainImagesKHR(device_, window_->swapchain, &imageCount, images.data());
 
         VkSemaphoreCreateInfo semaphore = {};
         semaphore.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
@@ -3897,7 +4090,7 @@ private:
             view.subresourceRange.layerCount = 1;
             vkCreateImageView(device_, &view, nullptr, &image.view);
             vkCreateSemaphore(device_, &semaphore, nullptr, &image.renderFinished);
-            images_.push_back(image);
+            window_->images.push_back(image);
         }
         if (!createDepth())
         {
@@ -3945,23 +4138,16 @@ private:
 
     VkInstance instance_ = VK_NULL_HANDLE;
     VkDebugUtilsMessengerEXT messenger_ = VK_NULL_HANDLE;
-    VkSurfaceKHR surface_ = VK_NULL_HANDLE;
     VkPhysicalDevice physicalDevice_ = VK_NULL_HANDLE;
     VkDevice device_ = VK_NULL_HANDLE;
     VkQueue queue_ = VK_NULL_HANDLE;
     std::uint32_t queueFamily_ = 0;
     VkCommandPool commandPool_ = VK_NULL_HANDLE;
 
-    VkSwapchainKHR swapchain_ = VK_NULL_HANDLE;
-    VkExtent2D extent_ = { 0, 0 };
     VkFormat format_ = VK_FORMAT_UNDEFINED;
-    ct::Vector<SwapchainImage> images_;
 
     Frame frames_[kFramesInFlight];
     std::uint32_t frameIndex_ = 0;
-    std::uint32_t imageIndex_ = 0;
-    std::uint32_t requestedWidth_ = 0;
-    std::uint32_t requestedHeight_ = 0;
     bool frameReady_ = false;
     bool passActive_ = false;
     bool computeActive_ = false;
@@ -4033,18 +4219,17 @@ private:
     VkCommandBuffer immediateCommands_ = VK_NULL_HANDLE;
     VkCommandBuffer pendingTransfer_ = VK_NULL_HANDLE;
     bool frameSubmitted_ = false;
-    bool canReadWindow_ = false;
     bool passOffscreen_ = false;
     PassTarget passTargets_[RenderPassDesc::kMaxColorTargets * 2 + 2];
     std::uint32_t passTargetCount_ = 0;
     VkFormat depthStencilFormat_ = VK_FORMAT_D24_UNORM_S8_UINT;
 
     VkFormat depthFormat_ = VK_FORMAT_D32_SFLOAT;
-    VkImage depthImage_ = VK_NULL_HANDLE;
-    VulkanAllocation depthAllocation_;
+    VulkanWindow mainWindow_;
+    VulkanWindow* window_ = &mainWindow_;
+    using SwapchainSlot = ct::Handle32<VulkanWindow*>;
+    ct::SlotMap32<VulkanWindow*> swapchains_;
     VulkanMemory memory_;
-    VkImageView depthView_ = VK_NULL_HANDLE;
-    VkImageLayout depthLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
 };
 
 } // namespace

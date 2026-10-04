@@ -41,6 +41,14 @@ void captureLog(const char* message)
     lastMessage[sizeof(lastMessage) - 1] = '\0';
 }
 
+PlatformWindow* contextWindow = nullptr;
+
+bool makeCurrentOn(void* user)
+{
+    window_make_current_on(static_cast<PlatformWindow*>(user), contextWindow);
+    return true;
+}
+
 bool makeCurrent(void* user)
 {
     window_make_current(static_cast<PlatformWindow*>(user));
@@ -2559,6 +2567,102 @@ int main(int argc, char** argv)
             }
             CHECK(messages == 0);
             if (messages) printf("unexpected: %s\n", lastMessage);
+        }
+
+        {
+            CHECK(driver->caps().multipleWindows);
+            WindowConfig secondConfig = config;
+            secondConfig.title = "prisma test, second window";
+            secondConfig.width = 160;
+            secondConfig.height = 120;
+            PlatformWindow* secondWindow = window_create(&secondConfig);
+            CHECK(secondWindow != nullptr);
+            if (secondWindow)
+            {
+                for (int i = 0; i < 5; ++i) window_begin_frame(secondWindow);
+                contextWindow = window;
+                SwapchainDesc secondDesc;
+                secondDesc.gl.user = secondWindow;
+                secondDesc.gl.makeCurrent = makeCurrentOn;
+                secondDesc.gl.swapBuffers = swapBuffers;
+                secondDesc.gl.framebufferSize = framebufferSize;
+                secondDesc.vulkan.user = secondWindow;
+                secondDesc.vulkan.instanceExtensions = instanceExtensions;
+                secondDesc.vulkan.createSurface = createSurface;
+                secondDesc.vulkan.framebufferSize = framebufferSize;
+                messages = 0;
+                const SwapchainHandle second = driver->createSwapchain(secondDesc);
+                CHECK(second.valid());
+                CHECK(!driver->createSwapchain(SwapchainDesc()).valid());
+                CHECK(messages == 1);
+
+                RenderPassDesc secondPass;
+                secondPass.swapchain = second;
+                RenderTarget secondTarget;
+                secondTarget.swapchain = second;
+                std::uint32_t secondWidth = 0;
+                std::uint32_t secondHeight = 0;
+                framebufferSize(secondWindow, &secondWidth, &secondHeight);
+                Rect leftSide;
+                leftSide.x = static_cast<std::int32_t>(secondWidth / 4);
+                leftSide.y = static_cast<std::int32_t>(secondHeight / 2);
+                leftSide.width = 1;
+                leftSide.height = 1;
+                Rect rightSide = leftSide;
+                rightSide.x = static_cast<std::int32_t>(secondWidth * 3 / 4);
+
+                messages = 0;
+                for (int frame = 0; frame < 4; ++frame)
+                {
+                    window_begin_frame(window);
+                    window_begin_frame(secondWindow);
+                    driver->beginFrame();
+                    driver->beginRenderPass(black);
+                    driver->bindUniformBuffer(2, params, kParamGreen * stride, sizeof(Params));
+                    driver->bindPipeline(flat);
+                    driver->bindVertexBuffer(0, buffer, 0);
+                    driver->draw(3, 0);
+                    driver->endRenderPass();
+                    CHECK(pixelIs(240, 120, 0, 255, 0));
+                    CHECK(pixelIs(80, 120, 0, 255, 0));
+                    if (frame != 2)
+                    {
+                        driver->beginRenderPass(secondPass);
+                        driver->bindUniformBuffer(2, params, kParamRed * stride, sizeof(Params));
+                        driver->bindPipeline(flat);
+                        driver->bindVertexBuffer(0, quad, 0);
+                        driver->bindIndexBuffer(quadIndices);
+                        driver->drawIndexed(6, 0);
+                        driver->endRenderPass();
+
+                        unsigned char leftPixel[4] = { 9, 9, 9, 9 };
+                        unsigned char rightPixel[4] = { 9, 9, 9, 9 };
+                        CHECK(driver->readPixels(secondTarget, leftSide, leftPixel));
+                        CHECK(driver->readPixels(secondTarget, rightSide, rightPixel));
+                        CHECK(leftPixel[0] == 255 && leftPixel[1] == 0 && leftPixel[2] == 0);
+                        CHECK(rightPixel[0] == 0 && rightPixel[1] == 0 && rightPixel[2] == 0);
+                    }
+                    driver->endFrame();
+                    driver->present();
+                }
+                CHECK(messages == 0);
+                if (messages) printf("unexpected: %s\n", lastMessage);
+
+                driver->destroy(second);
+                messages = 0;
+                window_begin_frame(window);
+                driver->beginFrame();
+                driver->beginRenderPass(secondPass);
+                CHECK(messages == 1);
+                driver->endRenderPass();
+                driver->beginRenderPass(black);
+                driver->endRenderPass();
+                CHECK(pixelIs(160, 120, 0, 0, 0));
+                driver->endFrame();
+                driver->present();
+                CHECK(messages == 1);
+                window_destroy(secondWindow);
+            }
         }
 
         CHECK(driver->caps().occlusionQueries);
