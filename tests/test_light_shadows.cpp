@@ -149,7 +149,8 @@ int main()
     CHECK(uniforms.params[0] == 1.0f / 512.0f && uniforms.params[1] == 1.5f);
     CHECK(uniforms.params[2] == 1.0f);
     CHECK(fabsf(uniforms.info[0][0] - 2.0f * tanf(0.6f)) < 1e-5f);
-    CHECK(sizeof(zenapp::ShadowUniforms) == 16 + 96 * 64 + 96 * 16);
+    CHECK(sizeof(zenapp::ShadowUniforms) == 16 + 192 * 64 + 192 * 16);
+    CHECK(sizeof(zenapp::ShadowUniforms) <= 16384);
 
     zenapp::selectLightShadows(many, viewer, 0, zenapp::kShadowNear, &shadows);
     CHECK(shadows.maps.size() == 0);
@@ -180,6 +181,48 @@ int main()
         }
         CHECK(missed == 0);
         CHECK(!inside(map.viewProjection, origin + Math::Vec3(0.0f, 1.0f, 0.0f), 0.0f));
+    }
+
+    {
+        zenapp::clearLights(&many);
+        const float left[3] = { -6.0f, 0.0f, -10.0f };
+        const float ahead[3] = { 0.0f, 0.0f, -10.0f };
+        const float close[3] = { 0.0f, 0.0f, -3.0f };
+        const float behind[3] = { 0.0f, 0.0f, 12.0f };
+        const int lightLeft = zenapp::addPointLight(&many, left, white, 10.0f, 3.0f);
+        const int lightAhead = zenapp::addPointLight(&many, ahead, white, 10.0f, 3.0f);
+        const int lightClose = zenapp::addPointLight(&many, close, white, 10.0f, 3.0f);
+        const int lightBehind = zenapp::addPointLight(&many, behind, white, 10.0f, 3.0f);
+        const Math::Mat4 projection = Math::Mat4::Perspective(0.9f, 1.0f, 0.1f, 100.0f);
+        const Math::Frustum forward = Math::Frustum::FromViewProjection(
+                projection * Math::Mat4::LookAt(Math::Vec3(0, 0, 0), Math::Vec3(0, 0, -1),
+                                     Math::Vec3(0, 1, 0)));
+        const Math::Frustum backward = Math::Frustum::FromViewProjection(
+                projection * Math::Mat4::LookAt(Math::Vec3(0, 0, 0), Math::Vec3(0, 0, 1),
+                                     Math::Vec3(0, 1, 0)));
+
+        zenapp::ShadowSlots slots;
+        zenapp::clearShadowSlots(&slots, 2);
+        CHECK(slots.count == 2);
+        CHECK(zenapp::chooseShadowLights(&many, forward, Math::Vec3(0, 0, 0), 0.3f, &slots));
+        CHECK(slots.light[0] == lightClose && slots.light[1] == lightAhead);
+        CHECK(!slots.drawn[0] && !slots.drawn[1]);
+        slots.drawn[0] = slots.drawn[1] = true;
+        many.lights[lightClose].spot[3] = 1.0f;
+        many.lights[lightAhead].spot[3] = 7.0f;
+        CHECK(!zenapp::chooseShadowLights(&many, forward, Math::Vec3(0, 0, 0), 0.3f, &slots));
+        CHECK(slots.drawn[0] && slots.drawn[1]);
+
+        CHECK(zenapp::chooseShadowLights(&many, backward, Math::Vec3(0, 0, 0), 0.3f, &slots));
+        CHECK(slots.light[0] == lightBehind && !slots.drawn[0]);
+        CHECK(slots.light[1] == lightAhead && slots.drawn[1]);
+        CHECK(many.lights[lightClose].spot[3] == 0.0f);
+        CHECK(many.lights[lightAhead].spot[3] == 7.0f);
+        CHECK(slots.light[0] != lightLeft && slots.light[1] != lightLeft);
+
+        zenapp::clearShadowSlots(&slots, 1000);
+        CHECK(slots.count == zenapp::ShadowSlots::kMaxSlots);
+        CHECK(zenapp::ShadowSlots::kMaxSlots == 32);
     }
 
     if (failures) printf("%d failed\n", failures);

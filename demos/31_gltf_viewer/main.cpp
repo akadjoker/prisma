@@ -158,9 +158,11 @@ int main(int argc, char** argv)
     const bool noBlend = zenapp::hasArgument(argc, argv, "noblend");
     const bool noMask = zenapp::hasArgument(argc, argv, "nomask");
     const bool autoWalk = zenapp::hasArgument(argc, argv, "autowalk");
-    const unsigned shadowLights = static_cast<unsigned>(numberArgument(argc, argv, "shadows", 8.0f));
+    const unsigned shadowLights =
+            static_cast<unsigned>(numberArgument(argc, argv, "shadows", 32.0f));
     const unsigned shadowSize =
-            static_cast<unsigned>(numberArgument(argc, argv, "shadowsize", 512.0f));
+            static_cast<unsigned>(numberArgument(argc, argv, "shadowsize", 256.0f));
+    const float shadowNear = numberArgument(argc, argv, "shadownear", 0.3f);
 
     zenapp::GltfModel model;
     if (!zenapp::loadGltf(modelPath, &model))
@@ -434,16 +436,14 @@ int main(int argc, char** argv)
         flyYaw = atan2f(forward.x, -forward.z);
         flyPitch = asinf(forward.y);
     }
-    zenapp::LightShadows shadows;
-    const unsigned shadowBudget = shadowLights * 6 < zenapp::ShadowUniforms::kMaxMaps
-                                          ? shadowLights * 6
-                                          : static_cast<unsigned>(zenapp::ShadowUniforms::kMaxMaps);
-    zenapp::selectLightShadows(lights, fileCamera ? flyEye : center, shadowBudget,
-            numberArgument(argc, argv, "shadownear", 0.3f), &shadows);
-    zenapp::applyLightShadows(shadows, &lights);
-    const unsigned shadowCount = static_cast<unsigned>(shadows.maps.size());
+    zenapp::ShadowSlots shadowSlots;
+    zenapp::clearShadowSlots(&shadowSlots, shadowLights);
+    const unsigned shadowCount = shadowSlots.count * zenapp::ShadowSlots::kMapsPerSlot;
     static zenapp::ShadowUniforms shadowUniforms;
-    zenapp::fillShadowUniforms(shadows, shadowSize, 1.5f, &shadowUniforms);
+    memset(&shadowUniforms, 0, sizeof(shadowUniforms));
+    shadowUniforms.params[0] = shadowSize > 0 ? 1.0f / static_cast<float>(shadowSize) : 0.0f;
+    shadowUniforms.params[1] = 1.5f;
+    shadowUniforms.params[2] = static_cast<float>(shadowCount);
 
     prisma::TextureDesc shadowMapDesc;
     shadowMapDesc.type = prisma::TextureType::Texture2DArray;
@@ -468,32 +468,26 @@ int main(int argc, char** argv)
     shadowUniformDesc.usage = prisma::BufferUsage::Uniform;
     shadowUniformDesc.size = sizeof(shadowUniforms);
     shadowUniformDesc.data = &shadowUniforms;
+    shadowUniformDesc.update = prisma::BufferUpdate::Dynamic;
     shadowUniformDesc.debugName = "light shadow uniforms";
     const prisma::BufferHandle shadowUniformBuffer = driver->createBuffer(shadowUniformDesc);
 
     ct::Vector<unsigned char> shadowFrameBytes;
     shadowFrameBytes.resize(static_cast<size_t>(frameStride) * (shadowCount > 0 ? shadowCount : 1));
     memset(shadowFrameBytes.data(), 0, shadowFrameBytes.size());
-    for (unsigned m = 0; m < shadowCount; ++m)
-    {
-        FrameUniforms shadowFrame;
-        memset(&shadowFrame, 0, sizeof(shadowFrame));
-        shadowFrame.viewProjection = shadows.maps[m].viewProjection;
-        memcpy(shadowFrameBytes.data() + static_cast<size_t>(m) * frameStride, &shadowFrame,
-                sizeof(shadowFrame));
-    }
     prisma::BufferDesc shadowFrameDesc;
     shadowFrameDesc.usage = prisma::BufferUsage::Uniform;
     shadowFrameDesc.size = static_cast<std::uint32_t>(shadowFrameBytes.size());
     shadowFrameDesc.data = shadowFrameBytes.data();
+    shadowFrameDesc.update = prisma::BufferUpdate::Dynamic;
     shadowFrameDesc.debugName = "light shadow frames";
     const prisma::BufferHandle shadowFrameBuffer = driver->createBuffer(shadowFrameDesc);
 
     const bool ready = baseReady && shadowMap.valid() && shadowSampler.valid() &&
                        shadowUniformBuffer.valid() && shadowFrameBuffer.valid();
     if (!ready) log_error("gltf viewer: resource creation failed");
-    log_info("gltf viewer: %u shadow maps of %u pixels for %u lights", shadowCount, shadowSize,
-            shadowCount / 6);
+    log_info("gltf viewer: %u shadow maps of %u pixels for up to %u lights", shadowCount,
+            shadowSize, shadowSlots.count);
 
     if (ready && !zenapp::hasArgument(argc, argv, "nowarmup"))
     {
@@ -554,52 +548,13 @@ int main(int argc, char** argv)
         froxelizer.setDepthRange(fileCamera ? 3.0f : radius * 0.3f, fileCamera ? 150.0f : radius * 8.0f);
     }
 
-    if (ready && shadowCount > 0)
-    {
-        unsigned shadowDraws = 0;
-        driver->beginFrame();
-        for (unsigned m = 0; m < shadowCount; ++m)
-        {
-            const Math::Frustum lightFrustum =
-                    Math::Frustum::FromViewProjection(shadows.maps[m].cullViewProjection);
-            prisma::RenderPassDesc shadowPass;
-            shadowPass.depth.texture = shadowMap;
-            shadowPass.depth.layer = m;
-            driver->beginRenderPass(shadowPass);
-            driver->bindUniformBuffer(0, shadowFrameBuffer, m * frameStride, sizeof(FrameUniforms));
-            zenapp::bindGltfGeometry(driver, gpu);
-            int boundKind = -1;
-            for (const Candidate& candidate: candidates)
-            {
-                const Draw& draw = candidate.draw;
-                if (draw.blend || !lightFrustum.IntersectsBox(candidate.box)) continue;
-                const int kind = (draw.mask ? 1 : 0) + (draw.doubleSided ? 2 : 0);
-                if (kind != boundKind)
-                {
-                    driver->bindPipeline(shadowPipelines[kind]);
-                    boundKind = kind;
-                }
-                if (draw.mask) zenapp::bindGltfMaterial(driver, gpu, model, draw.material);
-                driver->bindUniformBuffer(2, objectBuffer, draw.node * objectStride,
-                        sizeof(ObjectUniforms));
-                zenapp::drawGltfPrimitive(driver, gpu, model.primitives[draw.primitive]);
-                ++shadowDraws;
-            }
-            driver->endRenderPass();
-        }
-        driver->beginRenderPass(pass);
-        driver->endRenderPass();
-        driver->endFrame();
-        driver->present();
-        log_info("gltf viewer: shadow maps drawn with %u draws", shadowDraws);
-    }
-
     Math::Vec3 previousEye = flyEye;
     float clusteredView[16] = {};
     float clusteredProjection[16] = {};
     int clusteredWidth = 0;
     int clusteredHeight = 0;
     bool clusteredValid = false;
+    bool lightsDirty = false;
     double lastTime = time_seconds();
     if (zenapp::hasArgument(argc, argv, "novsync")) window_set_vsync(window, false);
     static const char* const phaseNames[4] = { "cull", "uniforms", "record", "present" };
@@ -754,7 +709,10 @@ int main(int argc, char** argv)
                         return da.distance < db.distance;
                     });
 
-        const bool lightsMoved = !clusteredValid || width != clusteredWidth ||
+        if (shadowSlots.count > 0 &&
+                zenapp::chooseShadowLights(&lights, frustum, eye, shadowNear, &shadowSlots))
+            lightsDirty = true;
+        const bool lightsMoved = !clusteredValid || lightsDirty || width != clusteredWidth ||
                                  height != clusteredHeight ||
                                  memcmp(view.Data(), clusteredView, sizeof(clusteredView)) != 0 ||
                                  memcmp(projection.Data(), clusteredProjection,
@@ -769,6 +727,7 @@ int main(int argc, char** argv)
             clusteredWidth = width;
             clusteredHeight = height;
             clusteredValid = true;
+            lightsDirty = false;
         }
 
         stats.phase(1);
@@ -785,7 +744,76 @@ int main(int argc, char** argv)
             zenapp::drawStatsOverlay(&overlay, stats, phaseNames, 4, extra);
         }
         overlay.upload(driver);
+        unsigned pendingSlots[2];
+        unsigned pendingMaps[2];
+        zenapp::ShadowMapView pendingViews[2][zenapp::ShadowSlots::kMapsPerSlot];
+        unsigned pendingCount = 0;
+        for (unsigned slot = 0; slot < shadowSlots.count && pendingCount < 2; ++slot)
+        {
+            if (shadowSlots.light[slot] < 0 || shadowSlots.drawn[slot]) continue;
+            const unsigned light = static_cast<unsigned>(shadowSlots.light[slot]);
+            const unsigned firstLayer = slot * zenapp::ShadowSlots::kMapsPerSlot;
+            pendingSlots[pendingCount] = slot;
+            pendingMaps[pendingCount] = zenapp::lightShadowMaps(lights.culling[light], light,
+                    shadowNear, pendingViews[pendingCount]);
+            for (unsigned face = 0; face < pendingMaps[pendingCount]; ++face)
+            {
+                const zenapp::ShadowMapView& map = pendingViews[pendingCount][face];
+                shadowUniforms.matrices[firstLayer + face] = map.viewProjection;
+                shadowUniforms.info[firstLayer + face][0] = map.texelScale;
+                FrameUniforms shadowFrame;
+                memset(&shadowFrame, 0, sizeof(shadowFrame));
+                shadowFrame.viewProjection = map.viewProjection;
+                memcpy(shadowFrameBytes.data() +
+                                static_cast<size_t>(firstLayer + face) * frameStride,
+                        &shadowFrame, sizeof(shadowFrame));
+            }
+            driver->updateBuffer(shadowFrameBuffer, firstLayer * frameStride,
+                    shadowFrameBytes.data() + static_cast<size_t>(firstLayer) * frameStride,
+                    zenapp::ShadowSlots::kMapsPerSlot * frameStride);
+            ++pendingCount;
+        }
+        if (pendingCount > 0)
+            driver->updateBuffer(shadowUniformBuffer, 0, &shadowUniforms, sizeof(shadowUniforms));
+
         if (gpuQuery.valid()) driver->beginQuery(gpuQuery);
+        for (unsigned pending = 0; pending < pendingCount; ++pending)
+        {
+            const unsigned slot = pendingSlots[pending];
+            const unsigned firstLayer = slot * zenapp::ShadowSlots::kMapsPerSlot;
+            for (unsigned face = 0; face < pendingMaps[pending]; ++face)
+            {
+                const Math::Frustum lightFrustum = Math::Frustum::FromViewProjection(
+                        pendingViews[pending][face].cullViewProjection);
+                prisma::RenderPassDesc shadowPass;
+                shadowPass.depth.texture = shadowMap;
+                shadowPass.depth.layer = firstLayer + face;
+                driver->beginRenderPass(shadowPass);
+                driver->bindUniformBuffer(0, shadowFrameBuffer, (firstLayer + face) * frameStride,
+                        sizeof(FrameUniforms));
+                zenapp::bindGltfGeometry(driver, gpu);
+                int boundKind = -1;
+                for (const Candidate& candidate: candidates)
+                {
+                    const Draw& draw = candidate.draw;
+                    if (draw.blend || !lightFrustum.IntersectsBox(candidate.box)) continue;
+                    const int kind = (draw.mask ? 1 : 0) + (draw.doubleSided ? 2 : 0);
+                    if (kind != boundKind)
+                    {
+                        driver->bindPipeline(shadowPipelines[kind]);
+                        boundKind = kind;
+                    }
+                    if (draw.mask) zenapp::bindGltfMaterial(driver, gpu, model, draw.material);
+                    driver->bindUniformBuffer(2, objectBuffer, draw.node * objectStride,
+                            sizeof(ObjectUniforms));
+                    zenapp::drawGltfPrimitive(driver, gpu, model.primitives[draw.primitive]);
+                }
+                driver->endRenderPass();
+            }
+            shadowSlots.drawn[slot] = true;
+            lights.lights[shadowSlots.light[slot]].spot[3] = static_cast<float>(firstLayer + 1);
+            lightsDirty = true;
+        }
         driver->beginRenderPass(pass);
 
         driver->bindPipeline(skyPipeline);

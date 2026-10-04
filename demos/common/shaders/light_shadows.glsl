@@ -1,7 +1,7 @@
 #ifndef LIGHT_SHADOWS_GLSL
 #define LIGHT_SHADOWS_GLSL
 
-const int kMaxShadowMaps = 96;
+const int kMaxShadowMaps = 192;
 
 layout(set = 0, binding = 8, std140) uniform LightShadows
 {

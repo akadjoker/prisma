@@ -25,7 +25,7 @@ struct ShadowUniforms
 {
     enum
     {
-        kMaxMaps = 96
+        kMaxMaps = 192
     };
 
     float params[4];
@@ -37,6 +37,19 @@ struct LightShadows
 {
     ct::Vector<ShadowMapView> maps;
     ct::Vector<int> firstMap;
+};
+
+struct ShadowSlots
+{
+    enum
+    {
+        kMaxSlots = ShadowUniforms::kMaxMaps / 6,
+        kMapsPerSlot = 6
+    };
+
+    int light[kMaxSlots];
+    bool drawn[kMaxSlots];
+    unsigned count = 0;
 };
 
 const float kShadowNear = 0.01f;
@@ -74,6 +87,32 @@ inline float shadowHalfAngle(const FroxelLight& light)
     return light.outerAngle < kShadowMaxHalfAngle ? light.outerAngle : kShadowMaxHalfAngle;
 }
 
+inline unsigned lightShadowMaps(const FroxelLight& light, unsigned index, float nearPlane,
+        ShadowMapView* out)
+{
+    const unsigned needed = light.spot ? 1u : 6u;
+    const Math::Vec3 position(light.position[0], light.position[1], light.position[2]);
+    const float halfAngle = shadowHalfAngle(light);
+    const Math::Mat4 projection =
+            perspectiveZeroToOne(halfAngle * 2.0f, 1.0f, nearPlane, light.radius);
+    const Math::Mat4 cullProjection =
+            Math::Mat4::Perspective(halfAngle * 2.0f, 1.0f, nearPlane, light.radius);
+    for (unsigned face = 0; face < needed; ++face)
+    {
+        ShadowMapView& map = out[face];
+        map.light = index;
+        map.face = face;
+        const Math::Mat4 view =
+                light.spot ? shadowView(position, Math::Vec3(light.direction[0], light.direction[1],
+                                                          light.direction[2]))
+                           : pointShadowView(face, position);
+        map.viewProjection = projection * view;
+        map.cullViewProjection = cullProjection * view;
+        map.texelScale = 2.0f * tanf(halfAngle);
+    }
+    return needed;
+}
+
 inline void selectLightShadows(const LightSet& set, const Math::Vec3& viewer, unsigned maxMaps,
         float nearPlane, LightShadows* out)
 {
@@ -104,29 +143,73 @@ inline void selectLightShadows(const LightSet& set, const Math::Vec3& viewer, un
         const unsigned needed = light.spot ? 1u : 6u;
         if (out->maps.size() + needed > maxMaps) continue;
 
-        const Math::Vec3 position(light.position[0], light.position[1], light.position[2]);
-        const float halfAngle = shadowHalfAngle(light);
-        const Math::Mat4 projection =
-                perspectiveZeroToOne(halfAngle * 2.0f, 1.0f, nearPlane, light.radius);
-        const Math::Mat4 cullProjection =
-                Math::Mat4::Perspective(halfAngle * 2.0f, 1.0f, nearPlane, light.radius);
+        ShadowMapView views[6];
+        lightShadowMaps(light, index, nearPlane, views);
         out->firstMap[index] = static_cast<int>(out->maps.size());
-        for (unsigned face = 0; face < needed; ++face)
-        {
-            ShadowMapView map;
-            map.light = index;
-            map.face = face;
-            const Math::Mat4 view =
-                    light.spot ? shadowView(position, Math::Vec3(light.direction[0],
-                                                              light.direction[1],
-                                                              light.direction[2]))
-                               : pointShadowView(face, position);
-            map.viewProjection = projection * view;
-            map.cullViewProjection = cullProjection * view;
-            map.texelScale = 2.0f * tanf(halfAngle);
-            out->maps.push_back(map);
-        }
+        for (unsigned face = 0; face < needed; ++face) out->maps.push_back(views[face]);
     }
+}
+
+inline void clearShadowSlots(ShadowSlots* slots, unsigned count)
+{
+    slots->count = count < ShadowSlots::kMaxSlots ? count
+                                                  : static_cast<unsigned>(ShadowSlots::kMaxSlots);
+    for (unsigned i = 0; i < ShadowSlots::kMaxSlots; ++i)
+    {
+        slots->light[i] = -1;
+        slots->drawn[i] = false;
+    }
+}
+
+inline bool chooseShadowLights(LightSet* set, const Math::Frustum& view, const Math::Vec3& eye,
+        float nearPlane, ShadowSlots* slots)
+{
+    unsigned order[Froxelizer::kMaxLights + 1];
+    float distance[Froxelizer::kMaxLights + 1];
+    unsigned candidates = 0;
+    for (unsigned i = 0; i < set->count; ++i)
+    {
+        const FroxelLight& light = set->culling[i];
+        const Math::Vec3 position(light.position[0], light.position[1], light.position[2]);
+        distance[i] = (position - eye).Length();
+        if (light.radius > nearPlane && view.IntersectsSphere(position, light.radius))
+            order[candidates++] = i;
+    }
+    if (candidates > 1)
+        ct::sort(order, order + candidates, [&distance](unsigned a, unsigned b) {
+            if (distance[a] != distance[b]) return distance[a] < distance[b];
+            return a < b;
+        });
+    const unsigned wantedCount = candidates < slots->count ? candidates : slots->count;
+
+    bool wantedSlot[ShadowSlots::kMaxSlots] = {};
+    unsigned missing[ShadowSlots::kMaxSlots];
+    unsigned missingCount = 0;
+    for (unsigned w = 0; w < wantedCount; ++w)
+    {
+        bool found = false;
+        for (unsigned s = 0; s < slots->count && !found; ++s)
+            if (slots->light[s] == static_cast<int>(order[w]))
+            {
+                wantedSlot[s] = true;
+                found = true;
+            }
+        if (!found) missing[missingCount++] = order[w];
+    }
+
+    bool changed = false;
+    unsigned next = 0;
+    for (unsigned m = 0; m < missingCount; ++m)
+    {
+        while (next < slots->count && wantedSlot[next]) ++next;
+        if (next >= slots->count) break;
+        if (slots->light[next] >= 0) set->lights[slots->light[next]].spot[3] = 0.0f;
+        slots->light[next] = static_cast<int>(missing[m]);
+        slots->drawn[next] = false;
+        wantedSlot[next] = true;
+        changed = true;
+    }
+    return changed;
 }
 
 inline void applyLightShadows(const LightShadows& shadows, LightSet* set)
