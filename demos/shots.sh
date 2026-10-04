@@ -47,5 +47,6 @@ done <<LIST
 25_oit oit 10
 26_basic_compute basic_compute 10
 27_compute_sort compute_sort 26
+28_shadow_volume shadow_volume 10
 LIST
 exit $status
