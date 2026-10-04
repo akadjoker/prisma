@@ -1777,6 +1777,7 @@ public:
         const QuerySlotHandle slot = handleCast<QuerySlotHandle>(handle);
         const VulkanQuery* query = queries_.get(slot);
         if (!query) return;
+        if (query->active >= 0 && query->type == QueryType::Occlusion) endQuery(handle);
         for (std::uint32_t i = 0; i < kQuerySlots; ++i)
         {
             Garbage item;
@@ -1810,6 +1811,7 @@ public:
             vkResetQueryPool(device_, occlusionPool_, index, 1);
             vkCmdBeginQuery(commands, occlusionPool_, index, 0);
             occlusionActive_ = true;
+            openOcclusion_ = handle;
         }
         else
         {
@@ -1836,6 +1838,7 @@ public:
         {
             vkCmdEndQuery(commands, occlusionPool_, index);
             occlusionActive_ = false;
+            openOcclusion_ = QueryHandle();
         }
         else
             vkCmdWriteTimestamp(commands, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, timePool_,
@@ -2454,6 +2457,11 @@ public:
     void endRenderPass() override
     {
         if (!passActive_) return;
+        if (occlusionActive_)
+        {
+            log("endRenderPass: an occlusion query is still open");
+            endQuery(openOcclusion_);
+        }
         passActive_ = false;
         VkCommandBuffer commands = frames_[frameIndex_].commands;
         vkCmdEndRendering(commands);
@@ -4482,6 +4490,7 @@ private:
     std::uint64_t querySequence_ = 0;
     float timestampPeriod_ = 1.0f;
     bool occlusionActive_ = false;
+    QueryHandle openOcclusion_;
 
     VkCommandBuffer immediateCommands_ = VK_NULL_HANDLE;
     VkCommandBuffer pendingTransfer_ = VK_NULL_HANDLE;

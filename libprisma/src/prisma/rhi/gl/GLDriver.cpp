@@ -1408,6 +1408,7 @@ public:
         {
             glEndQuery(GL_ANY_SAMPLES_PASSED);
             occlusionActive_ = false;
+            openOcclusion_ = QueryHandle();
         }
         glDeleteQueries(kQuerySlots * 2, &query->ids[0][0]);
         queries_.erase(slot);
@@ -1431,6 +1432,7 @@ public:
         {
             glBeginQuery(GL_ANY_SAMPLES_PASSED, query->ids[slot][0]);
             occlusionActive_ = true;
+            openOcclusion_ = handle;
         }
         else
             writeTimestamp(query->ids[slot][0]);
@@ -1451,6 +1453,7 @@ public:
         {
             glEndQuery(GL_ANY_SAMPLES_PASSED);
             occlusionActive_ = false;
+            openOcclusion_ = QueryHandle();
         }
         else
             writeTimestamp(query->ids[slot][1]);
@@ -1851,7 +1854,11 @@ public:
     void endRenderPass() override
     {
         if (!passActive_) return;
-        if (occlusionActive_) log("endRenderPass: an occlusion query is still open");
+        if (occlusionActive_)
+        {
+            log("endRenderPass: an occlusion query is still open");
+            endQuery(openOcclusion_);
+        }
         passActive_ = false;
         if (storageUsedInPass_ && caps_.compute) glMemoryBarrier(GL_ALL_BARRIER_BITS);
         storageUsedInPass_ = false;
@@ -2828,6 +2835,7 @@ private:
     bool mainSwapped_ = false;
     std::uint64_t querySequence_ = 0;
     bool occlusionActive_ = false;
+    QueryHandle openOcclusion_;
     ct::Vector<GLFramebuffer> framebuffers_;
     GLuint colorResolves_[RenderPassDesc::kMaxColorTargets] = {};
     GLuint copyFramebuffers_[2] = { 0, 0 };

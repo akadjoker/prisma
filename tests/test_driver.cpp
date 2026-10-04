@@ -3678,6 +3678,24 @@ int main(int argc, char** argv)
         printf("queries: ready after %d frames, gpu time %llu ns\n", queryFrames,
                 static_cast<unsigned long long>(timeResult));
 
+        messages = 0;
+        pump(window);
+        driver->beginFrame();
+        driver->beginRenderPass(black);
+        driver->beginQuery(visibleQuery);
+        driver->endRenderPass();
+        CHECK(messages == 1);
+        driver->beginRenderPass(keep(black));
+        driver->beginQuery(hiddenQuery);
+        driver->destroy(hiddenQuery);
+        driver->beginQuery(visibleQuery);
+        driver->endQuery(visibleQuery);
+        driver->endRenderPass();
+        driver->endFrame();
+        driver->present();
+        CHECK(messages == 1);
+        if (messages != 1) printf("unexpected: %s\n", lastMessage);
+
         driver->destroy(timeQuery);
         driver->destroy(hiddenQuery);
         driver->destroy(visibleQuery);
