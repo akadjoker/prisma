@@ -2,6 +2,11 @@ add_executable(test_null_driver test_null_driver.cpp)
 target_link_libraries(test_null_driver PRIVATE prisma)
 add_test(NAME null_driver COMMAND test_null_driver)
 
+add_executable(test_free_ranges test_free_ranges.cpp)
+target_include_directories(test_free_ranges PRIVATE ${PROJECT_SOURCE_DIR}/libprisma/src)
+target_link_libraries(test_free_ranges PRIVATE ct)
+add_test(NAME free_ranges COMMAND test_free_ranges)
+
 if(PRISMA_OPENGL AND PRISMA_BUILD_APPS AND PRISMA_SHADER_TOOLS)
   add_executable(test_driver test_driver.cpp)
   target_include_directories(test_driver PRIVATE ${PROJECT_SOURCE_DIR}/libprisma/src)

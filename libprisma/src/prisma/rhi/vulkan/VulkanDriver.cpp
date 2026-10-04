@@ -1,6 +1,7 @@
 #include "prisma/rhi/Driver.h"
 #include "prisma/rhi/Format.h"
 #include "prisma/rhi/HandleCast.h"
+#include "prisma/rhi/vulkan/VulkanMemory.h"
 
 #include <ct/vector.hpp>
 #include <vulkan/vulkan.h>
@@ -37,7 +38,7 @@ const std::uint64_t kNeverUsed = UINT64_MAX;
 struct BufferVersion
 {
     VkBuffer buffer = VK_NULL_HANDLE;
-    VkDeviceMemory memory = VK_NULL_HANDLE;
+    VulkanAllocation allocation;
     void* mapped = nullptr;
     std::uint64_t lastUsedFrame = kNeverUsed;
 };
@@ -106,7 +107,7 @@ struct ReadSource
 struct VulkanReadback
 {
     VkBuffer buffer = VK_NULL_HANDLE;
-    VkDeviceMemory memory = VK_NULL_HANDLE;
+    VulkanAllocation allocation;
     void* mapped = nullptr;
     std::uint64_t frame = 0;
     std::uint32_t width = 0;
@@ -144,7 +145,7 @@ struct VulkanTexture
     };
 
     VkImage image = VK_NULL_HANDLE;
-    VkDeviceMemory memory = VK_NULL_HANDLE;
+    VulkanAllocation allocation;
     VkImageView view = VK_NULL_HANDLE;
     TextureType type = TextureType::Texture2D;
     std::uint32_t width = 0;
@@ -198,7 +199,7 @@ struct Garbage
     std::uint32_t querySlot = 0;
     std::uint8_t queryKind = 0;
     VkBuffer buffer = VK_NULL_HANDLE;
-    VkDeviceMemory memory = VK_NULL_HANDLE;
+    VulkanAllocation allocation;
     VkPipeline pipeline = VK_NULL_HANDLE;
     VkPipelineLayout layout = VK_NULL_HANDLE;
     VkDescriptorSetLayout setLayout = VK_NULL_HANDLE;
@@ -592,7 +593,7 @@ public:
             for (VulkanReadback& readback: readbacks_)
             {
                 vkDestroyBuffer(device_, readback.buffer, nullptr);
-                vkFreeMemory(device_, readback.memory, nullptr);
+                memory_.free(readback.allocation);
             }
             for (VulkanTexture& texture: textures_)
             {
@@ -603,7 +604,7 @@ public:
                         vkDestroyImageView(device_, texture.mipViews[i], nullptr);
                 vkDestroyImageView(device_, texture.view, nullptr);
                 vkDestroyImage(device_, texture.image, nullptr);
-                vkFreeMemory(device_, texture.memory, nullptr);
+                memory_.free(texture.allocation);
             }
             for (VulkanSampler& sampler: samplers_)
                 vkDestroySampler(device_, sampler.sampler, nullptr);
@@ -614,7 +615,7 @@ public:
                 for (std::uint32_t i = 0; i < buffer.versionCount; ++i)
                 {
                     vkDestroyBuffer(device_, buffer.versions[i].buffer, nullptr);
-                    vkFreeMemory(device_, buffer.versions[i].memory, nullptr);
+                    memory_.free(buffer.versions[i].allocation);
                 }
             }
             collectGarbage(true);
@@ -631,6 +632,7 @@ public:
             if (occlusionPool_) vkDestroyQueryPool(device_, occlusionPool_, nullptr);
             if (timePool_) vkDestroyQueryPool(device_, timePool_, nullptr);
             if (commandPool_) vkDestroyCommandPool(device_, commandPool_, nullptr);
+            memory_.shutdown();
             vkDestroyDevice(device_, nullptr);
         }
         if (surface_) vkDestroySurfaceKHR(instance_, surface_, nullptr);
@@ -690,8 +692,22 @@ public:
                 break;
         }
         buffer.vkUsage |= VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-        if (!createVersion(buffer, desc.debugName)) return BufferHandle();
-        if (desc.data) memcpy(buffer.versions[0].mapped, desc.data, desc.size);
+        const bool visible = desc.update != BufferUpdate::Static;
+        if (!createVersion(buffer, desc.debugName, visible)) return BufferHandle();
+        buffer.gpuWritten = !visible;
+        if (desc.data && visible) memcpy(buffer.versions[0].mapped, desc.data, desc.size);
+        if (desc.data && !visible)
+        {
+            const VkBuffer staging = stagingBuffer(desc.data, desc.size);
+            if (staging)
+            {
+                VkCommandBuffer commands = transferCommands();
+                VkBufferCopy region = {};
+                region.size = desc.size;
+                vkCmdCopyBuffer(commands, staging, buffer.versions[0].buffer, 1, &region);
+                transferBarrier(commands);
+            }
+        }
         return handleCast<BufferHandle>(buffers_.insert(buffer));
     }
 
@@ -1272,11 +1288,6 @@ public:
 
         VkMemoryRequirements requirements;
         vkGetImageMemoryRequirements(device_, texture.image, &requirements);
-        VkMemoryAllocateInfo allocate = {};
-        allocate.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        allocate.allocationSize = requirements.size;
-        allocate.memoryTypeIndex =
-                findMemoryType(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
         VkImageViewCreateInfo view = {};
         view.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -1293,14 +1304,15 @@ public:
         view.subresourceRange.levelCount = texture.mipLevels;
         view.subresourceRange.layerCount = layers;
 
-        if (allocate.memoryTypeIndex == UINT32_MAX ||
-                vkAllocateMemory(device_, &allocate, nullptr, &texture.memory) != VK_SUCCESS ||
-                vkBindImageMemory(device_, texture.image, texture.memory, 0) != VK_SUCCESS ||
+        if (!memory_.allocate(requirements, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                    VulkanMemoryKind::Image, &texture.allocation) ||
+                vkBindImageMemory(device_, texture.image, texture.allocation.memory,
+                        texture.allocation.offset) != VK_SUCCESS ||
                 vkCreateImageView(device_, &view, nullptr, &texture.view) != VK_SUCCESS)
         {
             log("createTexture: could not allocate memory or create the view");
             vkDestroyImage(device_, texture.image, nullptr);
-            if (texture.memory) vkFreeMemory(device_, texture.memory, nullptr);
+            memory_.free(texture.allocation);
             return TextureHandle();
         }
         setName(VK_OBJECT_TYPE_IMAGE, (std::uint64_t) texture.image, desc.debugName);
@@ -1490,7 +1502,7 @@ public:
             Garbage item;
             item.frame = frameNumber_;
             item.buffer = buffer->versions[i].buffer;
-            item.memory = buffer->versions[i].memory;
+            item.allocation = buffer->versions[i].allocation;
             garbage_.push_back(item);
         }
         buffers_.erase(slot);
@@ -1546,7 +1558,7 @@ public:
         item.frame = frameNumber_;
         item.image = texture->image;
         item.view = texture->view;
-        item.memory = texture->memory;
+        item.allocation = texture->allocation;
         garbage_.push_back(item);
         textures_.erase(slot);
     }
@@ -2360,7 +2372,7 @@ public:
             copyRows(static_cast<const unsigned char*>(staging.versions[0].mapped), rect.width,
                     rect.height, read.fromTexture, read.swapRedBlue, rgba);
         vkDestroyBuffer(device_, staging.versions[0].buffer, nullptr);
-        vkFreeMemory(device_, staging.versions[0].memory, nullptr);
+        memory_.free(staging.versions[0].allocation);
         return done;
     }
 
@@ -2381,7 +2393,7 @@ public:
 
         VulkanReadback readback;
         readback.buffer = staging.versions[0].buffer;
-        readback.memory = staging.versions[0].memory;
+        readback.allocation = staging.versions[0].allocation;
         readback.mapped = staging.versions[0].mapped;
         readback.frame = frameNumber_;
         readback.width = rect.width;
@@ -2415,7 +2427,7 @@ public:
         Garbage item;
         item.frame = frameNumber_;
         item.buffer = readback->buffer;
-        item.memory = readback->memory;
+        item.allocation = readback->allocation;
         garbage_.push_back(item);
         readbacks_.erase(slot);
     }
@@ -2541,16 +2553,7 @@ private:
         setObjectName_(device_, &info);
     }
 
-    std::uint32_t findMemoryType(std::uint32_t typeBits, VkMemoryPropertyFlags wanted) const
-    {
-        for (std::uint32_t i = 0; i < memoryProperties_.memoryTypeCount; ++i)
-            if ((typeBits & (1u << i)) &&
-                    (memoryProperties_.memoryTypes[i].propertyFlags & wanted) == wanted)
-                return i;
-        return UINT32_MAX;
-    }
-
-    bool createVersion(VulkanBuffer& buffer, const char* name)
+    bool createVersion(VulkanBuffer& buffer, const char* name, bool visible = true)
     {
         if (buffer.versionCount >= VulkanBuffer::kMaxVersions) return false;
         BufferVersion version;
@@ -2568,22 +2571,20 @@ private:
 
         VkMemoryRequirements requirements;
         vkGetBufferMemoryRequirements(device_, version.buffer, &requirements);
-        VkMemoryAllocateInfo allocate = {};
-        allocate.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        allocate.allocationSize = requirements.size;
-        allocate.memoryTypeIndex = findMemoryType(requirements.memoryTypeBits,
-                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        if (allocate.memoryTypeIndex == UINT32_MAX ||
-                vkAllocateMemory(device_, &allocate, nullptr, &version.memory) != VK_SUCCESS ||
-                vkBindBufferMemory(device_, version.buffer, version.memory, 0) != VK_SUCCESS ||
-                vkMapMemory(device_, version.memory, 0, VK_WHOLE_SIZE, 0, &version.mapped) !=
-                        VK_SUCCESS)
+        const VkMemoryPropertyFlags wanted =
+                visible ? VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
+                        : VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+        if (!memory_.allocate(requirements, wanted, VulkanMemoryKind::Buffer,
+                    &version.allocation) ||
+                vkBindBufferMemory(device_, version.buffer, version.allocation.memory,
+                        version.allocation.offset) != VK_SUCCESS)
         {
-            log("Vulkan: could not allocate or map buffer memory");
+            log("Vulkan: could not allocate buffer memory");
             vkDestroyBuffer(device_, version.buffer, nullptr);
-            if (version.memory) vkFreeMemory(device_, version.memory, nullptr);
+            memory_.free(version.allocation);
             return false;
         }
+        version.mapped = visible ? version.allocation.mapped : nullptr;
         setName(VK_OBJECT_TYPE_BUFFER, (std::uint64_t) version.buffer, name);
         buffer.versions[buffer.versionCount++] = version;
         return true;
@@ -2613,7 +2614,7 @@ private:
             if (item.view) vkDestroyImageView(device_, item.view, nullptr);
             if (item.image) vkDestroyImage(device_, item.image, nullptr);
             if (item.sampler) vkDestroySampler(device_, item.sampler, nullptr);
-            if (item.memory) vkFreeMemory(device_, item.memory, nullptr);
+            memory_.free(item.allocation);
             if (item.commands) vkFreeCommandBuffers(device_, commandPool_, 1, &item.commands);
             if (item.queryKind == 1) freeOcclusion_.push_back(item.querySlot);
             if (item.queryKind == 2) freeTime_.push_back(item.querySlot);
@@ -2688,7 +2689,7 @@ private:
         Garbage item;
         item.frame = frameNumber_;
         item.buffer = staging.versions[0].buffer;
-        item.memory = staging.versions[0].memory;
+        item.allocation = staging.versions[0].allocation;
         garbage_.push_back(item);
         return staging.versions[0].buffer;
     }
@@ -2847,7 +2848,7 @@ private:
         Garbage item;
         item.frame = frameNumber_;
         item.buffer = staging.versions[0].buffer;
-        item.memory = staging.versions[0].memory;
+        item.allocation = staging.versions[0].allocation;
         garbage_.push_back(item);
 
         VkCommandBuffer commands = transferCommands();
@@ -3614,7 +3615,7 @@ private:
             return false;
         }
         vkGetDeviceQueue(device_, queueFamily_, 0, &queue_);
-        vkGetPhysicalDeviceMemoryProperties(physicalDevice_, &memoryProperties_);
+        memory_.init(physicalDevice_, device_);
         VkFormatProperties depthProperties;
         vkGetPhysicalDeviceFormatProperties(physicalDevice_, VK_FORMAT_D32_SFLOAT,
                 &depthProperties);
@@ -3709,10 +3710,10 @@ private:
     {
         if (depthView_) vkDestroyImageView(device_, depthView_, nullptr);
         if (depthImage_) vkDestroyImage(device_, depthImage_, nullptr);
-        if (depthMemory_) vkFreeMemory(device_, depthMemory_, nullptr);
+        memory_.free(depthAllocation_);
         depthView_ = VK_NULL_HANDLE;
         depthImage_ = VK_NULL_HANDLE;
-        depthMemory_ = VK_NULL_HANDLE;
+        depthAllocation_ = VulkanAllocation();
         depthLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
     }
 
@@ -3736,14 +3737,10 @@ private:
 
         VkMemoryRequirements requirements;
         vkGetImageMemoryRequirements(device_, depthImage_, &requirements);
-        VkMemoryAllocateInfo allocate = {};
-        allocate.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        allocate.allocationSize = requirements.size;
-        allocate.memoryTypeIndex =
-                findMemoryType(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-        if (allocate.memoryTypeIndex == UINT32_MAX ||
-                vkAllocateMemory(device_, &allocate, nullptr, &depthMemory_) != VK_SUCCESS ||
-                vkBindImageMemory(device_, depthImage_, depthMemory_, 0) != VK_SUCCESS)
+        if (!memory_.allocate(requirements, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                    VulkanMemoryKind::Image, &depthAllocation_) ||
+                vkBindImageMemory(device_, depthImage_, depthAllocation_.memory,
+                        depthAllocation_.offset) != VK_SUCCESS)
             return false;
 
         VkImageViewCreateInfo view = {};
@@ -3978,7 +3975,6 @@ private:
     std::uint32_t passHeight_ = 0;
     std::uint64_t frameNumber_ = 0;
 
-    VkPhysicalDeviceMemoryProperties memoryProperties_ = {};
     PFN_vkSetDebugUtilsObjectNameEXT setObjectName_ = nullptr;
 
     ct::SlotMap32<VulkanBuffer> buffers_;
@@ -4045,7 +4041,8 @@ private:
 
     VkFormat depthFormat_ = VK_FORMAT_D32_SFLOAT;
     VkImage depthImage_ = VK_NULL_HANDLE;
-    VkDeviceMemory depthMemory_ = VK_NULL_HANDLE;
+    VulkanAllocation depthAllocation_;
+    VulkanMemory memory_;
     VkImageView depthView_ = VK_NULL_HANDLE;
     VkImageLayout depthLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
 };

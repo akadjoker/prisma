@@ -2504,6 +2504,63 @@ int main(int argc, char** argv)
             driver->destroy(corner);
         }
 
+        {
+            static TextureHandle manyTextures[256];
+            static BufferHandle manyBuffers[256];
+            unsigned char greenTexels[16 * 16 * 4];
+            for (int i = 0; i < 16 * 16; ++i)
+            {
+                greenTexels[i * 4 + 0] = 0;
+                greenTexels[i * 4 + 1] = 255;
+                greenTexels[i * 4 + 2] = 0;
+                greenTexels[i * 4 + 3] = 255;
+            }
+            messages = 0;
+            for (int round = 0; round < 3; ++round)
+            {
+                for (int i = 0; i < 256; ++i)
+                {
+                    if (manyTextures[i].valid()) continue;
+                    TextureDesc manyDesc;
+                    manyDesc.width = 16;
+                    manyDesc.height = 16 + (i % 5) * 16;
+                    manyDesc.mipLevels = (i % 3) == 0 ? 0 : 1;
+                    manyDesc.data = i == 255 ? greenTexels : nullptr;
+                    manyTextures[i] = driver->createTexture(manyDesc);
+                    BufferDesc manyBufferDesc;
+                    manyBufferDesc.size = 64 + static_cast<std::uint32_t>(i) * 37;
+                    manyBufferDesc.update = (i % 2) ? BufferUpdate::Static : BufferUpdate::Dynamic;
+                    manyBuffers[i] = driver->createBuffer(manyBufferDesc);
+                    if (!manyTextures[i].valid() || !manyBuffers[i].valid()) ++failures;
+                }
+                window_begin_frame(window);
+                driver->beginFrame();
+                driver->beginRenderPass(black);
+                driver->bindPipeline(textured);
+                driver->bindVertexBuffer(0, buffer, 0);
+                driver->bindTexture(3, manyTextures[255], nearest);
+                driver->draw(3, 0);
+                driver->endRenderPass();
+                CHECK(pixelIs(160, 200, 0, 255, 0));
+                driver->endFrame();
+                driver->present();
+                for (int i = round; i < 255; i += 2)
+                {
+                    driver->destroy(manyTextures[i]);
+                    driver->destroy(manyBuffers[i]);
+                    manyTextures[i] = TextureHandle();
+                    manyBuffers[i] = BufferHandle();
+                }
+            }
+            for (int i = 0; i < 256; ++i)
+            {
+                driver->destroy(manyTextures[i]);
+                driver->destroy(manyBuffers[i]);
+            }
+            CHECK(messages == 0);
+            if (messages) printf("unexpected: %s\n", lastMessage);
+        }
+
         CHECK(driver->caps().occlusionQueries);
         const QueryHandle visibleQuery = driver->createQuery(QueryType::Occlusion);
         const QueryHandle hiddenQuery = driver->createQuery(QueryType::Occlusion);
