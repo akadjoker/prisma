@@ -4,6 +4,8 @@
 
 #include "OpenGL.h"
 
+#include <stdio.h>
+
 namespace prisma
 {
 
@@ -66,10 +68,20 @@ GLenum toGLTopology(Topology topology)
 class GLDriver final : public Driver
 {
 public:
-    GLDriver(const GLPlatform& platform, void (*log)(const char*))
+    GLDriver(const GLPlatform& platform, void (*log)(const char*), bool debug)
             : platform_(platform),
-              log_(log)
+              log_(log),
+              debug_(debug)
     {
+        if (debug_)
+        {
+            glEnable(GL_DEBUG_OUTPUT);
+            glEnable(GL_DEBUG_OUTPUT_SYNCHRONOUS);
+            glDebugMessageCallback(&GLDriver::debugMessage, this);
+            glDebugMessageControl(GL_DONT_CARE, GL_DONT_CARE, GL_DEBUG_SEVERITY_NOTIFICATION, 0,
+                    nullptr, GL_FALSE);
+        }
+
         GLint value = 0;
         glGetIntegerv(GL_MAX_TEXTURE_SIZE, &value);
         caps_.maxTextureSize = static_cast<std::uint32_t>(value);
@@ -101,6 +113,7 @@ public:
         glGenBuffers(1, &buffer.id);
         state_.bindArrayBuffer(buffer.id);
         glBufferData(GL_ARRAY_BUFFER, desc.size, desc.data, GL_STATIC_DRAW);
+        label(GL_BUFFER, buffer.id, desc.debugName);
         return handleCast<BufferHandle>(buffers_.insert(buffer));
     }
 
@@ -111,6 +124,7 @@ public:
         GLShader shader;
         shader.id = glCreateShader(
                 desc.stage == ShaderStage::Vertex ? GL_VERTEX_SHADER : GL_FRAGMENT_SHADER);
+        label(GL_SHADER, shader.id, desc.debugName);
         const char* source = desc.source;
         glShaderSource(shader.id, 1, &source, nullptr);
         glCompileShader(shader.id);
@@ -162,6 +176,7 @@ public:
         pipeline.attributeCount = desc.attributeCount;
         glGenVertexArrays(1, &pipeline.vertexArray);
         state_.bindVertexArray(pipeline.vertexArray);
+        label(GL_PROGRAM, pipeline.program, desc.debugName);
         for (std::uint32_t i = 0; i < desc.attributeCount; ++i)
         {
             pipeline.attributes[i] = desc.attributes[i];
@@ -284,8 +299,26 @@ private:
         if (log_) log_(message);
     }
 
+    void label(GLenum kind, GLuint id, const char* name) const
+    {
+        if (debug_ && name) glObjectLabel(kind, id, -1, name);
+    }
+
+    static void GLAPIENTRY debugMessage(GLenum, GLenum type, GLuint, GLenum, GLsizei,
+            const GLchar* message, const void* user)
+    {
+        const char* kind = "warning";
+        if (type == GL_DEBUG_TYPE_ERROR) kind = "error";
+        if (type == GL_DEBUG_TYPE_PERFORMANCE) kind = "performance";
+
+        char text[1200];
+        snprintf(text, sizeof(text), "GL %s: %s", kind, message);
+        static_cast<const GLDriver*>(user)->log(text);
+    }
+
     GLPlatform platform_;
     void (*log_)(const char*);
+    bool debug_;
     GLState state_;
     Caps caps_;
 
@@ -325,7 +358,7 @@ Driver* createGLDriver(const DriverDesc& desc, DriverError* error)
         return nullptr;
     }
     *error = DriverError::None;
-    return new GLDriver(*gl, desc.log);
+    return new GLDriver(*gl, desc.log, desc.debug);
 }
 
 } // namespace prisma

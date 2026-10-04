@@ -66,6 +66,7 @@ int main(int argc, char** argv)
     prisma::BufferDesc bufferDesc;
     bufferDesc.size = sizeof(kVertices);
     bufferDesc.data = kVertices;
+    bufferDesc.debugName = "triangle vertices";
     const prisma::BufferHandle vertexBuffer = driver->createBuffer(bufferDesc);
 
     prisma::ShaderDesc shaderDesc;
@@ -80,6 +81,7 @@ int main(int argc, char** argv)
     pipelineDesc.vertexShader = vertexShader;
     pipelineDesc.fragmentShader = fragmentShader;
     pipelineDesc.vertexStride = sizeof(Vertex);
+    pipelineDesc.debugName = "triangle pipeline";
     pipelineDesc.attributeCount = 2;
     pipelineDesc.attributes[0].location = 0;
     pipelineDesc.attributes[0].format = prisma::VertexFormat::Float2;

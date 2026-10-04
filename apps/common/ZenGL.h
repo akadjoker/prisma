@@ -8,6 +8,12 @@
 namespace zengl
 {
 
+#ifdef NDEBUG
+const bool kDebug = false;
+#else
+const bool kDebug = true;
+#endif
+
 inline bool makeCurrent(void* user)
 {
     window_make_current(static_cast<PlatformWindow*>(user));
@@ -40,6 +46,7 @@ inline PlatformWindow* openWindow(const char* title)
     config.gl.profile = GL_PROFILE_CORE;
     config.gl.major = 4;
     config.gl.minor = 6;
+    config.gl.debug = kDebug;
     config.resizable = true;
     config.vsync = true;
     return window_create(&config);
@@ -57,6 +64,7 @@ inline prisma::Driver* createDriver(PlatformWindow* window)
     desc.type = prisma::DriverType::OpenGL;
     desc.gl = &gl;
     desc.log = log;
+    desc.debug = kDebug;
 
     prisma::DriverError error = prisma::DriverError::None;
     prisma::Driver* driver = prisma::createDriver(desc, &error);

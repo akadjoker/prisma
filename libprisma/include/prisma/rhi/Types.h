@@ -37,6 +37,7 @@ struct DriverDesc
     DriverType type = DriverType::Null;
     const GLPlatform* gl = nullptr;
     void (*log)(const char* message) = nullptr;
+    bool debug = false;
 };
 
 struct BufferTag;
@@ -57,6 +58,7 @@ struct BufferDesc
     BufferUsage usage = BufferUsage::Vertex;
     std::uint32_t size = 0;
     const void* data = nullptr;
+    const char* debugName = nullptr;
 };
 
 enum class ShaderStage : std::uint8_t
@@ -69,6 +71,7 @@ struct ShaderDesc
 {
     ShaderStage stage = ShaderStage::Vertex;
     const char* source = nullptr;
+    const char* debugName = nullptr;
 };
 
 enum class VertexFormat : std::uint8_t
@@ -107,6 +110,7 @@ struct PipelineDesc
     std::uint32_t attributeCount = 0;
     std::uint32_t vertexStride = 0;
     Topology topology = Topology::Triangles;
+    const char* debugName = nullptr;
 };
 
 enum class LoadOp : std::uint8_t
