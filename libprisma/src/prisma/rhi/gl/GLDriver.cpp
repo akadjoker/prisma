@@ -667,6 +667,7 @@ public:
 #ifndef PRISMA_GLES
         glEnable(GL_PRIMITIVE_RESTART_FIXED_INDEX);
         glEnable(GL_PROGRAM_POINT_SIZE);
+        glEnable(GL_TEXTURE_CUBE_MAP_SEAMLESS);
         glClipControl(GL_LOWER_LEFT, GL_ZERO_TO_ONE);
 #endif
     }

@@ -171,6 +171,7 @@ enum ParamIndex
     kParamCubePositiveX,
     kParamCubeNegativeY,
     kParamCubeNegativeZ,
+    kParamCubeEdge,
     kParamWhite,
     kParamMaxColor,
     kParamQuarterGrey,
@@ -491,6 +492,8 @@ int main(int argc, char** argv)
         setParams(paramBytes, stride, kParamLevelTwo, levelTwo);
         const Params cubeNegativeZ = { { 0.0f, 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, -1.0f, 0.0f } };
         setParams(paramBytes, stride, kParamCubeNegativeZ, cubeNegativeZ);
+        const Params cubeEdge = { { 0.0f, 0.0f, 0.0f, 0.0f }, { 1.0f, 1.0f, 0.0f, 0.0f } };
+        setParams(paramBytes, stride, kParamCubeEdge, cubeEdge);
 
         const Params white = { { 1.0f, 1.0f, 1.0f, 1.0f }, { 0.0f, 0.0f, 0.0f, 0.0f } };
         setParams(paramBytes, stride, kParamWhite, white);
@@ -1240,6 +1243,23 @@ int main(int argc, char** argv)
         driver->draw(3, 0);
         driver->endRenderPass();
         CHECK(pixelIs(160, 120, 255, 0, 255));
+
+        SamplerDesc seamlessDesc;
+        seamlessDesc.mipFilter = MipFilter::None;
+        seamlessDesc.addressU = AddressMode::ClampToEdge;
+        seamlessDesc.addressV = AddressMode::ClampToEdge;
+        seamlessDesc.addressW = AddressMode::ClampToEdge;
+        const SamplerHandle seamless = driver->createSampler(seamlessDesc);
+        CHECK(seamless.valid());
+        driver->beginRenderPass(black);
+        driver->bindPipeline(cubePipeline);
+        driver->bindVertexBuffer(0, buffer, 0);
+        driver->bindTexture(3, cubeTexture, seamless);
+        driver->bindUniformBuffer(2, params, kParamCubeEdge * stride, sizeof(Params));
+        driver->draw(3, 0);
+        driver->endRenderPass();
+        CHECK(pixelIs(160, 120, 127, 0, 127, 4));
+        driver->destroy(seamless);
 
         driver->beginRenderPass(black);
         driver->bindPipeline(volumePipeline);
