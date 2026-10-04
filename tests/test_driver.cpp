@@ -3475,6 +3475,34 @@ int main(int argc, char** argv)
             CHECK(messages == 0);
             if (messages) printf("unexpected: %s\n", lastMessage);
 
+            PipelineDesc maskedDesc = twoTargetsPipelineDesc;
+            maskedDesc.independentBlend = true;
+            maskedDesc.targetBlend[1].colorMask = kColorBlue;
+            const PipelineHandle maskedTarget = driver->createPipeline(maskedDesc);
+            CHECK(maskedTarget.valid());
+            messages = 0;
+            pump(window);
+            driver->beginFrame();
+            for (int i = 0; i < 3; ++i)
+            {
+                driver->beginRenderPass(blendPass);
+                driver->bindPipeline(maskedTarget);
+                driver->bindVertexBuffer(0, buffer, 0);
+                driver->draw(3, 0);
+                driver->endRenderPass();
+                unsigned char one[4] = { 0, 0, 0, 0 };
+                unsigned char two[4] = { 0, 0, 0, 0 };
+                CHECK(driver->readPixels(firstTarget, blendPixel, one));
+                CHECK(driver->readPixels(secondTarget, blendPixel, two));
+                CHECK(one[0] == 255 && one[1] == 0 && one[2] == 0);
+                CHECK(two[0] == 64 && two[1] == 64 && two[2] == 0);
+            }
+            driver->endFrame();
+            driver->present();
+            CHECK(messages == 0);
+            if (messages) printf("unexpected: %s\n", lastMessage);
+            driver->destroy(maskedTarget);
+
             driver->destroy(separateBlend);
             driver->destroy(sharedBlend);
             driver->destroy(blendSecond);

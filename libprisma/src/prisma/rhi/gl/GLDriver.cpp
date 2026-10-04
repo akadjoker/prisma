@@ -1079,7 +1079,7 @@ public:
         attach(point, *destination, to);
         glBindFramebuffer(GL_READ_FRAMEBUFFER, copyFramebuffers_[0]);
         state_.scissorTest(false);
-        state_.colorMask(kColorAll);
+        writeAllColors();
         state_.depthMask(true);
         state_.stencilWriteMask(0xFF);
         glBlitFramebuffer(sourceX, sourceY, sourceX + width, sourceY + height, destinationX,
@@ -1560,7 +1560,7 @@ public:
         GLbitfield mask = 0;
         if (desc.colorLoad == LoadOp::Clear && (!passOffscreen_ || desc.colorCount > 0))
         {
-            state_.colorMask(kColorAll);
+            writeAllColors();
             state_.clearColor(desc.clearColor);
             mask |= GL_COLOR_BUFFER_BIT;
         }
@@ -2451,7 +2451,7 @@ private:
         if (!any) return;
 
         state_.scissorTest(false);
-        state_.colorMask(kColorAll);
+        writeAllColors();
         state_.depthMask(true);
         state_.stencilWriteMask(0xFF);
         const GLint width = static_cast<GLint>(passWidth_);
@@ -2629,34 +2629,49 @@ private:
         return GL_ARRAY_BUFFER;
     }
 
+    void writeAllColors()
+    {
+        state_.colorMask(kColorAll);
+        independentKnown_ = 0;
+    }
+
     void applyIndependentBlend(const GLPipeline& pipeline)
     {
-        if (!independentApplied_) state_.invalidateBlend();
-        independentApplied_ = true;
+        state_.invalidateBlend();
         const std::uint32_t count = passFormats_.window ? 1 : passFormats_.colorCount;
         for (std::uint32_t i = 0; i < count; ++i)
         {
             const GLBlendTarget& target = pipeline.targetBlend[i];
             GLBlendTarget& cached = independentCache_[i];
-            const bool known = independentKnown_;
+            const bool known = i < independentKnown_;
             if (!known || cached.blend != target.blend)
             {
                 if (target.blend) glEnablei(GL_BLEND, i);
                 else
                     glDisablei(GL_BLEND, i);
+                cached.blend = target.blend;
             }
-            if (target.blend && (!known || memcmp(cached.func, target.func, sizeof(target.func))))
+            if (!known || (target.blend && memcmp(cached.func, target.func, sizeof(target.func))))
+            {
                 glBlendFuncSeparatei(i, target.func[0], target.func[1], target.func[2],
                         target.func[3]);
-            if (target.blend &&
-                    (!known || memcmp(cached.equation, target.equation, sizeof(target.equation))))
+                memcpy(cached.func, target.func, sizeof(target.func));
+            }
+            if (!known ||
+                    (target.blend &&
+                            memcmp(cached.equation, target.equation, sizeof(target.equation))))
+            {
                 glBlendEquationSeparatei(i, target.equation[0], target.equation[1]);
+                memcpy(cached.equation, target.equation, sizeof(target.equation));
+            }
             if (!known || cached.mask != target.mask)
+            {
                 glColorMaski(i, (target.mask & 1) != 0, (target.mask & 2) != 0,
                         (target.mask & 4) != 0, (target.mask & 8) != 0);
-            cached = target;
+                cached.mask = target.mask;
+            }
         }
-        independentKnown_ = true;
+        if (count > independentKnown_) independentKnown_ = count;
     }
 
     const GLPipeline* prepareDraw(std::uint64_t vertexEnd, std::uint32_t instanceCount)
@@ -2702,12 +2717,7 @@ private:
         if (pipeline->independentBlend) applyIndependentBlend(*pipeline);
         else
         {
-            if (independentApplied_)
-            {
-                state_.invalidateBlend();
-                independentApplied_ = false;
-                independentKnown_ = false;
-            }
+            independentKnown_ = 0;
             state_.blend(pipeline->blend);
             if (pipeline->blend)
             {
@@ -2795,8 +2805,7 @@ private:
     SwapchainHandle currentSurface_;
     GLint patchVertices_ = 0;
     bool storageUsedInPass_ = false;
-    bool independentApplied_ = false;
-    bool independentKnown_ = false;
+    std::uint32_t independentKnown_ = 0;
     GLBlendTarget independentCache_[TargetFormats::kMaxColors];
     bool surfacesUsed_ = false;
     bool mainDrawn_ = false;
