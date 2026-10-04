@@ -989,6 +989,7 @@ public:
                                     desc.patchControlPoints > caps_.maxPatchControlPoints)) ||
                 ((control || evaluation) && !caps_.tessellation))
             valid = false;
+        if (desc.independentBlend && !caps_.independentBlend) valid = false;
         if (!valid)
         {
             log("createPipeline: invalid shader handle or vertex input");
@@ -1109,21 +1110,31 @@ public:
         const std::uint32_t colorCount = desc.targets.window ? 1 : desc.targets.colorCount;
         VkFormat colorFormats[TargetFormats::kMaxColors] = {};
         VkPipelineColorBlendAttachmentState blends[TargetFormats::kMaxColors] = {};
+        BlendState shared;
+        shared.blend = desc.blend;
+        shared.srcColor = desc.srcColor;
+        shared.dstColor = desc.dstColor;
+        shared.srcAlpha = desc.srcAlpha;
+        shared.dstAlpha = desc.dstAlpha;
+        shared.colorBlendOp = desc.colorBlendOp;
+        shared.alphaBlendOp = desc.alphaBlendOp;
+        shared.colorMask = desc.colorMask;
         for (std::uint32_t i = 0; i < colorCount; ++i)
         {
             colorFormats[i] = desc.targets.window ? format_ : toVkFormat(desc.targets.colors[i]);
-            blends[i].blendEnable = desc.blend;
-            blends[i].srcColorBlendFactor = toVkBlendFactor(desc.srcColor);
-            blends[i].dstColorBlendFactor = toVkBlendFactor(desc.dstColor);
-            blends[i].colorBlendOp = toVkBlendOp(desc.colorBlendOp);
-            blends[i].srcAlphaBlendFactor = toVkBlendFactor(desc.srcAlpha);
-            blends[i].dstAlphaBlendFactor = toVkBlendFactor(desc.dstAlpha);
-            blends[i].alphaBlendOp = toVkBlendOp(desc.alphaBlendOp);
+            const BlendState& state = desc.independentBlend ? desc.targetBlend[i] : shared;
+            blends[i].blendEnable = state.blend;
+            blends[i].srcColorBlendFactor = toVkBlendFactor(state.srcColor);
+            blends[i].dstColorBlendFactor = toVkBlendFactor(state.dstColor);
+            blends[i].colorBlendOp = toVkBlendOp(state.colorBlendOp);
+            blends[i].srcAlphaBlendFactor = toVkBlendFactor(state.srcAlpha);
+            blends[i].dstAlphaBlendFactor = toVkBlendFactor(state.dstAlpha);
+            blends[i].alphaBlendOp = toVkBlendOp(state.alphaBlendOp);
             blends[i].colorWriteMask = 0;
-            if (desc.colorMask & kColorRed) blends[i].colorWriteMask |= VK_COLOR_COMPONENT_R_BIT;
-            if (desc.colorMask & kColorGreen) blends[i].colorWriteMask |= VK_COLOR_COMPONENT_G_BIT;
-            if (desc.colorMask & kColorBlue) blends[i].colorWriteMask |= VK_COLOR_COMPONENT_B_BIT;
-            if (desc.colorMask & kColorAlpha) blends[i].colorWriteMask |= VK_COLOR_COMPONENT_A_BIT;
+            if (state.colorMask & kColorRed) blends[i].colorWriteMask |= VK_COLOR_COMPONENT_R_BIT;
+            if (state.colorMask & kColorGreen) blends[i].colorWriteMask |= VK_COLOR_COMPONENT_G_BIT;
+            if (state.colorMask & kColorBlue) blends[i].colorWriteMask |= VK_COLOR_COMPONENT_B_BIT;
+            if (state.colorMask & kColorAlpha) blends[i].colorWriteMask |= VK_COLOR_COMPONENT_A_BIT;
         }
         VkPipelineColorBlendStateCreateInfo blend = {};
         blend.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
@@ -3923,6 +3934,7 @@ private:
                         (floatProperties.optimalTilingFeatures &
                                 VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT) != 0;
                 caps_.geometryShaders = features.features.geometryShader;
+                caps_.independentBlend = features.features.independentBlend;
                 caps_.tessellation = features.features.tessellationShader;
                 caps_.maxPatchControlPoints = properties.limits.maxTessellationPatchSize;
                 multiDrawIndirect_ = features.features.multiDrawIndirect;
@@ -3983,6 +3995,7 @@ private:
         enabled.geometryShader = caps_.geometryShaders;
         enabled.tessellationShader = caps_.tessellation;
         enabled.multiDrawIndirect = multiDrawIndirect_;
+        enabled.independentBlend = caps_.independentBlend;
 
         const char* const extension = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
         VkDeviceCreateInfo info = {};

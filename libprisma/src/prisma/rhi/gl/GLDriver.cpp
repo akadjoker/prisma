@@ -317,6 +317,14 @@ struct GLQuery
     std::int32_t active = -1;
 };
 
+struct GLBlendTarget
+{
+    bool blend = false;
+    GLenum func[4] = { GL_ONE, GL_ZERO, GL_ONE, GL_ZERO };
+    GLenum equation[2] = { GL_FUNC_ADD, GL_FUNC_ADD };
+    std::uint8_t mask = kColorAll;
+};
+
 struct GLPipeline
 {
     GLuint program = 0;
@@ -335,6 +343,8 @@ struct GLPipeline
     bool cull = false;
     GLenum cullFace = GL_BACK;
     GLenum frontFace = GL_CCW;
+    bool independentBlend = false;
+    GLBlendTarget targetBlend[TargetFormats::kMaxColors];
     bool blend = false;
     GLenum blendFunc[4] = { GL_ONE, GL_ZERO, GL_ONE, GL_ZERO };
     GLenum blendEquation[2] = { GL_FUNC_ADD, GL_FUNC_ADD };
@@ -603,6 +613,12 @@ public:
 #endif
         caps_.compressedTextureCopy = copyImage_;
         caps_.indirectDraw = caps_.compute;
+#ifdef PRISMA_GLES
+        caps_.independentBlend = glBlendFuncSeparatei != nullptr && glColorMaski != nullptr &&
+                                 (major > 3 || (major == 3 && minor >= 2));
+#else
+        caps_.independentBlend = true;
+#endif
 #ifdef PRISMA_GLES
         caps_.geometryShaders = major > 3 || (major == 3 && minor >= 2);
         caps_.tessellation = caps_.geometryShaders && glPatchParameteri != nullptr;
@@ -1118,6 +1134,11 @@ public:
                         ? shaders_.get(handleCast<ShaderSlot>(desc.tessEvalShader))
                         : nullptr;
         const bool patches = desc.topology == Topology::Patches;
+        if (desc.independentBlend && !caps_.independentBlend)
+        {
+            log("createPipeline: a blend state for each target is not supported");
+            return PipelineHandle();
+        }
         const bool badGeometry =
                 (desc.geometryShader.valid() &&
                         (!geometry || geometry->stage != ShaderStage::Geometry)) ||
@@ -1186,6 +1207,20 @@ public:
         pipeline.cull = desc.cullMode != CullMode::None;
         pipeline.cullFace = desc.cullMode == CullMode::Front ? GL_FRONT : GL_BACK;
         pipeline.frontFace = desc.frontFace == FrontFace::Clockwise ? GL_CW : GL_CCW;
+        pipeline.independentBlend = desc.independentBlend;
+        for (std::uint32_t i = 0; i < TargetFormats::kMaxColors; ++i)
+        {
+            const BlendState& state = desc.targetBlend[i];
+            GLBlendTarget& target = pipeline.targetBlend[i];
+            target.blend = state.blend;
+            target.func[0] = toGLBlendFactor(state.srcColor);
+            target.func[1] = toGLBlendFactor(state.dstColor);
+            target.func[2] = toGLBlendFactor(state.srcAlpha);
+            target.func[3] = toGLBlendFactor(state.dstAlpha);
+            target.equation[0] = toGLBlendOp(state.colorBlendOp);
+            target.equation[1] = toGLBlendOp(state.alphaBlendOp);
+            target.mask = state.colorMask;
+        }
         pipeline.blend = desc.blend;
         pipeline.blendFunc[0] = toGLBlendFactor(desc.srcColor);
         pipeline.blendFunc[1] = toGLBlendFactor(desc.dstColor);
@@ -2528,6 +2563,36 @@ private:
         return GL_ARRAY_BUFFER;
     }
 
+    void applyIndependentBlend(const GLPipeline& pipeline)
+    {
+        if (!independentApplied_) state_.invalidateBlend();
+        independentApplied_ = true;
+        const std::uint32_t count = passFormats_.window ? 1 : passFormats_.colorCount;
+        for (std::uint32_t i = 0; i < count; ++i)
+        {
+            const GLBlendTarget& target = pipeline.targetBlend[i];
+            GLBlendTarget& cached = independentCache_[i];
+            const bool known = independentKnown_;
+            if (!known || cached.blend != target.blend)
+            {
+                if (target.blend) glEnablei(GL_BLEND, i);
+                else
+                    glDisablei(GL_BLEND, i);
+            }
+            if (target.blend && (!known || memcmp(cached.func, target.func, sizeof(target.func))))
+                glBlendFuncSeparatei(i, target.func[0], target.func[1], target.func[2],
+                        target.func[3]);
+            if (target.blend &&
+                    (!known || memcmp(cached.equation, target.equation, sizeof(target.equation))))
+                glBlendEquationSeparatei(i, target.equation[0], target.equation[1]);
+            if (!known || cached.mask != target.mask)
+                glColorMaski(i, (target.mask & 1) != 0, (target.mask & 2) != 0,
+                        (target.mask & 4) != 0, (target.mask & 8) != 0);
+            cached = target;
+        }
+        independentKnown_ = true;
+    }
+
     const GLPipeline* prepareDraw(std::uint64_t vertexEnd, std::uint32_t instanceCount)
     {
         const GLPipeline* pipeline = pipelines_.get(handleCast<PipelineSlot>(pipeline_));
@@ -2568,14 +2633,24 @@ private:
         if (pipeline->depthTest) state_.depthFunc(pipeline->depthFunc);
         state_.cullFace(pipeline->cull, pipeline->cullFace);
         state_.frontFace(pipeline->frontFace);
-        state_.blend(pipeline->blend);
-        if (pipeline->blend)
+        if (pipeline->independentBlend) applyIndependentBlend(*pipeline);
+        else
         {
-            state_.blendFunc(pipeline->blendFunc[0], pipeline->blendFunc[1], pipeline->blendFunc[2],
-                    pipeline->blendFunc[3]);
-            state_.blendEquation(pipeline->blendEquation[0], pipeline->blendEquation[1]);
+            if (independentApplied_)
+            {
+                state_.invalidateBlend();
+                independentApplied_ = false;
+                independentKnown_ = false;
+            }
+            state_.blend(pipeline->blend);
+            if (pipeline->blend)
+            {
+                state_.blendFunc(pipeline->blendFunc[0], pipeline->blendFunc[1],
+                        pipeline->blendFunc[2], pipeline->blendFunc[3]);
+                state_.blendEquation(pipeline->blendEquation[0], pipeline->blendEquation[1]);
+            }
+            state_.colorMask(pipeline->colorMask);
         }
-        state_.colorMask(pipeline->colorMask);
         GLState::Stencil stencil = pipeline->stencil;
         stencil.reference = stencilReference_;
         state_.stencil(stencil);
@@ -2653,6 +2728,9 @@ private:
     ct::SlotMap32<GLSwapchain> swapchains_;
     SwapchainHandle currentSurface_;
     GLint patchVertices_ = 0;
+    bool independentApplied_ = false;
+    bool independentKnown_ = false;
+    GLBlendTarget independentCache_[TargetFormats::kMaxColors];
     bool surfacesUsed_ = false;
     bool mainDrawn_ = false;
     bool mainSwapped_ = false;

@@ -3099,6 +3099,87 @@ int main(int argc, char** argv)
             driver->destroy(coverageMsaa);
         }
 
+        {
+            CHECK(driver->caps().independentBlend);
+            TextureDesc blendTargetDesc;
+            blendTargetDesc.width = 4;
+            blendTargetDesc.height = 4;
+            blendTargetDesc.usage = kTextureSampled | kTextureRenderTarget;
+            const TextureHandle blendFirst = driver->createTexture(blendTargetDesc);
+            const TextureHandle blendSecond = driver->createTexture(blendTargetDesc);
+            CHECK(blendFirst.valid());
+            CHECK(blendSecond.valid());
+
+            PipelineDesc sharedDesc = twoTargetsPipelineDesc;
+            sharedDesc.blend = true;
+            sharedDesc.srcColor = BlendFactor::One;
+            sharedDesc.dstColor = BlendFactor::One;
+            sharedDesc.srcAlpha = BlendFactor::One;
+            sharedDesc.dstAlpha = BlendFactor::Zero;
+            const PipelineHandle sharedBlend = driver->createPipeline(sharedDesc);
+            PipelineDesc separateDesc = sharedDesc;
+            separateDesc.independentBlend = true;
+            separateDesc.targetBlend[0].blend = true;
+            separateDesc.targetBlend[0].srcColor = BlendFactor::One;
+            separateDesc.targetBlend[0].dstColor = BlendFactor::One;
+            separateDesc.targetBlend[0].srcAlpha = BlendFactor::One;
+            separateDesc.targetBlend[1].blend = true;
+            separateDesc.targetBlend[1].srcColor = BlendFactor::Zero;
+            separateDesc.targetBlend[1].dstColor = BlendFactor::One;
+            separateDesc.targetBlend[1].srcAlpha = BlendFactor::Zero;
+            separateDesc.targetBlend[1].dstAlpha = BlendFactor::One;
+            const PipelineHandle separateBlend = driver->createPipeline(separateDesc);
+            CHECK(sharedBlend.valid());
+            CHECK(separateBlend.valid());
+
+            RenderPassDesc blendPass;
+            blendPass.colors[0].texture = blendFirst;
+            blendPass.colors[1].texture = blendSecond;
+            blendPass.colorCount = 2;
+            blendPass.clearColor[0] = 0.25f;
+            blendPass.clearColor[1] = 0.25f;
+            blendPass.clearColor[2] = 0.25f;
+            RenderTarget firstTarget;
+            firstTarget.texture = blendFirst;
+            RenderTarget secondTarget;
+            secondTarget.texture = blendSecond;
+            Rect blendPixel;
+            blendPixel.x = 2;
+            blendPixel.y = 2;
+            blendPixel.width = 1;
+            blendPixel.height = 1;
+
+            const PipelineHandle order[3] = { sharedBlend, separateBlend, sharedBlend };
+            const int expectedSecond[3][3] = { { 64, 255, 64 }, { 64, 64, 64 }, { 64, 255, 64 } };
+            messages = 0;
+            window_begin_frame(window);
+            driver->beginFrame();
+            for (int i = 0; i < 3; ++i)
+            {
+                driver->beginRenderPass(blendPass);
+                driver->bindPipeline(order[i]);
+                driver->bindVertexBuffer(0, buffer, 0);
+                driver->draw(3, 0);
+                driver->endRenderPass();
+                unsigned char one[4] = { 0, 0, 0, 0 };
+                unsigned char two[4] = { 0, 0, 0, 0 };
+                CHECK(driver->readPixels(firstTarget, blendPixel, one));
+                CHECK(driver->readPixels(secondTarget, blendPixel, two));
+                CHECK(one[0] == 255 && one[1] == 64 && one[2] == 64);
+                CHECK(two[0] == expectedSecond[i][0] && two[1] == expectedSecond[i][1] &&
+                        two[2] == expectedSecond[i][2]);
+            }
+            driver->endFrame();
+            driver->present();
+            CHECK(messages == 0);
+            if (messages) printf("unexpected: %s\n", lastMessage);
+
+            driver->destroy(separateBlend);
+            driver->destroy(sharedBlend);
+            driver->destroy(blendSecond);
+            driver->destroy(blendFirst);
+        }
+
         CHECK(driver->caps().occlusionQueries);
         const QueryHandle visibleQuery = driver->createQuery(QueryType::Occlusion);
         const QueryHandle hiddenQuery = driver->createQuery(QueryType::Occlusion);

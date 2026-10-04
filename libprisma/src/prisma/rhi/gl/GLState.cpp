@@ -312,6 +312,8 @@ void GLState::depthBias(float constant, float slope)
     known_ |= kDepthBias;
 }
 
+void GLState::invalidateBlend() { known_ &= ~(kBlend | kBlendFunc | kBlendEquation | kColorMask); }
+
 void GLState::alphaToCoverage(bool enabled)
 {
     if (same(kAlphaToCoverage, alphaToCoverage_, enabled)) return;

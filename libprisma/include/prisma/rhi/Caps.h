@@ -20,6 +20,7 @@ struct Caps
     bool floatColorTargets = false;
     bool floatLinearFiltering = false;
     bool wireframe = false;
+    bool independentBlend = false;
     bool textureBC = false;
     bool textureETC2 = false;
     bool textureASTC = false;

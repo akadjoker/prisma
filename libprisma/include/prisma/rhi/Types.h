@@ -504,6 +504,18 @@ struct ComputePipelineDesc
     const char* debugName = nullptr;
 };
 
+struct BlendState
+{
+    bool blend = false;
+    BlendFactor srcColor = BlendFactor::One;
+    BlendFactor dstColor = BlendFactor::Zero;
+    BlendFactor srcAlpha = BlendFactor::One;
+    BlendFactor dstAlpha = BlendFactor::Zero;
+    BlendOp colorBlendOp = BlendOp::Add;
+    BlendOp alphaBlendOp = BlendOp::Add;
+    std::uint8_t colorMask = kColorAll;
+};
+
 struct PipelineDesc
 {
     enum : std::uint32_t
@@ -551,6 +563,8 @@ struct PipelineDesc
     BlendOp colorBlendOp = BlendOp::Add;
     BlendOp alphaBlendOp = BlendOp::Add;
     std::uint8_t colorMask = kColorAll;
+    bool independentBlend = false;
+    BlendState targetBlend[TargetFormats::kMaxColors];
 
     bool stencilTest = false;
     StencilFace stencilFront;

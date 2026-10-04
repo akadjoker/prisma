@@ -61,6 +61,7 @@ public:
     void depthBias(float constant, float slope);
     void wireframe(bool enabled);
     void alphaToCoverage(bool enabled);
+    void invalidateBlend();
     void blendFunc(std::uint32_t srcColor, std::uint32_t dstColor, std::uint32_t srcAlpha,
             std::uint32_t dstAlpha);
 
