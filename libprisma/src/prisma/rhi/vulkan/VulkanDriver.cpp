@@ -901,9 +901,11 @@ public:
             }
             if (next != previous)
             {
-                if (offset != 0 || size != buffer->size)
-                    memcpy(buffer->versions[next].mapped, buffer->versions[previous].mapped,
-                            buffer->size);
+                const char* from = static_cast<const char*>(buffer->versions[previous].mapped);
+                char* to = static_cast<char*>(buffer->versions[next].mapped);
+                const std::uint32_t end = offset + size;
+                if (offset > 0) memcpy(to, from, offset);
+                if (end < buffer->size) memcpy(to + end, from + end, buffer->size - end);
                 buffer->versions[next].lastUsedFrame = kNeverUsed;
                 buffer->current = next;
             }
