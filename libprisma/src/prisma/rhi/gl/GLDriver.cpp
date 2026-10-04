@@ -239,6 +239,12 @@ struct GLPipeline
     GLenum frontFace = GL_CCW;
     bool blend = false;
     GLenum blendFunc[4] = { GL_ONE, GL_ZERO, GL_ONE, GL_ZERO };
+    GLenum blendEquation[2] = { GL_FUNC_ADD, GL_FUNC_ADD };
+    std::uint8_t colorMask = kColorAll;
+    GLState::Stencil stencil;
+    float depthBiasConstant = 0.0f;
+    float depthBiasSlope = 0.0f;
+    bool wireframe = false;
     TargetFormats targets;
 };
 
@@ -318,6 +324,48 @@ GLenum toGLUpdate(BufferUpdate update)
             return GL_STREAM_DRAW;
     }
     return GL_STATIC_DRAW;
+}
+
+GLenum toGLStencilOp(StencilOp op)
+{
+    switch (op)
+    {
+        case StencilOp::Keep:
+            return GL_KEEP;
+        case StencilOp::Zero:
+            return GL_ZERO;
+        case StencilOp::Replace:
+            return GL_REPLACE;
+        case StencilOp::IncrementClamp:
+            return GL_INCR;
+        case StencilOp::DecrementClamp:
+            return GL_DECR;
+        case StencilOp::Invert:
+            return GL_INVERT;
+        case StencilOp::IncrementWrap:
+            return GL_INCR_WRAP;
+        case StencilOp::DecrementWrap:
+            return GL_DECR_WRAP;
+    }
+    return GL_KEEP;
+}
+
+GLenum toGLBlendOp(BlendOp op)
+{
+    switch (op)
+    {
+        case BlendOp::Add:
+            return GL_FUNC_ADD;
+        case BlendOp::Subtract:
+            return GL_FUNC_SUBTRACT;
+        case BlendOp::ReverseSubtract:
+            return GL_FUNC_REVERSE_SUBTRACT;
+        case BlendOp::Min:
+            return GL_MIN;
+        case BlendOp::Max:
+            return GL_MAX;
+    }
+    return GL_FUNC_ADD;
 }
 
 GLenum toGLCompare(CompareOp op)
@@ -412,6 +460,9 @@ public:
         caps_.versionMajor = static_cast<std::uint32_t>(major);
         caps_.versionMinor = static_cast<std::uint32_t>(minor);
         caps_.debugOutput = debug_;
+#ifndef PRISMA_GLES
+        caps_.wireframe = true;
+#endif
 #ifdef PRISMA_GLES
         caps_.floatColorTargets = glESExt::EXT_color_buffer_float;
 #else
@@ -617,6 +668,12 @@ public:
         glSamplerParameteri(sampler.id, GL_TEXTURE_WRAP_S, toGLAddress(desc.addressU));
         glSamplerParameteri(sampler.id, GL_TEXTURE_WRAP_T, toGLAddress(desc.addressV));
         glSamplerParameteri(sampler.id, GL_TEXTURE_WRAP_R, toGLAddress(desc.addressW));
+        if (desc.compare)
+        {
+            glSamplerParameteri(sampler.id, GL_TEXTURE_COMPARE_MODE, GL_COMPARE_REF_TO_TEXTURE);
+            glSamplerParameteri(sampler.id, GL_TEXTURE_COMPARE_FUNC,
+                    static_cast<GLint>(toGLCompare(desc.compareOp)));
+        }
         if (desc.maxAnisotropy > 1.0f && caps_.maxAnisotropy > 1.0f)
             glSamplerParameterf(sampler.id, kTextureMaxAnisotropy,
                     desc.maxAnisotropy < caps_.maxAnisotropy ? desc.maxAnisotropy
@@ -674,6 +731,23 @@ public:
         pipeline.blendFunc[1] = toGLBlendFactor(desc.dstColor);
         pipeline.blendFunc[2] = toGLBlendFactor(desc.srcAlpha);
         pipeline.blendFunc[3] = toGLBlendFactor(desc.dstAlpha);
+        pipeline.blendEquation[0] = toGLBlendOp(desc.colorBlendOp);
+        pipeline.blendEquation[1] = toGLBlendOp(desc.alphaBlendOp);
+        pipeline.colorMask = desc.colorMask;
+        pipeline.stencil.enabled = desc.stencilTest;
+        const StencilFace* faces[2] = { &desc.stencilFront, &desc.stencilBack };
+        for (int face = 0; face < 2; ++face)
+        {
+            pipeline.stencil.compare[face] = toGLCompare(faces[face]->compare);
+            pipeline.stencil.failOp[face] = toGLStencilOp(faces[face]->failOp);
+            pipeline.stencil.depthFailOp[face] = toGLStencilOp(faces[face]->depthFailOp);
+            pipeline.stencil.passOp[face] = toGLStencilOp(faces[face]->passOp);
+        }
+        pipeline.stencil.readMask = desc.stencilReadMask;
+        pipeline.stencil.writeMask = desc.stencilWriteMask;
+        pipeline.depthBiasConstant = desc.depthBiasConstant;
+        pipeline.depthBiasSlope = desc.depthBiasSlope;
+        pipeline.wireframe = desc.wireframe && caps_.wireframe;
 
         for (std::uint32_t i = 0; i < desc.uniformBlockCount; ++i)
         {
@@ -806,6 +880,7 @@ public:
             platform_.framebufferSize(platform_.user, &width, &height);
             state_.bindFramebuffer(0);
             passFormats_ = TargetFormats();
+            passStencil_ = true;
         }
         passActive_ = true;
         pipeline_ = PipelineHandle();
@@ -818,6 +893,7 @@ public:
         vertexDirty_ = true;
         indexDirty_ = true;
         state_.framebufferSrgb(passOffscreen_);
+        stencilReference_ = 0;
         passWidth_ = width;
         passHeight_ = height;
         state_.viewport(0, 0, static_cast<std::int32_t>(width), static_cast<std::int32_t>(height));
@@ -827,6 +903,7 @@ public:
         GLbitfield mask = 0;
         if (desc.colorLoad == LoadOp::Clear && (!passOffscreen_ || desc.colorCount > 0))
         {
+            state_.colorMask(kColorAll);
             state_.clearColor(desc.clearColor);
             mask |= GL_COLOR_BUFFER_BIT;
         }
@@ -835,6 +912,12 @@ public:
             state_.depthMask(true);
             state_.clearDepth(desc.clearDepth);
             mask |= GL_DEPTH_BUFFER_BIT;
+        }
+        if (desc.stencilLoad == LoadOp::Clear && passHasDepth_ && passStencil_)
+        {
+            state_.stencilWriteMask(0xFF);
+            state_.clearStencil(desc.clearStencil);
+            mask |= GL_STENCIL_BUFFER_BIT;
         }
         if (mask) glClear(mask);
     }
@@ -862,6 +945,8 @@ public:
         state_.scissor(rect.x, static_cast<std::int32_t>(passHeight_) - (rect.y + height),
                 static_cast<std::int32_t>(rect.width), height);
     }
+
+    void setStencilReference(std::uint32_t reference) override { stencilReference_ = reference; }
 
     void bindPipeline(PipelineHandle handle) override
     {
@@ -1279,8 +1364,17 @@ private:
         state_.frontFace(pipeline->frontFace);
         state_.blend(pipeline->blend);
         if (pipeline->blend)
+        {
             state_.blendFunc(pipeline->blendFunc[0], pipeline->blendFunc[1], pipeline->blendFunc[2],
                     pipeline->blendFunc[3]);
+            state_.blendEquation(pipeline->blendEquation[0], pipeline->blendEquation[1]);
+        }
+        state_.colorMask(pipeline->colorMask);
+        GLState::Stencil stencil = pipeline->stencil;
+        stencil.reference = stencilReference_;
+        state_.stencil(stencil);
+        state_.depthBias(pipeline->depthBiasConstant, pipeline->depthBiasSlope);
+        state_.wireframe(pipeline->wireframe);
 
         state_.bindVertexArray(pipeline->vertexArray);
         if (vertexDirty_)
@@ -1345,6 +1439,7 @@ private:
     ct::Vector<GLFramebuffer> framebuffers_;
 
     bool passActive_ = false;
+    std::uint32_t stencilReference_ = 0;
     TargetFormats passFormats_;
     std::uint32_t passWidth_ = 0;
     std::uint32_t passHeight_ = 0;

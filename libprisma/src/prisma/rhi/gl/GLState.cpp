@@ -230,6 +230,98 @@ void GLState::blendFunc(std::uint32_t srcColor, std::uint32_t dstColor, std::uin
     known_ |= kBlendFunc;
 }
 
+void GLState::blendEquation(std::uint32_t color, std::uint32_t alpha)
+{
+    if ((known_ & kBlendEquation) && blendEquation_[0] == color && blendEquation_[1] == alpha)
+        return;
+    glBlendEquationSeparate(color, alpha);
+    blendEquation_[0] = color;
+    blendEquation_[1] = alpha;
+    known_ |= kBlendEquation;
+}
+
+void GLState::colorMask(std::uint8_t mask)
+{
+    if (same(kColorMask, colorMask_, mask)) return;
+    glColorMask((mask & 1) != 0, (mask & 2) != 0, (mask & 4) != 0, (mask & 8) != 0);
+}
+
+void GLState::stencil(const Stencil& stencil)
+{
+    bool equal = (known_ & kStencil) && stencil_.enabled == stencil.enabled;
+    if (equal && stencil.enabled)
+    {
+        equal = stencil_.reference == stencil.reference && stencil_.readMask == stencil.readMask &&
+                stencil_.writeMask == stencil.writeMask;
+        for (int face = 0; equal && face < 2; ++face)
+            equal = stencil_.compare[face] == stencil.compare[face] &&
+                    stencil_.failOp[face] == stencil.failOp[face] &&
+                    stencil_.depthFailOp[face] == stencil.depthFailOp[face] &&
+                    stencil_.passOp[face] == stencil.passOp[face];
+    }
+    if (equal) return;
+
+    if (!(known_ & kStencil) || stencil_.enabled != stencil.enabled)
+    {
+        if (stencil.enabled) glEnable(GL_STENCIL_TEST);
+        else
+            glDisable(GL_STENCIL_TEST);
+    }
+    if (stencil.enabled)
+    {
+        const GLenum faces[2] = { GL_FRONT, GL_BACK };
+        for (int face = 0; face < 2; ++face)
+        {
+            glStencilFuncSeparate(faces[face], stencil.compare[face],
+                    static_cast<GLint>(stencil.reference), stencil.readMask);
+            glStencilOpSeparate(faces[face], stencil.failOp[face], stencil.depthFailOp[face],
+                    stencil.passOp[face]);
+        }
+        glStencilMask(stencil.writeMask);
+        stencil_ = stencil;
+    }
+    stencil_.enabled = stencil.enabled;
+    known_ |= kStencil;
+}
+
+void GLState::stencilWriteMask(std::uint32_t mask)
+{
+    glStencilMask(mask);
+    stencil_.writeMask = mask;
+    if (stencil_.enabled) known_ &= ~static_cast<std::uint32_t>(kStencil);
+}
+
+void GLState::clearStencil(std::uint32_t value)
+{
+    if (same(kClearStencil, clearStencil_, value)) return;
+    glClearStencil(static_cast<GLint>(value));
+}
+
+void GLState::depthBias(float constant, float slope)
+{
+    if ((known_ & kDepthBias) && depthBias_[0] == constant && depthBias_[1] == slope) return;
+    if (constant != 0.0f || slope != 0.0f)
+    {
+        glEnable(GL_POLYGON_OFFSET_FILL);
+        glPolygonOffset(slope, constant);
+    }
+    else
+        glDisable(GL_POLYGON_OFFSET_FILL);
+    depthBias_[0] = constant;
+    depthBias_[1] = slope;
+    known_ |= kDepthBias;
+}
+
+void GLState::wireframe(bool enabled)
+{
+#ifdef PRISMA_GLES
+    (void) enabled;
+#else
+    if (same(kWireframe, wireframe_, enabled)) return;
+    glPolygonMode(GL_FRONT_AND_BACK, enabled ? GL_LINE : GL_FILL);
+#endif
+}
+
 void GLState::programDeleted(std::uint32_t program)
 {
     if (program_ == program) known_ &= ~static_cast<std::uint32_t>(kProgram);

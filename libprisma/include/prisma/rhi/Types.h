@@ -134,6 +134,18 @@ struct TextureDesc
     const char* debugName = nullptr;
 };
 
+enum class CompareOp : std::uint8_t
+{
+    Never,
+    Less,
+    Equal,
+    LessEqual,
+    Greater,
+    NotEqual,
+    GreaterEqual,
+    Always
+};
+
 enum class Filter : std::uint8_t
 {
     Nearest,
@@ -162,6 +174,8 @@ struct SamplerDesc
     AddressMode addressU = AddressMode::Repeat;
     AddressMode addressV = AddressMode::Repeat;
     AddressMode addressW = AddressMode::Repeat;
+    bool compare = false;
+    CompareOp compareOp = CompareOp::LessEqual;
     float maxAnisotropy = 1.0f;
     const char* debugName = nullptr;
 };
@@ -229,18 +243,6 @@ enum class Topology : std::uint8_t
     Points
 };
 
-enum class CompareOp : std::uint8_t
-{
-    Never,
-    Less,
-    Equal,
-    LessEqual,
-    Greater,
-    NotEqual,
-    GreaterEqual,
-    Always
-};
-
 enum class CullMode : std::uint8_t
 {
     None,
@@ -266,6 +268,44 @@ enum class BlendFactor : std::uint8_t
     OneMinusDstColor,
     DstAlpha,
     OneMinusDstAlpha
+};
+
+enum class StencilOp : std::uint8_t
+{
+    Keep,
+    Zero,
+    Replace,
+    IncrementClamp,
+    DecrementClamp,
+    Invert,
+    IncrementWrap,
+    DecrementWrap
+};
+
+struct StencilFace
+{
+    CompareOp compare = CompareOp::Always;
+    StencilOp failOp = StencilOp::Keep;
+    StencilOp depthFailOp = StencilOp::Keep;
+    StencilOp passOp = StencilOp::Keep;
+};
+
+enum class BlendOp : std::uint8_t
+{
+    Add,
+    Subtract,
+    ReverseSubtract,
+    Min,
+    Max
+};
+
+enum ColorMask : std::uint8_t
+{
+    kColorRed = 1u << 0,
+    kColorGreen = 1u << 1,
+    kColorBlue = 1u << 2,
+    kColorAlpha = 1u << 3,
+    kColorAll = 15
 };
 
 struct UniformBlockBinding
@@ -331,6 +371,19 @@ struct PipelineDesc
     BlendFactor dstColor = BlendFactor::Zero;
     BlendFactor srcAlpha = BlendFactor::One;
     BlendFactor dstAlpha = BlendFactor::Zero;
+    BlendOp colorBlendOp = BlendOp::Add;
+    BlendOp alphaBlendOp = BlendOp::Add;
+    std::uint8_t colorMask = kColorAll;
+
+    bool stencilTest = false;
+    StencilFace stencilFront;
+    StencilFace stencilBack;
+    std::uint8_t stencilReadMask = 0xFF;
+    std::uint8_t stencilWriteMask = 0xFF;
+
+    float depthBiasConstant = 0.0f;
+    float depthBiasSlope = 0.0f;
+    bool wireframe = false;
 
     const char* debugName = nullptr;
 };
@@ -386,10 +439,12 @@ struct RenderPassDesc
 
     LoadOp colorLoad = LoadOp::Clear;
     LoadOp depthLoad = LoadOp::Clear;
+    LoadOp stencilLoad = LoadOp::Clear;
     StoreOp colorStore = StoreOp::Store;
     StoreOp depthStore = StoreOp::Store;
     float clearColor[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
     float clearDepth = 1.0f;
+    std::uint32_t clearStencil = 0;
 };
 
 } // namespace prisma

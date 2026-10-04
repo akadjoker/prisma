@@ -14,6 +14,18 @@ public:
         kMaxTextureUnits = 16
     };
 
+    struct Stencil
+    {
+        bool enabled = false;
+        std::uint32_t compare[2] = { 0, 0 };
+        std::uint32_t failOp[2] = { 0, 0 };
+        std::uint32_t depthFailOp[2] = { 0, 0 };
+        std::uint32_t passOp[2] = { 0, 0 };
+        std::uint32_t reference = 0;
+        std::uint32_t readMask = 0xFF;
+        std::uint32_t writeMask = 0xFF;
+    };
+
     void reset();
 
     void bindFramebuffer(std::uint32_t framebuffer);
@@ -41,6 +53,13 @@ public:
     void cullFace(bool enabled, std::uint32_t face);
     void frontFace(std::uint32_t mode);
     void blend(bool enabled);
+    void blendEquation(std::uint32_t color, std::uint32_t alpha);
+    void colorMask(std::uint8_t mask);
+    void stencil(const Stencil& stencil);
+    void stencilWriteMask(std::uint32_t mask);
+    void clearStencil(std::uint32_t value);
+    void depthBias(float constant, float slope);
+    void wireframe(bool enabled);
     void blendFunc(std::uint32_t srcColor, std::uint32_t dstColor, std::uint32_t srcAlpha,
             std::uint32_t dstAlpha);
 
@@ -74,7 +93,13 @@ private:
         kDepthRange = 1u << 17,
         kScissorTest = 1u << 18,
         kScissor = 1u << 19,
-        kFramebufferSrgb = 1u << 20
+        kFramebufferSrgb = 1u << 20,
+        kBlendEquation = 1u << 21,
+        kColorMask = 1u << 22,
+        kStencil = 1u << 23,
+        kClearStencil = 1u << 24,
+        kDepthBias = 1u << 25,
+        kWireframe = 1u << 26
     };
 
     struct UniformRange
@@ -118,6 +143,12 @@ private:
     std::uint32_t cullFace_ = 0;
     std::uint32_t frontFace_ = 0;
     bool blend_ = false;
+    std::uint32_t blendEquation_[2] = { 0, 0 };
+    std::uint32_t colorMask_ = 15;
+    Stencil stencil_;
+    std::uint32_t clearStencil_ = 0;
+    float depthBias_[2] = { 0.0f, 0.0f };
+    bool wireframe_ = false;
     std::uint32_t blendFunc_[4] = { 0, 0, 0, 0 };
 };
 

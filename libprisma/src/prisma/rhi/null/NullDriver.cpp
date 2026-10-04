@@ -57,6 +57,7 @@ public:
     void beginRenderPass(const RenderPassDesc&) override {}
     void setViewport(const Viewport&) override {}
     void setScissor(const Rect&) override {}
+    void setStencilReference(std::uint32_t) override {}
     void bindPipeline(PipelineHandle) override {}
     void bindVertexBuffer(std::uint32_t, BufferHandle, std::uint32_t) override {}
     void bindIndexBuffer(BufferHandle) override {}

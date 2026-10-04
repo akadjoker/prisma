@@ -17,6 +17,7 @@
 #include "plain.vert.h"
 #include "red.frag.h"
 #include "scaled.frag.h"
+#include "shadow.frag.h"
 #include "textured.frag.h"
 #include "textured.vert.h"
 #include "two_targets.frag.h"
@@ -196,6 +197,17 @@ const char* kLodFragmentSource =
                       "out vec4 oColor;\n"
                       "void main() { oColor = textureLod(uTexture, vUv, uPlace.w); }\n";
 
+const char* kShadowFragmentSource =
+        SHADER_HEADER "in vec2 vUv;\n"
+                      "layout(std140) uniform Params { vec4 uColor; vec4 uPlace; };\n"
+                      "uniform highp sampler2DShadow uTexture;\n"
+                      "out vec4 oColor;\n"
+                      "void main()\n"
+                      "{\n"
+                      "    float lit = texture(uTexture, vec3(vUv, uPlace.w));\n"
+                      "    oColor = vec4(lit, lit, lit, 1.0);\n"
+                      "}\n";
+
 const unsigned char kBlueTexels[16] = { 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255,
     255 };
 
@@ -224,6 +236,12 @@ enum ParamIndex
     kParamCubePositiveX,
     kParamCubeNegativeY,
     kParamCubeNegativeZ,
+    kParamWhite,
+    kParamMaxColor,
+    kParamQuarterGrey,
+    kParamBlueMid,
+    kParamRedMid,
+    kParamGreenMid,
     kParamCount
 };
 
@@ -501,6 +519,19 @@ int main(int argc, char** argv)
         setParams(paramBytes, stride, kParamCubeNegativeY, cubeNegativeY);
         const Params cubeNegativeZ = { { 0.0f, 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, -1.0f, 0.0f } };
         setParams(paramBytes, stride, kParamCubeNegativeZ, cubeNegativeZ);
+
+        const Params white = { { 1.0f, 1.0f, 1.0f, 1.0f }, { 0.0f, 0.0f, 0.0f, 0.0f } };
+        setParams(paramBytes, stride, kParamWhite, white);
+        const Params maxColor = { { 0.2f, 0.8f, 0.2f, 1.0f }, { 0.0f, 0.0f, 0.0f, 0.0f } };
+        setParams(paramBytes, stride, kParamMaxColor, maxColor);
+        const Params quarterGrey = { { 0.25f, 0.25f, 0.25f, 1.0f }, { 0.0f, 0.0f, 0.0f, 0.0f } };
+        setParams(paramBytes, stride, kParamQuarterGrey, quarterGrey);
+        const Params blueMid = { { 0.0f, 0.0f, 1.0f, 1.0f }, { 0.0f, 0.0f, 0.5f, 0.0f } };
+        setParams(paramBytes, stride, kParamBlueMid, blueMid);
+        const Params redMid = { { 1.0f, 0.0f, 0.0f, 1.0f }, { 0.0f, 0.0f, 0.5f, 0.0f } };
+        setParams(paramBytes, stride, kParamRedMid, redMid);
+        const Params greenMid = { { 0.0f, 1.0f, 0.0f, 1.0f }, { 0.0f, 0.0f, 0.5f, 0.0f } };
+        setParams(paramBytes, stride, kParamGreenMid, greenMid);
 
         BufferDesc paramsDesc;
         paramsDesc.usage = BufferUsage::Uniform;
@@ -1375,6 +1406,321 @@ int main(int argc, char** argv)
         driver->endRenderPass();
         CHECK(messages == 1);
         messages = 0;
+
+        PipelineDesc stateDesc = flatPipelineDesc;
+        stateDesc.blend = false;
+        stateDesc.depthTest = false;
+        stateDesc.targets = TargetFormats();
+
+        PipelineDesc stencilWriteDesc = stateDesc;
+        stencilWriteDesc.stencilTest = true;
+        stencilWriteDesc.stencilFront.compare = CompareOp::Always;
+        stencilWriteDesc.stencilFront.passOp = StencilOp::Replace;
+        stencilWriteDesc.stencilBack = stencilWriteDesc.stencilFront;
+        stencilWriteDesc.colorMask = 0;
+        PipelineDesc stencilEqualDesc = stateDesc;
+        stencilEqualDesc.stencilTest = true;
+        stencilEqualDesc.stencilFront.compare = CompareOp::Equal;
+        stencilEqualDesc.stencilBack = stencilEqualDesc.stencilFront;
+        PipelineDesc stencilNotEqualDesc = stencilEqualDesc;
+        stencilNotEqualDesc.stencilFront.compare = CompareOp::NotEqual;
+        stencilNotEqualDesc.stencilBack = stencilNotEqualDesc.stencilFront;
+        const PipelineHandle stencilWrite = driver->createPipeline(stencilWriteDesc);
+        const PipelineHandle stencilEqual = driver->createPipeline(stencilEqualDesc);
+        const PipelineHandle stencilNotEqual = driver->createPipeline(stencilNotEqualDesc);
+        CHECK(stencilWrite.valid());
+        CHECK(stencilEqual.valid());
+        CHECK(stencilNotEqual.valid());
+
+        RenderPassDesc keepStencil = keep(black);
+        keepStencil.stencilLoad = LoadOp::Load;
+
+        messages = 0;
+        window_begin_frame(window);
+        driver->beginFrame();
+        driver->beginRenderPass(black);
+        driver->bindUniformBuffer(2, params, kParamRed * stride, sizeof(Params));
+        driver->setStencilReference(1);
+        driver->bindPipeline(stencilWrite);
+        driver->bindVertexBuffer(0, quad, 0);
+        driver->bindIndexBuffer(quadIndices);
+        driver->drawIndexed(6, 0);
+        driver->bindPipeline(stencilEqual);
+        driver->bindVertexBuffer(0, buffer, 0);
+        driver->draw(3, 0);
+        driver->endRenderPass();
+        CHECK(pixelIs(80, 120, 255, 0, 0));
+        CHECK(pixelIs(240, 120, 0, 0, 0));
+
+        driver->beginRenderPass(keepStencil);
+        driver->bindUniformBuffer(2, params, kParamGreen * stride, sizeof(Params));
+        driver->setStencilReference(1);
+        driver->bindPipeline(stencilNotEqual);
+        driver->bindVertexBuffer(0, buffer, 0);
+        driver->draw(3, 0);
+        driver->endRenderPass();
+        CHECK(pixelIs(80, 120, 255, 0, 0));
+        CHECK(pixelIs(240, 120, 0, 255, 0));
+        driver->endFrame();
+        driver->present();
+        CHECK(messages == 0);
+        if (messages) printf("unexpected: %s\n", lastMessage);
+
+        PipelineDesc maskedDesc = stateDesc;
+        maskedDesc.colorMask = kColorRed | kColorAlpha;
+        const PipelineHandle masked = driver->createPipeline(maskedDesc);
+        CHECK(masked.valid());
+
+        messages = 0;
+        window_begin_frame(window);
+        driver->beginFrame();
+        driver->beginRenderPass(black);
+        driver->bindUniformBuffer(2, params, kParamWhite * stride, sizeof(Params));
+        driver->bindPipeline(masked);
+        driver->bindVertexBuffer(0, buffer, 0);
+        driver->draw(3, 0);
+        driver->endRenderPass();
+        CHECK(pixelIs(160, 120, 255, 0, 0));
+        driver->endFrame();
+        driver->present();
+        CHECK(messages == 0);
+        if (messages) printf("unexpected: %s\n", lastMessage);
+
+        PipelineDesc maxDesc = stateDesc;
+        maxDesc.blend = true;
+        maxDesc.srcColor = BlendFactor::One;
+        maxDesc.dstColor = BlendFactor::One;
+        maxDesc.srcAlpha = BlendFactor::One;
+        maxDesc.dstAlpha = BlendFactor::One;
+        maxDesc.colorBlendOp = BlendOp::Max;
+        maxDesc.alphaBlendOp = BlendOp::Max;
+        PipelineDesc reverseDesc = maxDesc;
+        reverseDesc.colorBlendOp = BlendOp::ReverseSubtract;
+        reverseDesc.alphaBlendOp = BlendOp::ReverseSubtract;
+        const PipelineHandle blendMax = driver->createPipeline(maxDesc);
+        const PipelineHandle blendReverse = driver->createPipeline(reverseDesc);
+        CHECK(blendMax.valid());
+        CHECK(blendReverse.valid());
+
+        messages = 0;
+        window_begin_frame(window);
+        driver->beginFrame();
+        driver->beginRenderPass(black);
+        driver->bindUniformBuffer(2, params, kParamHalf * stride, sizeof(Params));
+        driver->bindPipeline(flat);
+        driver->bindVertexBuffer(0, buffer, 0);
+        driver->draw(3, 0);
+        driver->bindUniformBuffer(2, params, kParamMaxColor * stride, sizeof(Params));
+        driver->bindPipeline(blendMax);
+        driver->draw(3, 0);
+        driver->endRenderPass();
+        CHECK(pixelIs(160, 120, 128, 204, 128, 2));
+
+        driver->beginRenderPass(keep(black));
+        driver->bindUniformBuffer(2, params, kParamQuarterGrey * stride, sizeof(Params));
+        driver->bindPipeline(blendReverse);
+        driver->bindVertexBuffer(0, buffer, 0);
+        driver->draw(3, 0);
+        driver->endRenderPass();
+        CHECK(pixelIs(160, 120, 64, 140, 64, 2));
+        driver->endFrame();
+        driver->present();
+        CHECK(messages == 0);
+        if (messages) printf("unexpected: %s\n", lastMessage);
+
+        PipelineDesc biasDepthDesc = stateDesc;
+        biasDepthDesc.depthTest = true;
+        biasDepthDesc.depthCompare = CompareOp::Less;
+        PipelineDesc biasedDesc = biasDepthDesc;
+        biasedDesc.depthBiasConstant = -1000.0f;
+        const PipelineHandle unbiased = driver->createPipeline(biasDepthDesc);
+        const PipelineHandle biased = driver->createPipeline(biasedDesc);
+        CHECK(unbiased.valid());
+        CHECK(biased.valid());
+
+        messages = 0;
+        window_begin_frame(window);
+        driver->beginFrame();
+        driver->beginRenderPass(black);
+        driver->bindPipeline(unbiased);
+        driver->bindVertexBuffer(0, buffer, 0);
+        driver->bindUniformBuffer(2, params, kParamBlueMid * stride, sizeof(Params));
+        driver->draw(3, 0);
+        driver->bindUniformBuffer(2, params, kParamRedMid * stride, sizeof(Params));
+        driver->draw(3, 0);
+        driver->endRenderPass();
+        CHECK(pixelIs(160, 120, 0, 0, 255));
+
+        driver->beginRenderPass(keep(black));
+        driver->bindPipeline(biased);
+        driver->bindVertexBuffer(0, buffer, 0);
+        driver->bindUniformBuffer(2, params, kParamGreenMid * stride, sizeof(Params));
+        driver->draw(3, 0);
+        driver->endRenderPass();
+        CHECK(pixelIs(160, 120, 0, 255, 0));
+        driver->endFrame();
+        driver->present();
+        CHECK(messages == 0);
+        if (messages) printf("unexpected: %s\n", lastMessage);
+
+        TextureDesc shadowDesc;
+        shadowDesc.format = TextureFormat::Depth32F;
+        shadowDesc.width = 16;
+        shadowDesc.height = 16;
+        shadowDesc.usage = kTextureSampled | kTextureRenderTarget;
+        const TextureHandle shadowMap = driver->createTexture(shadowDesc);
+        CHECK(shadowMap.valid());
+
+        SamplerDesc comparisonDesc;
+        comparisonDesc.minFilter = Filter::Linear;
+        comparisonDesc.magFilter = Filter::Linear;
+        comparisonDesc.mipFilter = MipFilter::None;
+        comparisonDesc.addressU = AddressMode::ClampToEdge;
+        comparisonDesc.addressV = AddressMode::ClampToEdge;
+        comparisonDesc.compare = true;
+        comparisonDesc.compareOp = CompareOp::LessEqual;
+        const SamplerHandle comparison = driver->createSampler(comparisonDesc);
+        CHECK(comparison.valid());
+
+        const ShaderHandle shadowFragment = makeShader(driver, ShaderStage::Fragment,
+                kShadowFragmentSource, SPIRV(shadow_frag));
+        texturedPipelineDesc.fragmentShader = shadowFragment;
+        const PipelineHandle shadowPipeline = driver->createPipeline(texturedPipelineDesc);
+        CHECK(shadowPipeline.valid());
+
+        RenderPassDesc shadowPass;
+        shadowPass.depth.texture = shadowMap;
+        shadowPass.clearDepth = 0.5f;
+
+        messages = 0;
+        window_begin_frame(window);
+        driver->beginFrame();
+        driver->beginRenderPass(shadowPass);
+        driver->endRenderPass();
+
+        driver->beginRenderPass(black);
+        driver->bindPipeline(shadowPipeline);
+        driver->bindVertexBuffer(0, buffer, 0);
+        driver->bindTexture(3, shadowMap, comparison);
+        driver->bindUniformBuffer(2, params, kParamSliceQuarter * stride, sizeof(Params));
+        driver->draw(3, 0);
+        driver->endRenderPass();
+        CHECK(pixelIs(160, 120, 255, 255, 255));
+
+        driver->beginRenderPass(black);
+        driver->bindPipeline(shadowPipeline);
+        driver->bindVertexBuffer(0, buffer, 0);
+        driver->bindTexture(3, shadowMap, comparison);
+        driver->bindUniformBuffer(2, params, kParamSliceThreeQuarters * stride, sizeof(Params));
+        driver->draw(3, 0);
+        driver->endRenderPass();
+        CHECK(pixelIs(160, 120, 0, 0, 0));
+        driver->endFrame();
+        driver->present();
+        CHECK(messages == 0);
+        if (messages) printf("unexpected: %s\n", lastMessage);
+
+        PipelineDesc wireDesc = stateDesc;
+        wireDesc.wireframe = true;
+        const PipelineHandle wire = driver->createPipeline(wireDesc);
+        CHECK(wire.valid());
+
+        messages = 0;
+        window_begin_frame(window);
+        driver->beginFrame();
+        driver->beginRenderPass(black);
+        driver->bindUniformBuffer(2, params, kParamRed * stride, sizeof(Params));
+        driver->bindPipeline(wire);
+        driver->bindVertexBuffer(0, buffer, 0);
+        driver->draw(3, 0);
+        driver->endRenderPass();
+        if (driver->caps().wireframe)
+        {
+            CHECK(pixelIs(160, 120, 0, 0, 0));
+        }
+        else
+        {
+            CHECK(pixelIs(160, 120, 255, 0, 0));
+        }
+        driver->endFrame();
+        driver->present();
+        CHECK(messages == 0);
+        if (messages) printf("unexpected: %s\n", lastMessage);
+
+        TextureDesc stencilColorDesc;
+        stencilColorDesc.width = 32;
+        stencilColorDesc.height = 32;
+        stencilColorDesc.usage = kTextureSampled | kTextureRenderTarget;
+        const TextureHandle stencilColor = driver->createTexture(stencilColorDesc);
+        TextureDesc stencilDepthDesc;
+        stencilDepthDesc.format = TextureFormat::Depth24Stencil8;
+        stencilDepthDesc.width = 32;
+        stencilDepthDesc.height = 32;
+        stencilDepthDesc.usage = kTextureRenderTarget;
+        const TextureHandle stencilDepth = driver->createTexture(stencilDepthDesc);
+        CHECK(stencilColor.valid());
+        CHECK(stencilDepth.valid());
+
+        stencilWriteDesc.targets.window = false;
+        stencilWriteDesc.targets.colorCount = 1;
+        stencilWriteDesc.targets.colors[0] = TextureFormat::RGBA8;
+        stencilWriteDesc.targets.depth = TextureFormat::Depth24Stencil8;
+        stencilEqualDesc.targets = stencilWriteDesc.targets;
+        const PipelineHandle stencilWriteOffscreen = driver->createPipeline(stencilWriteDesc);
+        const PipelineHandle stencilEqualOffscreen = driver->createPipeline(stencilEqualDesc);
+        CHECK(stencilWriteOffscreen.valid());
+        CHECK(stencilEqualOffscreen.valid());
+
+        RenderPassDesc stencilOffscreen;
+        stencilOffscreen.colors[0].texture = stencilColor;
+        stencilOffscreen.colorCount = 1;
+        stencilOffscreen.depth.texture = stencilDepth;
+
+        messages = 0;
+        window_begin_frame(window);
+        driver->beginFrame();
+        driver->beginRenderPass(stencilOffscreen);
+        driver->bindUniformBuffer(2, params, kParamRed * stride, sizeof(Params));
+        driver->setStencilReference(1);
+        driver->bindPipeline(stencilWriteOffscreen);
+        driver->bindVertexBuffer(0, quad, 0);
+        driver->bindIndexBuffer(quadIndices);
+        driver->drawIndexed(6, 0);
+        driver->bindPipeline(stencilEqualOffscreen);
+        driver->bindVertexBuffer(0, buffer, 0);
+        driver->draw(3, 0);
+        driver->endRenderPass();
+
+        driver->beginRenderPass(black);
+        driver->bindPipeline(textured);
+        driver->bindVertexBuffer(0, buffer, 0);
+        driver->bindTexture(3, stencilColor, nearest);
+        driver->draw(3, 0);
+        driver->endRenderPass();
+        CHECK(pixelIs(80, 120, 255, 0, 0));
+        CHECK(pixelIs(240, 120, 0, 0, 0));
+        driver->endFrame();
+        driver->present();
+        CHECK(messages == 0);
+        if (messages) printf("unexpected: %s\n", lastMessage);
+
+        driver->destroy(stencilEqualOffscreen);
+        driver->destroy(stencilWriteOffscreen);
+        driver->destroy(stencilDepth);
+        driver->destroy(stencilColor);
+        driver->destroy(wire);
+        driver->destroy(shadowPipeline);
+        driver->destroy(shadowFragment);
+        driver->destroy(comparison);
+        driver->destroy(shadowMap);
+        driver->destroy(biased);
+        driver->destroy(unbiased);
+        driver->destroy(blendReverse);
+        driver->destroy(blendMax);
+        driver->destroy(masked);
+        driver->destroy(stencilNotEqual);
+        driver->destroy(stencilEqual);
+        driver->destroy(stencilWrite);
 
         driver->destroy(flatLayer);
         driver->destroy(mipTarget);

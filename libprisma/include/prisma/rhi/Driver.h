@@ -34,6 +34,7 @@ public:
     virtual void beginRenderPass(const RenderPassDesc& desc) = 0;
     virtual void setViewport(const Viewport& viewport) = 0;
     virtual void setScissor(const Rect& rect) = 0;
+    virtual void setStencilReference(std::uint32_t reference) = 0;
     virtual void bindPipeline(PipelineHandle handle) = 0;
     virtual void bindVertexBuffer(std::uint32_t slot, BufferHandle handle,
             std::uint32_t offset) = 0;

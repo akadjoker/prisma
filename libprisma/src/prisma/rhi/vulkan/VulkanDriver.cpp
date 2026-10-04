@@ -355,6 +355,48 @@ VkPrimitiveTopology toVkTopology(Topology topology)
     return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 }
 
+VkStencilOp toVkStencilOp(StencilOp op)
+{
+    switch (op)
+    {
+        case StencilOp::Keep:
+            return VK_STENCIL_OP_KEEP;
+        case StencilOp::Zero:
+            return VK_STENCIL_OP_ZERO;
+        case StencilOp::Replace:
+            return VK_STENCIL_OP_REPLACE;
+        case StencilOp::IncrementClamp:
+            return VK_STENCIL_OP_INCREMENT_AND_CLAMP;
+        case StencilOp::DecrementClamp:
+            return VK_STENCIL_OP_DECREMENT_AND_CLAMP;
+        case StencilOp::Invert:
+            return VK_STENCIL_OP_INVERT;
+        case StencilOp::IncrementWrap:
+            return VK_STENCIL_OP_INCREMENT_AND_WRAP;
+        case StencilOp::DecrementWrap:
+            return VK_STENCIL_OP_DECREMENT_AND_WRAP;
+    }
+    return VK_STENCIL_OP_KEEP;
+}
+
+VkBlendOp toVkBlendOp(BlendOp op)
+{
+    switch (op)
+    {
+        case BlendOp::Add:
+            return VK_BLEND_OP_ADD;
+        case BlendOp::Subtract:
+            return VK_BLEND_OP_SUBTRACT;
+        case BlendOp::ReverseSubtract:
+            return VK_BLEND_OP_REVERSE_SUBTRACT;
+        case BlendOp::Min:
+            return VK_BLEND_OP_MIN;
+        case BlendOp::Max:
+            return VK_BLEND_OP_MAX;
+    }
+    return VK_BLEND_OP_ADD;
+}
+
 VkCompareOp toVkCompare(CompareOp op)
 {
     switch (op)
@@ -649,6 +691,10 @@ public:
         raster.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
         raster.polygonMode = VK_POLYGON_MODE_FILL;
         raster.lineWidth = 1.0f;
+        if (desc.wireframe && caps_.wireframe) raster.polygonMode = VK_POLYGON_MODE_LINE;
+        raster.depthBiasEnable = desc.depthBiasConstant != 0.0f || desc.depthBiasSlope != 0.0f;
+        raster.depthBiasConstantFactor = desc.depthBiasConstant;
+        raster.depthBiasSlopeFactor = desc.depthBiasSlope;
         raster.cullMode = VK_CULL_MODE_NONE;
         if (desc.cullMode == CullMode::Front) raster.cullMode = VK_CULL_MODE_FRONT_BIT;
         if (desc.cullMode == CullMode::Back) raster.cullMode = VK_CULL_MODE_BACK_BIT;
@@ -665,6 +711,18 @@ public:
         depthStencil.depthWriteEnable = desc.depthWrite;
         depthStencil.depthCompareOp = toVkCompare(desc.depthCompare);
         depthStencil.maxDepthBounds = 1.0f;
+        depthStencil.stencilTestEnable = desc.stencilTest;
+        const StencilFace* faces[2] = { &desc.stencilFront, &desc.stencilBack };
+        VkStencilOpState* states[2] = { &depthStencil.front, &depthStencil.back };
+        for (int face = 0; face < 2; ++face)
+        {
+            states[face]->failOp = toVkStencilOp(faces[face]->failOp);
+            states[face]->passOp = toVkStencilOp(faces[face]->passOp);
+            states[face]->depthFailOp = toVkStencilOp(faces[face]->depthFailOp);
+            states[face]->compareOp = toVkCompare(faces[face]->compare);
+            states[face]->compareMask = desc.stencilReadMask;
+            states[face]->writeMask = desc.stencilWriteMask;
+        }
 
         const std::uint32_t colorCount = desc.targets.window ? 1 : desc.targets.colorCount;
         VkFormat colorFormats[TargetFormats::kMaxColors] = {};
@@ -675,23 +733,27 @@ public:
             blends[i].blendEnable = desc.blend;
             blends[i].srcColorBlendFactor = toVkBlendFactor(desc.srcColor);
             blends[i].dstColorBlendFactor = toVkBlendFactor(desc.dstColor);
-            blends[i].colorBlendOp = VK_BLEND_OP_ADD;
+            blends[i].colorBlendOp = toVkBlendOp(desc.colorBlendOp);
             blends[i].srcAlphaBlendFactor = toVkBlendFactor(desc.srcAlpha);
             blends[i].dstAlphaBlendFactor = toVkBlendFactor(desc.dstAlpha);
-            blends[i].alphaBlendOp = VK_BLEND_OP_ADD;
-            blends[i].colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
-                                       VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+            blends[i].alphaBlendOp = toVkBlendOp(desc.alphaBlendOp);
+            blends[i].colorWriteMask = 0;
+            if (desc.colorMask & kColorRed) blends[i].colorWriteMask |= VK_COLOR_COMPONENT_R_BIT;
+            if (desc.colorMask & kColorGreen) blends[i].colorWriteMask |= VK_COLOR_COMPONENT_G_BIT;
+            if (desc.colorMask & kColorBlue) blends[i].colorWriteMask |= VK_COLOR_COMPONENT_B_BIT;
+            if (desc.colorMask & kColorAlpha) blends[i].colorWriteMask |= VK_COLOR_COMPONENT_A_BIT;
         }
         VkPipelineColorBlendStateCreateInfo blend = {};
         blend.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
         blend.attachmentCount = colorCount;
         blend.pAttachments = blends;
 
-        const VkDynamicState dynamicStates[3] = { VK_DYNAMIC_STATE_VIEWPORT,
-            VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_FRONT_FACE };
+        const VkDynamicState dynamicStates[4] = { VK_DYNAMIC_STATE_VIEWPORT,
+            VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_FRONT_FACE,
+            VK_DYNAMIC_STATE_STENCIL_REFERENCE };
         VkPipelineDynamicStateCreateInfo dynamic = {};
         dynamic.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-        dynamic.dynamicStateCount = 3;
+        dynamic.dynamicStateCount = 4;
         dynamic.pDynamicStates = dynamicStates;
 
         VkPipelineRenderingCreateInfo rendering = {};
@@ -700,7 +762,7 @@ public:
         rendering.pColorAttachmentFormats = colorFormats;
         rendering.depthAttachmentFormat =
                 desc.targets.window ? depthFormat_ : textureFormat(desc.targets.depth);
-        if (!desc.targets.window && desc.targets.depth == TextureFormat::Depth24Stencil8)
+        if (desc.targets.window || desc.targets.depth == TextureFormat::Depth24Stencil8)
             rendering.stencilAttachmentFormat = depthStencilFormat_;
 
         VulkanPipeline pipeline;
@@ -928,6 +990,8 @@ public:
         info.addressModeU = toVkAddress(desc.addressU);
         info.addressModeV = toVkAddress(desc.addressV);
         info.addressModeW = toVkAddress(desc.addressW);
+        info.compareEnable = desc.compare;
+        info.compareOp = toVkCompare(desc.compareOp);
         info.maxAnisotropy = 1.0f;
         if (desc.maxAnisotropy > 1.0f && caps_.maxAnisotropy > 1.0f)
         {
@@ -1110,6 +1174,7 @@ public:
         rendering.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
         rendering.layerCount = 1;
         TargetFormats formats;
+        bool hasStencil = !passOffscreen_;
 
         if (passOffscreen_)
         {
@@ -1189,8 +1254,7 @@ public:
                                         : VK_ATTACHMENT_STORE_OP_DONT_CARE;
                 depth.clearValue.depthStencil.depth = desc.clearDepth;
                 rendering.pDepthAttachment = &depth;
-                if (formats.depth == TextureFormat::Depth24Stencil8)
-                    rendering.pStencilAttachment = &depth;
+                hasStencil = formats.depth == TextureFormat::Depth24Stencil8;
             }
             passWidth_ = width;
             passHeight_ = height;
@@ -1228,9 +1292,16 @@ public:
             passHeight_ = extent_.height;
         }
 
+        VkRenderingAttachmentInfo stencil = depth;
+        stencil.loadOp = toLoadOp(desc.stencilLoad);
+        stencil.clearValue.depthStencil.stencil = desc.clearStencil;
+        if (hasStencil) rendering.pStencilAttachment = &stencil;
+
         rendering.renderArea.extent.width = passWidth_;
         rendering.renderArea.extent.height = passHeight_;
         vkCmdBeginRendering(commands, &rendering);
+
+        vkCmdSetStencilReference(commands, VK_STENCIL_FACE_FRONT_AND_BACK, 0);
 
         passActive_ = true;
         passFormats_ = formats;
@@ -1298,6 +1369,13 @@ public:
         scissor.extent.width = static_cast<std::uint32_t>(right - left);
         scissor.extent.height = static_cast<std::uint32_t>(bottom - top);
         vkCmdSetScissor(frames_[frameIndex_].commands, 0, 1, &scissor);
+    }
+
+    void setStencilReference(std::uint32_t reference) override
+    {
+        if (!passActive_) return;
+        vkCmdSetStencilReference(frames_[frameIndex_].commands, VK_STENCIL_FACE_FRONT_AND_BACK,
+                reference);
     }
 
     void bindPipeline(PipelineHandle handle) override
@@ -2265,6 +2343,7 @@ private:
                 caps_.versionMinor = VK_API_VERSION_MINOR(properties.apiVersion);
                 caps_.maxTextureSize = properties.limits.maxImageDimension2D;
                 caps_.maxColorTargets = properties.limits.maxColorAttachments;
+                caps_.wireframe = features.features.fillModeNonSolid;
                 caps_.maxAnisotropy = features.features.samplerAnisotropy
                                               ? properties.limits.maxSamplerAnisotropy
                                               : 1.0f;
@@ -2298,6 +2377,7 @@ private:
 
         VkPhysicalDeviceFeatures enabled = {};
         enabled.samplerAnisotropy = caps_.maxAnisotropy > 1.0f;
+        enabled.fillModeNonSolid = caps_.wireframe;
 
         const char* const extension = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
         VkDeviceCreateInfo info = {};
@@ -2328,6 +2408,7 @@ private:
                                       VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT)
                                       ? VK_FORMAT_D24_UNORM_S8_UINT
                                       : VK_FORMAT_D32_SFLOAT_S8_UINT;
+        depthFormat_ = depthStencilFormat_;
         if (messenger_)
             setObjectName_ = reinterpret_cast<PFN_vkSetDebugUtilsObjectNameEXT>(
                     vkGetDeviceProcAddr(device_, "vkSetDebugUtilsObjectNameEXT"));
@@ -2429,7 +2510,7 @@ private:
         view.image = depthImage_;
         view.viewType = VK_IMAGE_VIEW_TYPE_2D;
         view.format = depthFormat_;
-        view.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+        view.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
         view.subresourceRange.levelCount = 1;
         view.subresourceRange.layerCount = 1;
         return vkCreateImageView(device_, &view, nullptr, &depthView_) == VK_SUCCESS;
@@ -2451,7 +2532,8 @@ private:
         barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         barrier.image = depthImage_;
-        barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+        barrier.subresourceRange.aspectMask =
+                VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
         barrier.subresourceRange.levelCount = 1;
         barrier.subresourceRange.layerCount = 1;
 
