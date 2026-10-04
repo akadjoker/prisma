@@ -33,7 +33,7 @@ public:
     virtual void setScissor(const Rect& rect) = 0;
     virtual void bindPipeline(PipelineHandle handle) = 0;
     virtual void bindVertexBuffer(BufferHandle handle, std::uint32_t offset) = 0;
-    virtual void bindIndexBuffer(BufferHandle handle, IndexFormat format) = 0;
+    virtual void bindIndexBuffer(BufferHandle handle) = 0;
     virtual void bindUniformBuffer(std::uint32_t slot, BufferHandle handle, std::uint32_t offset,
             std::uint32_t size) = 0;
     virtual void bindTexture(std::uint32_t slot, TextureHandle texture, SamplerHandle sampler) = 0;

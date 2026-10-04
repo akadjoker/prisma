@@ -69,6 +69,12 @@ enum class BufferUsage : std::uint8_t
     Uniform
 };
 
+enum class IndexFormat : std::uint8_t
+{
+    UInt16,
+    UInt32
+};
+
 enum class BufferUpdate : std::uint8_t
 {
     Static,
@@ -82,13 +88,8 @@ struct BufferDesc
     std::uint32_t size = 0;
     const void* data = nullptr;
     BufferUpdate update = BufferUpdate::Static;
+    IndexFormat indexFormat = IndexFormat::UInt16;
     const char* debugName = nullptr;
-};
-
-enum class IndexFormat : std::uint8_t
-{
-    UInt16,
-    UInt32
 };
 
 enum class TextureFormat : std::uint8_t

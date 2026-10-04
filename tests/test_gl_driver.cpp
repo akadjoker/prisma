@@ -317,7 +317,10 @@ int main()
         driver->updateBuffer(params, 0, &green, sizeof(green));
         driver->bindPipeline(flat);
         driver->bindVertexBuffer(quad, 0);
-        driver->bindIndexBuffer(quadIndices, IndexFormat::UInt16);
+        driver->bindIndexBuffer(quadIndices);
+        driver->drawIndexed(12, 0);
+        CHECK(messages == 1);
+        messages = 0;
         driver->drawIndexed(6, 0);
         CHECK(pixelIs(80, 120, 0, 255, 0));
         CHECK(pixelIs(240, 120, 0, 0, 0));

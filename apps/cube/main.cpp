@@ -356,7 +356,7 @@ int main(int argc, char** argv)
         driver->beginRenderPass(scenePass);
         driver->bindPipeline(pipeline);
         driver->bindVertexBuffer(vertexBuffer, 0);
-        driver->bindIndexBuffer(indexBuffer, prisma::IndexFormat::UInt16);
+        driver->bindIndexBuffer(indexBuffer);
         driver->bindUniformBuffer(0, uniformBuffer, 0, sizeof(Math::Mat4));
         driver->bindTexture(0, texture, sampler);
         driver->drawIndexed(36, 0);

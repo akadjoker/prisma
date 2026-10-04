@@ -18,6 +18,7 @@ struct GLBuffer
     GLuint id = 0;
     std::uint32_t size = 0;
     BufferUsage usage = BufferUsage::Vertex;
+    IndexFormat indexFormat = IndexFormat::UInt16;
 };
 
 struct GLShader
@@ -312,6 +313,7 @@ public:
         GLBuffer buffer;
         buffer.size = desc.size;
         buffer.usage = desc.usage;
+        buffer.indexFormat = desc.indexFormat;
         glGenBuffers(1, &buffer.id);
         const GLenum target = bindForEdit(buffer);
         glBufferData(target, desc.size, desc.data, toGLUpdate(desc.update));
@@ -638,10 +640,9 @@ public:
         vertexDirty_ = true;
     }
 
-    void bindIndexBuffer(BufferHandle handle, IndexFormat format) override
+    void bindIndexBuffer(BufferHandle handle) override
     {
         indexBuffer_ = handle;
-        indexFormat_ = format;
         indexDirty_ = true;
     }
 
@@ -697,8 +698,14 @@ public:
             indexDirty_ = false;
         }
 
-        const bool wide = indexFormat_ == IndexFormat::UInt32;
-        const std::size_t offset = static_cast<std::size_t>(firstIndex) * (wide ? 4 : 2);
+        const bool wide = indices->indexFormat == IndexFormat::UInt32;
+        const std::size_t indexSize = wide ? 4 : 2;
+        const std::size_t offset = static_cast<std::size_t>(firstIndex) * indexSize;
+        if (offset + static_cast<std::size_t>(indexCount) * indexSize > indices->size)
+        {
+            log("drawIndexed: index range is outside the index buffer");
+            return;
+        }
         glDrawElements(pipeline->topology, static_cast<GLsizei>(indexCount),
                 wide ? GL_UNSIGNED_INT : GL_UNSIGNED_SHORT, reinterpret_cast<const void*>(offset));
     }
@@ -925,7 +932,6 @@ private:
     PipelineHandle pipeline_;
     BufferHandle vertexBuffer_;
     BufferHandle indexBuffer_;
-    IndexFormat indexFormat_ = IndexFormat::UInt16;
     std::uint32_t vertexOffset_ = 0;
     bool vertexDirty_ = true;
     bool indexDirty_ = true;
