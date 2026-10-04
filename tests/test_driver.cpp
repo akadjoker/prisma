@@ -2413,6 +2413,97 @@ int main(int argc, char** argv)
             driver->destroy(reflected);
         }
 
+        {
+            unsigned char cornerTexels[64];
+            for (int i = 0; i < 16; ++i)
+            {
+                const unsigned char texel[4] = { static_cast<unsigned char>(i == 0 ? 255 : 0), 0,
+                    static_cast<unsigned char>(i == 0 ? 0 : 255), 255 };
+                memcpy(cornerTexels + i * 4, texel, 4);
+            }
+            TextureDesc cornerDesc;
+            cornerDesc.width = 4;
+            cornerDesc.height = 4;
+            cornerDesc.data = cornerTexels;
+            const TextureHandle corner = driver->createTexture(cornerDesc);
+            CHECK(corner.valid());
+            RenderTarget cornerTarget;
+            cornerTarget.texture = corner;
+            Rect whole;
+            whole.width = 4;
+            whole.height = 4;
+            Rect leftPixel;
+            leftPixel.x = 80;
+            leftPixel.y = 120;
+            leftPixel.width = 2;
+            leftPixel.height = 1;
+            Rect rightPixel = leftPixel;
+            rightPixel.x = 240;
+
+            messages = 0;
+            window_begin_frame(window);
+            driver->beginFrame();
+            driver->beginRenderPass(black);
+            driver->bindUniformBuffer(2, params, kParamGreen * stride, sizeof(Params));
+            driver->bindPipeline(flat);
+            driver->bindVertexBuffer(0, quad, 0);
+            driver->bindIndexBuffer(quadIndices);
+            driver->drawIndexed(6, 0);
+            CHECK(!driver->requestReadback(RenderTarget(), leftPixel).valid());
+            CHECK(messages == 1);
+            messages = 0;
+            driver->endRenderPass();
+            const ReadbackHandle leftRead = driver->requestReadback(RenderTarget(), leftPixel);
+            const ReadbackHandle rightRead = driver->requestReadback(RenderTarget(), rightPixel);
+            const ReadbackHandle cornerRead = driver->requestReadback(cornerTarget, whole);
+            CHECK(leftRead.valid());
+            CHECK(rightRead.valid());
+            CHECK(cornerRead.valid());
+            unsigned char blocking[64];
+            memset(blocking, 7, sizeof(blocking));
+            CHECK(driver->readPixels(cornerTarget, whole, blocking));
+            driver->endFrame();
+            driver->present();
+
+            unsigned char leftResult[8] = { 9, 9, 9, 9, 9, 9, 9, 9 };
+            unsigned char rightResult[8] = { 9, 9, 9, 9, 9, 9, 9, 9 };
+            unsigned char cornerResult[64];
+            memset(cornerResult, 9, sizeof(cornerResult));
+            int readbackFrames = 0;
+            bool allRead = false;
+            for (; readbackFrames < 30 && !allRead; ++readbackFrames)
+            {
+                window_begin_frame(window);
+                driver->beginFrame();
+                driver->beginRenderPass(black);
+                driver->endRenderPass();
+                driver->endFrame();
+                driver->present();
+                allRead = driver->readbackResult(leftRead, leftResult) &&
+                          driver->readbackResult(rightRead, rightResult) &&
+                          driver->readbackResult(cornerRead, cornerResult);
+            }
+            CHECK(allRead);
+            CHECK(leftResult[0] == 0 && leftResult[1] == 255 && leftResult[2] == 0);
+            CHECK(leftResult[4] == 0 && leftResult[5] == 255 && leftResult[6] == 0);
+            CHECK(rightResult[0] == 0 && rightResult[1] == 0 && rightResult[2] == 0);
+            CHECK(memcmp(cornerResult, blocking, sizeof(blocking)) == 0);
+            int redTexels = 0;
+            for (int i = 0; i < 16; ++i)
+                if (cornerResult[i * 4] == 255 && cornerResult[i * 4 + 2] == 0) ++redTexels;
+            CHECK(redTexels == 1);
+            CHECK(driver->readbackResult(cornerRead, cornerResult));
+            CHECK(messages == 0);
+            if (messages) printf("unexpected: %s\n", lastMessage);
+            printf("readback: ready after %d frames\n", readbackFrames);
+
+            driver->destroy(cornerRead);
+            driver->destroy(rightRead);
+            driver->destroy(leftRead);
+            CHECK(!driver->readbackResult(leftRead, leftResult));
+            driver->destroy(corner);
+        }
+
         CHECK(driver->caps().occlusionQueries);
         const QueryHandle visibleQuery = driver->createQuery(QueryType::Occlusion);
         const QueryHandle hiddenQuery = driver->createQuery(QueryType::Occlusion);

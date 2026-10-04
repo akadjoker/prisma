@@ -38,6 +38,10 @@ public:
 
     virtual QueryHandle createQuery(QueryType type) = 0;
     virtual void destroy(QueryHandle handle) = 0;
+
+    virtual ReadbackHandle requestReadback(const RenderTarget& source, const Rect& rect) = 0;
+    virtual bool readbackResult(ReadbackHandle handle, void* rgba) = 0;
+    virtual void destroy(ReadbackHandle handle) = 0;
     virtual void beginQuery(QueryHandle handle) = 0;
     virtual void endQuery(QueryHandle handle) = 0;
     virtual bool queryResult(QueryHandle handle, std::uint64_t* result) = 0;

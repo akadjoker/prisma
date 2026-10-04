@@ -280,6 +280,14 @@ std::uint32_t fullMipCount(std::uint32_t width, std::uint32_t height)
 const std::uint32_t kQuerySlots = 4;
 const GLenum kTimestamp = 0x8E28;
 
+struct GLReadback
+{
+    GLuint buffer = 0;
+    GLsync sync = nullptr;
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+};
+
 struct GLQuery
 {
     QueryType type = QueryType::Occlusion;
@@ -612,6 +620,11 @@ public:
         for (GLSampler& sampler: samplers_) glDeleteSamplers(1, &sampler.id);
         if (copyFramebuffers_[0]) glDeleteFramebuffers(2, copyFramebuffers_);
         for (GLQuery& query: queries_) glDeleteQueries(kQuerySlots * 2, &query.ids[0][0]);
+        for (GLReadback& readback: readbacks_)
+        {
+            if (readback.sync) glDeleteSync(readback.sync);
+            glDeleteBuffers(1, &readback.buffer);
+        }
         for (GLBuffer& buffer: buffers_) glDeleteBuffers(1, &buffer.id);
         glDeleteVertexArrays(1, &scratchVertexArray_);
     }
@@ -1674,7 +1687,83 @@ public:
 
     bool readPixels(const RenderTarget& source, const Rect& rect, void* rgba) override
     {
-        if (passActive_ || !rgba || rect.width == 0 || rect.height == 0 || rect.x < 0 || rect.y < 0)
+        if (!rgba || !readRows(source, rect, rgba, 0)) return false;
+        flipRows(static_cast<unsigned char*>(rgba), rect.width, rect.height);
+        return true;
+    }
+
+    ReadbackHandle requestReadback(const RenderTarget& source, const Rect& rect) override
+    {
+        GLReadback readback;
+        readback.width = rect.width;
+        readback.height = rect.height;
+        glGenBuffers(1, &readback.buffer);
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, readback.buffer);
+        glBufferData(GL_PIXEL_PACK_BUFFER,
+                static_cast<GLsizeiptr>(rect.width) * static_cast<GLsizeiptr>(rect.height) * 4,
+                nullptr, GL_STREAM_READ);
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+        if (!readRows(source, rect, nullptr, readback.buffer))
+        {
+            glDeleteBuffers(1, &readback.buffer);
+            return ReadbackHandle();
+        }
+        readback.sync = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+        glFlush();
+        return handleCast<ReadbackHandle>(readbacks_.insert(readback));
+    }
+
+    bool readbackResult(ReadbackHandle handle, void* rgba) override
+    {
+        GLReadback* readback = readbacks_.get(handleCast<ReadbackSlot>(handle));
+        if (!readback || !rgba) return false;
+        if (readback->sync)
+        {
+            const GLenum status = glClientWaitSync(readback->sync, 0, 0);
+            if (status != GL_ALREADY_SIGNALED && status != GL_CONDITION_SATISFIED) return false;
+            glDeleteSync(readback->sync);
+            readback->sync = nullptr;
+        }
+        const GLsizeiptr bytes = static_cast<GLsizeiptr>(readback->width) *
+                                 static_cast<GLsizeiptr>(readback->height) * 4;
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, readback->buffer);
+#ifdef __EMSCRIPTEN__
+        glGetBufferSubData(GL_PIXEL_PACK_BUFFER, 0, bytes, rgba);
+#else
+        const void* pixels = glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, bytes, GL_MAP_READ_BIT);
+        if (pixels) memcpy(rgba, pixels, static_cast<std::size_t>(bytes));
+        glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
+#endif
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+        flipRows(static_cast<unsigned char*>(rgba), readback->width, readback->height);
+        return true;
+    }
+
+    void destroy(ReadbackHandle handle) override
+    {
+        const ReadbackSlot slot = handleCast<ReadbackSlot>(handle);
+        const GLReadback* readback = readbacks_.get(slot);
+        if (!readback) return;
+        if (readback->sync) glDeleteSync(readback->sync);
+        glDeleteBuffers(1, &readback->buffer);
+        readbacks_.erase(slot);
+    }
+
+    static void flipRows(unsigned char* pixels, std::uint32_t width, std::uint32_t height)
+    {
+        const std::size_t rowBytes = static_cast<std::size_t>(width) * 4;
+        for (std::uint32_t top = 0, bottom = height - 1; top < bottom; ++top, --bottom)
+            for (std::size_t i = 0; i < rowBytes; ++i)
+            {
+                const unsigned char swapped = pixels[top * rowBytes + i];
+                pixels[top * rowBytes + i] = pixels[bottom * rowBytes + i];
+                pixels[bottom * rowBytes + i] = swapped;
+            }
+    }
+
+    bool readRows(const RenderTarget& source, const Rect& rect, void* rgba, GLuint packBuffer)
+    {
+        if (passActive_ || rect.width == 0 || rect.height == 0 || rect.x < 0 || rect.y < 0)
         {
             log("readPixels: invalid rectangle, or called inside a render pass");
             return false;
@@ -1711,20 +1800,13 @@ public:
                             static_cast<std::uint64_t>(rect.y) + rect.height <= height;
         if (inside)
         {
-            unsigned char* pixels = static_cast<unsigned char*>(rgba);
-            const std::size_t rowBytes = static_cast<std::size_t>(rect.width) * 4;
             glPixelStorei(GL_PACK_ALIGNMENT, 1);
+            if (packBuffer) glBindBuffer(GL_PIXEL_PACK_BUFFER, packBuffer);
             glReadPixels(rect.x,
                     static_cast<GLint>(height) - (rect.y + static_cast<GLint>(rect.height)),
                     static_cast<GLsizei>(rect.width), static_cast<GLsizei>(rect.height), GL_RGBA,
-                    GL_UNSIGNED_BYTE, pixels);
-            for (std::uint32_t top = 0, bottom = rect.height - 1; top < bottom; ++top, --bottom)
-                for (std::size_t i = 0; i < rowBytes; ++i)
-                {
-                    const unsigned char swapped = pixels[top * rowBytes + i];
-                    pixels[top * rowBytes + i] = pixels[bottom * rowBytes + i];
-                    pixels[bottom * rowBytes + i] = swapped;
-                }
+                    GL_UNSIGNED_BYTE, packBuffer ? nullptr : rgba);
+            if (packBuffer) glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
         }
         else
             log("readPixels: the rectangle is outside the source");
@@ -1745,6 +1827,7 @@ private:
     using TextureSlot = ct::Handle32<GLTexture>;
     using SamplerSlot = ct::Handle32<GLSampler>;
     using QuerySlot = ct::Handle32<GLQuery>;
+    using ReadbackSlot = ct::Handle32<GLReadback>;
 
     static void writeTimestamp(GLuint id)
     {
@@ -2299,6 +2382,7 @@ private:
     ct::SlotMap32<GLTexture> textures_;
     ct::SlotMap32<GLSampler> samplers_;
     ct::SlotMap32<GLQuery> queries_;
+    ct::SlotMap32<GLReadback> readbacks_;
     std::uint64_t querySequence_ = 0;
     bool occlusionActive_ = false;
     ct::Vector<GLFramebuffer> framebuffers_;

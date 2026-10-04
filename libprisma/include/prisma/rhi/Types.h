@@ -56,6 +56,7 @@ struct PipelineTag;
 struct TextureTag;
 struct SamplerTag;
 struct QueryTag;
+struct ReadbackTag;
 
 using BufferHandle = ct::Handle32<BufferTag>;
 using ShaderHandle = ct::Handle32<ShaderTag>;
@@ -63,6 +64,7 @@ using PipelineHandle = ct::Handle32<PipelineTag>;
 using TextureHandle = ct::Handle32<TextureTag>;
 using SamplerHandle = ct::Handle32<SamplerTag>;
 using QueryHandle = ct::Handle32<QueryTag>;
+using ReadbackHandle = ct::Handle32<ReadbackTag>;
 
 enum class QueryType : std::uint8_t
 {

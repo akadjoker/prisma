@@ -90,6 +90,31 @@ struct VulkanPipeline
     std::uint32_t imageSlots[ComputePipelineDesc::kMaxStorageTextures] = {};
 };
 
+struct ReadSource
+{
+    VkImage image = VK_NULL_HANDLE;
+    VkImageLayout layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+    std::uint32_t mip = 0;
+    std::uint32_t layer = 0;
+    std::int32_t slice = 0;
+    bool fromTexture = false;
+    bool swapRedBlue = false;
+};
+
+struct VulkanReadback
+{
+    VkBuffer buffer = VK_NULL_HANDLE;
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+    void* mapped = nullptr;
+    std::uint64_t frame = 0;
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+    bool flip = false;
+    bool swapRedBlue = false;
+};
+
 struct ImageSlot
 {
     TextureHandle texture;
@@ -563,6 +588,11 @@ public:
                     vkDestroyDescriptorSetLayout(device_, pipeline.storageSetLayout, nullptr);
                 if (pipeline.imageSetLayout)
                     vkDestroyDescriptorSetLayout(device_, pipeline.imageSetLayout, nullptr);
+            }
+            for (VulkanReadback& readback: readbacks_)
+            {
+                vkDestroyBuffer(device_, readback.buffer, nullptr);
+                vkFreeMemory(device_, readback.memory, nullptr);
             }
             for (VulkanTexture& texture: textures_)
             {
@@ -1686,6 +1716,7 @@ public:
 
         Frame& frame = frames_[frameIndex_];
         vkWaitForFences(device_, 1, &frame.inFlight, VK_TRUE, UINT64_MAX);
+        waitedFrame_ = frameNumber_;
         collectGarbage(false);
         vkResetDescriptorPool(device_, descriptorPools_[frameIndex_], 0);
         lastSet_ = VK_NULL_HANDLE;
@@ -2313,20 +2344,89 @@ public:
 
     bool readPixels(const RenderTarget& source, const Rect& rect, void* rgba) override
     {
-        if (passActive_ || !rgba || rect.width == 0 || rect.height == 0 || rect.x < 0 || rect.y < 0)
+        ReadSource read;
+        if (!rgba || !readSource(source, rect, read)) return false;
+
+        flush();
+
+        VulkanBuffer staging;
+        staging.size = rect.width * rect.height * 4;
+        staging.vkUsage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        if (!createVersion(staging, nullptr) || !beginImmediate()) return false;
+
+        recordRead(immediateCommands_, read, rect, staging.versions[0].buffer);
+        const bool done = endImmediate();
+        if (done)
+            copyRows(static_cast<const unsigned char*>(staging.versions[0].mapped), rect.width,
+                    rect.height, read.fromTexture, read.swapRedBlue, rgba);
+        vkDestroyBuffer(device_, staging.versions[0].buffer, nullptr);
+        vkFreeMemory(device_, staging.versions[0].memory, nullptr);
+        return done;
+    }
+
+    ReadbackHandle requestReadback(const RenderTarget& source, const Rect& rect) override
+    {
+        ReadSource read;
+        if (!readSource(source, rect, read)) return ReadbackHandle();
+
+        VulkanBuffer staging;
+        staging.size = rect.width * rect.height * 4;
+        staging.vkUsage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        if (!createVersion(staging, nullptr))
+        {
+            log("requestReadback: could not create the buffer");
+            return ReadbackHandle();
+        }
+        recordRead(transferCommands(), read, rect, staging.versions[0].buffer);
+
+        VulkanReadback readback;
+        readback.buffer = staging.versions[0].buffer;
+        readback.memory = staging.versions[0].memory;
+        readback.mapped = staging.versions[0].mapped;
+        readback.frame = frameNumber_;
+        readback.width = rect.width;
+        readback.height = rect.height;
+        readback.flip = read.fromTexture;
+        readback.swapRedBlue = read.swapRedBlue;
+        return handleCast<ReadbackHandle>(readbacks_.insert(readback));
+    }
+
+    bool readbackResult(ReadbackHandle handle, void* rgba) override
+    {
+        const VulkanReadback* readback = readbacks_.get(handleCast<ReadbackSlotHandle>(handle));
+        if (!readback || !rgba) return false;
+
+        bool ready = readback->frame + kFramesInFlight <= waitedFrame_;
+        if (!ready && frameNumber_ > readback->frame &&
+                frameNumber_ < readback->frame + kFramesInFlight)
+            ready = vkGetFenceStatus(device_,
+                            frames_[readback->frame % kFramesInFlight].inFlight) == VK_SUCCESS;
+        if (!ready) return false;
+        copyRows(static_cast<const unsigned char*>(readback->mapped), readback->width,
+                readback->height, readback->flip, readback->swapRedBlue, rgba);
+        return true;
+    }
+
+    void destroy(ReadbackHandle handle) override
+    {
+        const ReadbackSlotHandle slot = handleCast<ReadbackSlotHandle>(handle);
+        const VulkanReadback* readback = readbacks_.get(slot);
+        if (!readback) return;
+        Garbage item;
+        item.frame = frameNumber_;
+        item.buffer = readback->buffer;
+        item.memory = readback->memory;
+        garbage_.push_back(item);
+        readbacks_.erase(slot);
+    }
+
+    bool readSource(const RenderTarget& source, const Rect& rect, ReadSource& read)
+    {
+        if (passActive_ || rect.width == 0 || rect.height == 0 || rect.x < 0 || rect.y < 0)
         {
             log("readPixels: invalid rectangle, or called inside a render pass");
             return false;
         }
-
-        VkImage image = VK_NULL_HANDLE;
-        VkImageLayout layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        std::uint32_t width = 0;
-        std::uint32_t height = 0;
-        std::uint32_t mip = 0;
-        std::uint32_t layer = 0;
-        std::int32_t slice = 0;
-        bool fromTexture = false;
         if (!source.texture.valid())
         {
             if (!frameReady_ || !canReadWindow_ ||
@@ -2335,10 +2435,12 @@ public:
                 log("readPixels: the window can only be read during a frame, after drawing to it");
                 return false;
             }
-            image = images_[imageIndex_].image;
-            layout = images_[imageIndex_].layout;
-            width = extent_.width;
-            height = extent_.height;
+            read.image = images_[imageIndex_].image;
+            read.layout = images_[imageIndex_].layout;
+            read.width = extent_.width;
+            read.height = extent_.height;
+            read.swapRedBlue =
+                    format_ == VK_FORMAT_B8G8R8A8_UNORM || format_ == VK_FORMAT_B8G8R8A8_SRGB;
         }
         else
         {
@@ -2353,77 +2455,67 @@ public:
                 log("readPixels: the texture must be RGBA8 and the mip and layer must exist");
                 return false;
             }
-            fromTexture = true;
-            image = texture->image;
-            mip = source.mip;
-            width = mipSize(texture->width, mip);
-            height = mipSize(texture->height, mip);
+            read.fromTexture = true;
+            read.image = texture->image;
+            read.mip = source.mip;
+            read.width = mipSize(texture->width, read.mip);
+            read.height = mipSize(texture->height, read.mip);
             if (texture->type == TextureType::Texture3D)
-                slice = static_cast<std::int32_t>(source.layer);
+                read.slice = static_cast<std::int32_t>(source.layer);
             else
-                layer = source.layer;
+                read.layer = source.layer;
         }
-        if (static_cast<std::uint64_t>(rect.x) + rect.width > width ||
-                static_cast<std::uint64_t>(rect.y) + rect.height > height)
+        if (static_cast<std::uint64_t>(rect.x) + rect.width > read.width ||
+                static_cast<std::uint64_t>(rect.y) + rect.height > read.height)
         {
             log("readPixels: the rectangle is outside the source");
             return false;
         }
+        return true;
+    }
 
-        flush();
-
-        VulkanBuffer staging;
-        staging.size = rect.width * rect.height * 4;
-        staging.vkUsage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-        if (!createVersion(staging, nullptr) || !beginImmediate()) return false;
-
-        VkCommandBuffer commands = immediateCommands_;
-        imageBarrier(commands, image, VK_IMAGE_ASPECT_COLOR_BIT, mip, 1, layer, 1, layout,
-                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    static void recordRead(VkCommandBuffer commands, const ReadSource& read, const Rect& rect,
+            VkBuffer buffer)
+    {
+        imageBarrier(commands, read.image, VK_IMAGE_ASPECT_COLOR_BIT, read.mip, 1, read.layer, 1,
+                read.layout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
         VkBufferImageCopy copy = {};
         copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        copy.imageSubresource.mipLevel = mip;
-        copy.imageSubresource.baseArrayLayer = layer;
+        copy.imageSubresource.mipLevel = read.mip;
+        copy.imageSubresource.baseArrayLayer = read.layer;
         copy.imageSubresource.layerCount = 1;
         copy.imageOffset.x = rect.x;
-        copy.imageOffset.y = fromTexture ? static_cast<std::int32_t>(height) -
-                                                   (rect.y + static_cast<std::int32_t>(rect.height))
-                                         : rect.y;
-        copy.imageOffset.z = slice;
+        copy.imageOffset.y = read.fromTexture
+                                     ? static_cast<std::int32_t>(read.height) -
+                                               (rect.y + static_cast<std::int32_t>(rect.height))
+                                     : rect.y;
+        copy.imageOffset.z = read.slice;
         copy.imageExtent.width = rect.width;
         copy.imageExtent.height = rect.height;
         copy.imageExtent.depth = 1;
-        vkCmdCopyImageToBuffer(commands, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                staging.versions[0].buffer, 1, &copy);
-        imageBarrier(commands, image, VK_IMAGE_ASPECT_COLOR_BIT, mip, 1, layer, 1,
-                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, layout);
-        const bool done = endImmediate();
+        vkCmdCopyImageToBuffer(commands, read.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer,
+                1, &copy);
+        imageBarrier(commands, read.image, VK_IMAGE_ASPECT_COLOR_BIT, read.mip, 1, read.layer, 1,
+                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, read.layout);
+    }
 
-        if (done)
+    static void copyRows(const unsigned char* pixels, std::uint32_t width, std::uint32_t height,
+            bool flip, bool swapRedBlue, void* rgba)
+    {
+        unsigned char* out = static_cast<unsigned char*>(rgba);
+        const std::size_t rowBytes = static_cast<std::size_t>(width) * 4;
+        for (std::uint32_t row = 0; row < height; ++row)
         {
-            const unsigned char* pixels =
-                    static_cast<const unsigned char*>(staging.versions[0].mapped);
-            unsigned char* out = static_cast<unsigned char*>(rgba);
-            const bool swapRedBlue = !fromTexture && (format_ == VK_FORMAT_B8G8R8A8_UNORM ||
-                                                             format_ == VK_FORMAT_B8G8R8A8_SRGB);
-            const std::size_t rowBytes = static_cast<std::size_t>(rect.width) * 4;
-            for (std::uint32_t row = 0; row < rect.height; ++row)
+            const unsigned char* from = pixels + (flip ? height - 1 - row : row) * rowBytes;
+            unsigned char* to = out + row * rowBytes;
+            for (std::uint32_t x = 0; x < width; ++x)
             {
-                const unsigned char* from =
-                        pixels + (fromTexture ? rect.height - 1 - row : row) * rowBytes;
-                unsigned char* to = out + row * rowBytes;
-                for (std::uint32_t x = 0; x < rect.width; ++x)
-                {
-                    to[x * 4 + 0] = from[x * 4 + (swapRedBlue ? 2 : 0)];
-                    to[x * 4 + 1] = from[x * 4 + 1];
-                    to[x * 4 + 2] = from[x * 4 + (swapRedBlue ? 0 : 2)];
-                    to[x * 4 + 3] = from[x * 4 + 3];
-                }
+                to[x * 4 + 0] = from[x * 4 + (swapRedBlue ? 2 : 0)];
+                to[x * 4 + 1] = from[x * 4 + 1];
+                to[x * 4 + 2] = from[x * 4 + (swapRedBlue ? 0 : 2)];
+                to[x * 4 + 3] = from[x * 4 + 3];
             }
         }
-        vkDestroyBuffer(device_, staging.versions[0].buffer, nullptr);
-        vkFreeMemory(device_, staging.versions[0].memory, nullptr);
-        return done;
     }
 
 private:
@@ -3929,6 +4021,9 @@ private:
     VkSampler lastSamplers_[PipelineDesc::kMaxTextures] = {};
     using QuerySlotHandle = ct::Handle32<VulkanQuery>;
     ct::SlotMap32<VulkanQuery> queries_;
+    using ReadbackSlotHandle = ct::Handle32<VulkanReadback>;
+    ct::SlotMap32<VulkanReadback> readbacks_;
+    std::uint64_t waitedFrame_ = 0;
     VkQueryPool occlusionPool_ = VK_NULL_HANDLE;
     VkQueryPool timePool_ = VK_NULL_HANDLE;
     ct::Vector<std::uint32_t> freeOcclusion_;

@@ -70,6 +70,12 @@ public:
         return handleCast<QueryHandle>(queries_.insert(0));
     }
     void destroy(QueryHandle handle) override { queries_.erase(handleCast<Slot>(handle)); }
+    ReadbackHandle requestReadback(const RenderTarget&, const Rect&) override
+    {
+        return handleCast<ReadbackHandle>(readbacks_.insert(0));
+    }
+    bool readbackResult(ReadbackHandle, void*) override { return false; }
+    void destroy(ReadbackHandle handle) override { readbacks_.erase(handleCast<Slot>(handle)); }
     void beginQuery(QueryHandle) override {}
     void endQuery(QueryHandle) override {}
     bool queryResult(QueryHandle, std::uint64_t*) override { return false; }
@@ -109,6 +115,7 @@ private:
     ct::SlotMap32<std::uint32_t> textures_;
     ct::SlotMap32<std::uint32_t> samplers_;
     ct::SlotMap32<std::uint32_t> queries_;
+    ct::SlotMap32<std::uint32_t> readbacks_;
 };
 
 } // namespace
