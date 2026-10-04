@@ -112,8 +112,13 @@ inline PlatformWindow* openWindowEx(const char* title, prisma::DriverType type, 
 
 inline PlatformWindow* openWindow(const char* title, prisma::DriverType type)
 {
-    return openWindowEx(title, type, 1280, 720, WINDOW_POS_CENTERED, WINDOW_POS_CENTERED,
-            MONITOR_CURRENT, true, true);
+#ifdef MONITOR_MOUSE
+    const int monitor = MONITOR_MOUSE;
+#else
+    const int monitor = MONITOR_CURRENT;
+#endif
+    return openWindowEx(title, type, 1280, 720, WINDOW_POS_CENTERED, WINDOW_POS_CENTERED, monitor,
+            true, true);
 }
 
 inline prisma::Driver* createDriver(PlatformWindow* window, prisma::DriverType type)
