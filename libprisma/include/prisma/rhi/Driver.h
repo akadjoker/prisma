@@ -14,8 +14,18 @@ public:
     virtual DriverType type() const = 0;
     virtual const Caps& caps() const = 0;
 
+    virtual BufferHandle createBuffer(const BufferDesc& desc) = 0;
+    virtual ShaderHandle createShader(const ShaderDesc& desc) = 0;
+    virtual PipelineHandle createPipeline(const PipelineDesc& desc) = 0;
+    virtual void destroy(BufferHandle handle) = 0;
+    virtual void destroy(ShaderHandle handle) = 0;
+    virtual void destroy(PipelineHandle handle) = 0;
+
     virtual void beginFrame() = 0;
     virtual void beginRenderPass(const RenderPassDesc& desc) = 0;
+    virtual void bindPipeline(PipelineHandle handle) = 0;
+    virtual void bindVertexBuffer(BufferHandle handle, std::uint32_t offset) = 0;
+    virtual void draw(std::uint32_t vertexCount, std::uint32_t firstVertex) = 0;
     virtual void endRenderPass() = 0;
     virtual void endFrame() = 0;
     virtual void present() = 0;

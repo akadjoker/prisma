@@ -46,4 +46,43 @@ void GLState::clearDepth(float depth)
     known_ |= kClearDepth;
 }
 
+void GLState::useProgram(std::uint32_t program)
+{
+    if ((known_ & kProgram) && program_ == program) return;
+    glUseProgram(program);
+    program_ = program;
+    known_ |= kProgram;
+}
+
+void GLState::bindVertexArray(std::uint32_t vertexArray)
+{
+    if ((known_ & kVertexArray) && vertexArray_ == vertexArray) return;
+    glBindVertexArray(vertexArray);
+    vertexArray_ = vertexArray;
+    known_ |= kVertexArray;
+}
+
+void GLState::bindArrayBuffer(std::uint32_t buffer)
+{
+    if ((known_ & kArrayBuffer) && arrayBuffer_ == buffer) return;
+    glBindBuffer(GL_ARRAY_BUFFER, buffer);
+    arrayBuffer_ = buffer;
+    known_ |= kArrayBuffer;
+}
+
+void GLState::programDeleted(std::uint32_t program)
+{
+    if (program_ == program) known_ &= ~static_cast<std::uint32_t>(kProgram);
+}
+
+void GLState::vertexArrayDeleted(std::uint32_t vertexArray)
+{
+    if (vertexArray_ == vertexArray) known_ &= ~static_cast<std::uint32_t>(kVertexArray);
+}
+
+void GLState::arrayBufferDeleted(std::uint32_t buffer)
+{
+    if (arrayBuffer_ == buffer) known_ &= ~static_cast<std::uint32_t>(kArrayBuffer);
+}
+
 } // namespace prisma

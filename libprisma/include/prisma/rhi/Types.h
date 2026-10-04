@@ -1,5 +1,7 @@
 #pragma once
 
+#include <ct/slotmap32.hpp>
+
 #include <cstdint>
 
 namespace prisma
@@ -34,6 +36,77 @@ struct DriverDesc
 {
     DriverType type = DriverType::Null;
     const GLPlatform* gl = nullptr;
+    void (*log)(const char* message) = nullptr;
+};
+
+struct BufferTag;
+struct ShaderTag;
+struct PipelineTag;
+
+using BufferHandle = ct::Handle32<BufferTag>;
+using ShaderHandle = ct::Handle32<ShaderTag>;
+using PipelineHandle = ct::Handle32<PipelineTag>;
+
+enum class BufferUsage : std::uint8_t
+{
+    Vertex
+};
+
+struct BufferDesc
+{
+    BufferUsage usage = BufferUsage::Vertex;
+    std::uint32_t size = 0;
+    const void* data = nullptr;
+};
+
+enum class ShaderStage : std::uint8_t
+{
+    Vertex,
+    Fragment
+};
+
+struct ShaderDesc
+{
+    ShaderStage stage = ShaderStage::Vertex;
+    const char* source = nullptr;
+};
+
+enum class VertexFormat : std::uint8_t
+{
+    Float2,
+    Float3,
+    Float4
+};
+
+struct VertexAttribute
+{
+    std::uint32_t location = 0;
+    VertexFormat format = VertexFormat::Float3;
+    std::uint32_t offset = 0;
+};
+
+enum class Topology : std::uint8_t
+{
+    Triangles,
+    TriangleStrip,
+    Lines,
+    LineStrip,
+    Points
+};
+
+struct PipelineDesc
+{
+    enum : std::uint32_t
+    {
+        kMaxAttributes = 8
+    };
+
+    ShaderHandle vertexShader;
+    ShaderHandle fragmentShader;
+    VertexAttribute attributes[kMaxAttributes];
+    std::uint32_t attributeCount = 0;
+    std::uint32_t vertexStride = 0;
+    Topology topology = Topology::Triangles;
 };
 
 enum class LoadOp : std::uint8_t

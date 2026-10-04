@@ -12,6 +12,9 @@ option(PRISMA_OPENGL "Build the OpenGL backend" ON)
 option(PRISMA_BUILD_APPS "Build the prisma sample apps" ON)
 option(PRISMA_BUILD_TESTS "Build the prisma tests" ON)
 
+add_library(ct INTERFACE)
+target_include_directories(ct INTERFACE external/containers/include)
+
 if(PRISMA_OPENGL)
   add_library(gl STATIC external/opengl/OpenGL.cpp)
   target_include_directories(gl PUBLIC external/opengl)
