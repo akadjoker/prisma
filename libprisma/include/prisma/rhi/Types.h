@@ -94,6 +94,7 @@ struct BufferDesc
 
 enum class TextureFormat : std::uint8_t
 {
+    None,
     R8,
     RG8,
     RGBA8,
@@ -234,6 +235,20 @@ struct UniformBlockBinding
     std::uint32_t slot = 0;
 };
 
+struct TargetFormats
+{
+    enum : std::uint32_t
+    {
+        kMaxColors = 4
+    };
+
+    bool window = true;
+    TextureFormat colors[kMaxColors] = { TextureFormat::None, TextureFormat::None,
+        TextureFormat::None, TextureFormat::None };
+    std::uint32_t colorCount = 0;
+    TextureFormat depth = TextureFormat::None;
+};
+
 struct TextureBinding
 {
     const char* name = nullptr;
@@ -255,6 +270,7 @@ struct PipelineDesc
     std::uint32_t attributeCount = 0;
     std::uint32_t vertexStride = 0;
     Topology topology = Topology::Triangles;
+    TargetFormats targets;
 
     UniformBlockBinding uniformBlocks[kMaxUniformBlocks];
     std::uint32_t uniformBlockCount = 0;

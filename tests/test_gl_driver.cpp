@@ -117,6 +117,31 @@ struct Params
     float place[4];
 };
 
+enum ParamIndex
+{
+    kParamGreen,
+    kParamNearBlue,
+    kParamFarRed,
+    kParamBehindNear,
+    kParamBeyondFar,
+    kParamHalfWhite,
+    kParamRed,
+    kParamNearBright,
+    kParamFarGreen,
+    kParamHalf,
+    kParamCount
+};
+
+enum
+{
+    kMaxParamStride = 1024
+};
+
+void setParams(unsigned char* bytes, unsigned int stride, int index, const Params& value)
+{
+    memcpy(bytes + stride * index, &value, sizeof(Params));
+}
+
 bool pixelIs(int x, int y, int r, int g, int b, int tolerance = 1)
 {
     unsigned char pixel[4] = { 0, 0, 0, 0 };
@@ -135,6 +160,8 @@ bool pixelIs(int x, int y, int r, int g, int b, int tolerance = 1)
 int main()
 {
     using namespace prisma;
+
+    static unsigned char paramBytes[kMaxParamStride * kParamCount];
 
     if (!platform_init())
     {
@@ -275,15 +302,41 @@ int main()
         indexDesc.data = kQuadIndices;
         const BufferHandle quadIndices = driver->createBuffer(indexDesc);
 
+        const unsigned int alignment = driver->caps().uniformBufferOffsetAlignment;
+        const unsigned int stride = (sizeof(Params) + alignment - 1) / alignment * alignment;
+        CHECK(alignment >= 1);
+        CHECK(stride * kParamCount <= sizeof(paramBytes));
+
+        const Params green = { { 0.0f, 1.0f, 0.0f, 1.0f }, { 0.0f, 0.0f, 0.0f, 0.0f } };
+        setParams(paramBytes, stride, kParamGreen, green);
+        const Params nearBlue = { { 0.0f, 0.0f, 1.0f, 1.0f }, { 0.0f, 0.0f, 0.2f, 0.0f } };
+        setParams(paramBytes, stride, kParamNearBlue, nearBlue);
+        const Params farRed = { { 1.0f, 0.0f, 0.0f, 1.0f }, { 0.0f, 0.0f, 0.8f, 0.0f } };
+        setParams(paramBytes, stride, kParamFarRed, farRed);
+        const Params behindNear = { { 1.0f, 1.0f, 0.0f, 1.0f }, { 0.0f, 0.0f, -0.5f, 0.0f } };
+        setParams(paramBytes, stride, kParamBehindNear, behindNear);
+        const Params beyondFar = { { 1.0f, 1.0f, 0.0f, 1.0f }, { 0.0f, 0.0f, 1.5f, 0.0f } };
+        setParams(paramBytes, stride, kParamBeyondFar, beyondFar);
+        const Params halfWhite = { { 1.0f, 1.0f, 1.0f, 0.5f }, { 0.0f, 0.0f, 0.0f, 0.0f } };
+        setParams(paramBytes, stride, kParamHalfWhite, halfWhite);
+        const Params red = { { 1.0f, 0.0f, 0.0f, 1.0f }, { 0.0f, 0.0f, 0.0f, 0.0f } };
+        setParams(paramBytes, stride, kParamRed, red);
+        const Params nearBright = { { 4.0f, 2.0f, 0.5f, 1.0f }, { 0.0f, 0.0f, 0.2f, 0.0f } };
+        setParams(paramBytes, stride, kParamNearBright, nearBright);
+        const Params farGreen = { { 0.0f, 9.0f, 0.0f, 1.0f }, { 0.0f, 0.0f, 0.8f, 0.0f } };
+        setParams(paramBytes, stride, kParamFarGreen, farGreen);
+        const Params half = { { 0.5f, 0.5f, 0.5f, 1.0f }, { 0.0f, 0.0f, 0.5f, 0.0f } };
+        setParams(paramBytes, stride, kParamHalf, half);
+
         BufferDesc paramsDesc;
         paramsDesc.usage = BufferUsage::Uniform;
-        paramsDesc.size = sizeof(Params);
+        paramsDesc.size = stride * kParamCount;
+        paramsDesc.data = paramBytes;
         paramsDesc.update = BufferUpdate::Dynamic;
         const BufferHandle params = driver->createBuffer(paramsDesc);
         CHECK(quad.valid());
         CHECK(quadIndices.valid());
         CHECK(params.valid());
-        CHECK(driver->caps().uniformBufferOffsetAlignment >= 1);
 
         ShaderDesc flatDesc;
         flatDesc.source = kFlatVertexSource;
@@ -318,10 +371,7 @@ int main()
         window_begin_frame(window);
         driver->beginFrame();
         driver->beginRenderPass(black);
-        driver->bindUniformBuffer(2, params, 0, sizeof(Params));
-
-        const Params green = { { 0.0f, 1.0f, 0.0f, 1.0f }, { 0.0f, 0.0f, 0.0f, 0.0f } };
-        driver->updateBuffer(params, 0, &green, sizeof(green));
+        driver->bindUniformBuffer(2, params, kParamGreen * stride, sizeof(Params));
         driver->bindPipeline(flat);
         driver->bindVertexBuffer(quad, 0);
         driver->bindIndexBuffer(quadIndices);
@@ -332,29 +382,24 @@ int main()
         CHECK(pixelIs(80, 120, 0, 255, 0));
         CHECK(pixelIs(240, 120, 0, 0, 0));
 
-        const Params nearBlue = { { 0.0f, 0.0f, 1.0f, 1.0f }, { 0.0f, 0.0f, 0.2f, 0.0f } };
-        driver->updateBuffer(params, 0, &nearBlue, sizeof(nearBlue));
+        driver->bindUniformBuffer(2, params, kParamNearBlue * stride, sizeof(Params));
         driver->bindPipeline(flatDepth);
         driver->bindVertexBuffer(buffer, 0);
         driver->draw(3, 0);
-        const Params farRed = { { 1.0f, 0.0f, 0.0f, 1.0f }, { 0.0f, 0.0f, 0.8f, 0.0f } };
-        driver->updateBuffer(params, 0, &farRed, sizeof(farRed));
+        driver->bindUniformBuffer(2, params, kParamFarRed * stride, sizeof(Params));
         driver->draw(3, 0);
         CHECK(pixelIs(160, 120, 0, 0, 255));
 
-        const Params behindNear = { { 1.0f, 1.0f, 0.0f, 1.0f }, { 0.0f, 0.0f, -0.5f, 0.0f } };
-        driver->updateBuffer(params, 0, &behindNear, sizeof(behindNear));
+        driver->bindUniformBuffer(2, params, kParamBehindNear * stride, sizeof(Params));
         driver->bindPipeline(flat);
         driver->bindVertexBuffer(buffer, 0);
         driver->draw(3, 0);
         CHECK(pixelIs(160, 120, 0, 0, 255));
-        const Params beyondFar = { { 1.0f, 1.0f, 0.0f, 1.0f }, { 0.0f, 0.0f, 1.5f, 0.0f } };
-        driver->updateBuffer(params, 0, &beyondFar, sizeof(beyondFar));
+        driver->bindUniformBuffer(2, params, kParamBeyondFar * stride, sizeof(Params));
         driver->draw(3, 0);
         CHECK(pixelIs(160, 120, 0, 0, 255));
 
-        const Params halfWhite = { { 1.0f, 1.0f, 1.0f, 0.5f }, { 0.0f, 0.0f, 0.0f, 0.0f } };
-        driver->updateBuffer(params, 0, &halfWhite, sizeof(halfWhite));
+        driver->bindUniformBuffer(2, params, kParamHalfWhite * stride, sizeof(Params));
         driver->bindPipeline(flatBlend);
         driver->bindVertexBuffer(buffer, 0);
         driver->draw(3, 0);
@@ -370,12 +415,10 @@ int main()
         window_begin_frame(window);
         driver->beginFrame();
         driver->beginRenderPass(black);
-        driver->bindUniformBuffer(2, params, 0, sizeof(Params));
+        driver->bindUniformBuffer(2, params, kParamRed * stride, sizeof(Params));
         driver->bindPipeline(flat);
         driver->bindVertexBuffer(buffer, 0);
 
-        const Params red = { { 1.0f, 0.0f, 0.0f, 1.0f }, { 0.0f, 0.0f, 0.0f, 0.0f } };
-        driver->updateBuffer(params, 0, &red, sizeof(red));
         Rect topLeft;
         topLeft.width = 160;
         topLeft.height = 120;
@@ -389,7 +432,7 @@ int main()
         whole.width = 320;
         whole.height = 240;
         driver->setScissor(whole);
-        driver->updateBuffer(params, 0, &green, sizeof(green));
+        driver->bindUniformBuffer(2, params, kParamGreen * stride, sizeof(Params));
         Viewport bottomRight;
         bottomRight.x = 160.0f;
         bottomRight.y = 120.0f;
@@ -438,11 +481,14 @@ int main()
         driver->draw(1000, 0);
         CHECK(messages == 1);
         messages = 0;
-        driver->updateBuffer(params, 0xFFFFFFF0u, &green, 0x20u);
+        driver->updateBuffer(params, 0, &green, sizeof(green));
         CHECK(messages == 1);
+        messages = 0;
         driver->endRenderPass();
         driver->endFrame();
         driver->present();
+        driver->updateBuffer(params, 0xFFFFFFF0u, &green, 0x20u);
+        CHECK(messages == 1);
         driver->destroy(noBuffer);
         driver->destroy(noBufferVertex);
 
@@ -536,6 +582,15 @@ int main()
             texturedPipelineDesc.fragmentShader = texturedFragment;
             CHECK(scaled.valid());
 
+            flatPipelineDesc.blend = false;
+            flatPipelineDesc.depthTest = true;
+            flatPipelineDesc.targets.window = false;
+            flatPipelineDesc.targets.colorCount = 1;
+            flatPipelineDesc.targets.colors[0] = TextureFormat::RGBA16F;
+            flatPipelineDesc.targets.depth = TextureFormat::Depth32F;
+            const PipelineHandle flatHdr = driver->createPipeline(flatPipelineDesc);
+            CHECK(flatHdr.valid());
+
             RenderPassDesc offscreen;
             offscreen.colors[0] = hdr;
             offscreen.colorCount = 1;
@@ -546,14 +601,11 @@ int main()
             window_begin_frame(window);
             driver->beginFrame();
             driver->beginRenderPass(offscreen);
-            driver->bindUniformBuffer(2, params, 0, sizeof(Params));
-            const Params nearBright = { { 4.0f, 2.0f, 0.5f, 1.0f }, { 0.0f, 0.0f, 0.2f, 0.0f } };
-            driver->updateBuffer(params, 0, &nearBright, sizeof(nearBright));
-            driver->bindPipeline(flatDepth);
+            driver->bindUniformBuffer(2, params, kParamNearBright * stride, sizeof(Params));
+            driver->bindPipeline(flatHdr);
             driver->bindVertexBuffer(buffer, 0);
             driver->draw(3, 0);
-            const Params farGreen = { { 0.0f, 9.0f, 0.0f, 1.0f }, { 0.0f, 0.0f, 0.8f, 0.0f } };
-            driver->updateBuffer(params, 0, &farGreen, sizeof(farGreen));
+            driver->bindUniformBuffer(2, params, kParamFarGreen * stride, sizeof(Params));
             driver->draw(3, 0);
             driver->endRenderPass();
 
@@ -569,6 +621,7 @@ int main()
             CHECK(messages == 0);
             if (messages) printf("unexpected: %s\n", lastMessage);
 
+            driver->destroy(flatHdr);
             driver->destroy(scaled);
             driver->destroy(scaledFragment);
             driver->destroy(hdrDepth);
@@ -586,7 +639,18 @@ int main()
         CHECK(srgbTarget.valid());
         CHECK(tenBitTarget.valid());
 
-        const Params half = { { 0.5f, 0.5f, 0.5f, 1.0f }, { 0.0f, 0.0f, 0.5f, 0.0f } };
+        flatPipelineDesc.blend = false;
+        flatPipelineDesc.depthTest = false;
+        flatPipelineDesc.targets.window = false;
+        flatPipelineDesc.targets.colorCount = 1;
+        flatPipelineDesc.targets.colors[0] = TextureFormat::RGBA8Srgb;
+        flatPipelineDesc.targets.depth = TextureFormat::None;
+        const PipelineHandle flatSrgb = driver->createPipeline(flatPipelineDesc);
+        flatPipelineDesc.targets.colors[0] = TextureFormat::RGB10A2;
+        const PipelineHandle flatTenBit = driver->createPipeline(flatPipelineDesc);
+        CHECK(flatSrgb.valid());
+        CHECK(flatTenBit.valid());
+
         RenderPassDesc srgbPass;
         srgbPass.colors[0] = srgbTarget;
         srgbPass.colorCount = 1;
@@ -597,18 +661,23 @@ int main()
         messages = 0;
         window_begin_frame(window);
         driver->beginFrame();
-        driver->updateBuffer(params, 0, &half, sizeof(half));
         driver->beginRenderPass(srgbPass);
-        driver->bindUniformBuffer(2, params, 0, sizeof(Params));
-        driver->bindPipeline(flat);
+        driver->bindUniformBuffer(2, params, kParamHalf * stride, sizeof(Params));
+        driver->bindPipeline(flatSrgb);
         driver->bindVertexBuffer(buffer, 0);
         driver->draw(3, 0);
         driver->endRenderPass();
         driver->beginRenderPass(tenBitPass);
-        driver->bindUniformBuffer(2, params, 0, sizeof(Params));
+        driver->bindUniformBuffer(2, params, kParamHalf * stride, sizeof(Params));
+        driver->bindPipeline(flatTenBit);
+        driver->bindVertexBuffer(buffer, 0);
+        driver->draw(3, 0);
+        driver->bindUniformBuffer(2, params, kParamGreen * stride, sizeof(Params));
         driver->bindPipeline(flat);
         driver->bindVertexBuffer(buffer, 0);
         driver->draw(3, 0);
+        CHECK(messages == 1);
+        messages = 0;
         driver->endRenderPass();
 
         driver->beginRenderPass(black);
@@ -625,6 +694,8 @@ int main()
         driver->present();
         CHECK(messages == 0);
         if (messages) printf("unexpected: %s\n", lastMessage);
+        driver->destroy(flatTenBit);
+        driver->destroy(flatSrgb);
         driver->destroy(tenBitTarget);
         driver->destroy(srgbTarget);
 
@@ -647,6 +718,10 @@ int main()
         twoTargetsPipelineDesc.vertexStride = sizeof(float) * 2;
         twoTargetsPipelineDesc.attributeCount = 1;
         twoTargetsPipelineDesc.attributes[0].format = VertexFormat::Float2;
+        twoTargetsPipelineDesc.targets.window = false;
+        twoTargetsPipelineDesc.targets.colorCount = 2;
+        twoTargetsPipelineDesc.targets.colors[0] = TextureFormat::RGBA8;
+        twoTargetsPipelineDesc.targets.colors[1] = TextureFormat::RGBA8;
         const PipelineHandle twoTargets = driver->createPipeline(twoTargetsPipelineDesc);
         CHECK(twoTargets.valid());
 

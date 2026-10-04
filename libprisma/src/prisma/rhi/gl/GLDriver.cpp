@@ -45,7 +45,22 @@ struct GLFramebuffer
     std::uint32_t width = 0;
     std::uint32_t height = 0;
     bool stencil = false;
+    TargetFormats formats;
 };
+
+static_assert(static_cast<std::uint32_t>(TargetFormats::kMaxColors) ==
+                      static_cast<std::uint32_t>(RenderPassDesc::kMaxColorTargets),
+        "pipeline and render pass must agree on the colour target count");
+
+bool sameTargets(const TargetFormats& a, const TargetFormats& b)
+{
+    if (a.window != b.window) return false;
+    if (a.window) return true;
+    if (a.colorCount != b.colorCount || a.depth != b.depth) return false;
+    for (std::uint32_t i = 0; i < a.colorCount; ++i)
+        if (a.colors[i] != b.colors[i]) return false;
+    return true;
+}
 
 bool isDepthFormat(TextureFormat format)
 {
@@ -68,6 +83,8 @@ GLFormat toGLFormat(TextureFormat format)
 {
     switch (format)
     {
+        case TextureFormat::None:
+            break;
         case TextureFormat::R8:
             return { GL_R8, GL_RED, GL_UNSIGNED_BYTE };
         case TextureFormat::RG8:
@@ -148,6 +165,7 @@ struct GLPipeline
     GLenum frontFace = GL_CCW;
     bool blend = false;
     GLenum blendFunc[4] = { GL_ONE, GL_ZERO, GL_ONE, GL_ZERO };
+    TargetFormats targets;
 };
 
 GLint componentCount(VertexFormat format)
@@ -333,6 +351,11 @@ public:
     void updateBuffer(BufferHandle handle, std::uint32_t offset, const void* data,
             std::uint32_t size) override
     {
+        if (passActive_)
+        {
+            log("updateBuffer: not allowed inside a render pass");
+            return;
+        }
         const GLBuffer* buffer = buffers_.get(handleCast<BufferSlot>(handle));
         if (!buffer || !data || static_cast<std::uint64_t>(offset) + size > buffer->size)
         {
@@ -392,8 +415,8 @@ public:
 
     TextureHandle createTexture(const TextureDesc& desc) override
     {
-        if (desc.width == 0 || desc.height == 0 || desc.width > caps_.maxTextureSize ||
-                desc.height > caps_.maxTextureSize)
+        if (desc.format == TextureFormat::None || desc.width == 0 || desc.height == 0 ||
+                desc.width > caps_.maxTextureSize || desc.height > caps_.maxTextureSize)
         {
             log("createTexture: invalid size");
             return TextureHandle();
@@ -444,7 +467,8 @@ public:
         const GLShader* fragment = shaders_.get(handleCast<ShaderSlot>(desc.fragmentShader));
         if (!vertex || !fragment || desc.attributeCount > PipelineDesc::kMaxAttributes ||
                 desc.uniformBlockCount > PipelineDesc::kMaxUniformBlocks ||
-                desc.textureCount > PipelineDesc::kMaxTextures)
+                desc.textureCount > PipelineDesc::kMaxTextures ||
+                desc.targets.colorCount > TargetFormats::kMaxColors)
         {
             log("createPipeline: invalid shader handle or too many attributes or uniform blocks");
             return PipelineHandle();
@@ -472,6 +496,7 @@ public:
         pipeline.topology = toGLTopology(desc.topology);
         pipeline.vertexStride = desc.vertexStride;
         pipeline.attributeCount = desc.attributeCount;
+        pipeline.targets = desc.targets;
         pipeline.depthTest = desc.depthTest;
         pipeline.depthWrite = desc.depthWrite;
         pipeline.depthFunc = toGLCompare(desc.depthCompare);
@@ -605,11 +630,13 @@ public:
             height = framebuffer->height;
             passHasDepth_ = desc.depth.valid();
             passStencil_ = framebuffer->stencil;
+            passFormats_ = framebuffer->formats;
         }
         else
         {
             platform_.framebufferSize(platform_.user, &width, &height);
             state_.bindFramebuffer(0);
+            passFormats_ = TargetFormats();
         }
         passActive_ = true;
         pipeline_ = PipelineHandle();
@@ -814,6 +841,8 @@ private:
         GLFramebuffer framebuffer;
         framebuffer.colorCount = desc.colorCount;
         framebuffer.depth = desc.depth.bits();
+        framebuffer.formats.window = false;
+        framebuffer.formats.colorCount = desc.colorCount;
 
         const GLTexture* colors[RenderPassDesc::kMaxColorTargets] = {};
         for (std::uint32_t i = 0; i < desc.colorCount; ++i)
@@ -823,6 +852,7 @@ private:
                     isDepthFormat(colors[i]->format))
                 return nullptr;
             framebuffer.colors[i] = desc.colors[i].bits();
+            framebuffer.formats.colors[i] = colors[i]->format;
             framebuffer.width = colors[i]->width;
             framebuffer.height = colors[i]->height;
         }
@@ -836,6 +866,7 @@ private:
             framebuffer.width = depth->width;
             framebuffer.height = depth->height;
             framebuffer.stencil = depth->format == TextureFormat::Depth24Stencil8;
+            framebuffer.formats.depth = depth->format;
         }
 
         glGenFramebuffers(1, &framebuffer.id);
@@ -889,6 +920,11 @@ private:
         if (!passActive_ || !pipeline)
         {
             log("draw: no active render pass or no pipeline bound in this pass");
+            return nullptr;
+        }
+        if (!sameTargets(pipeline->targets, passFormats_))
+        {
+            log("draw: the pipeline was created for different render targets than this pass");
             return nullptr;
         }
 
@@ -974,6 +1010,7 @@ private:
     ct::Vector<GLFramebuffer> framebuffers_;
 
     bool passActive_ = false;
+    TargetFormats passFormats_;
     std::uint32_t passWidth_ = 0;
     std::uint32_t passHeight_ = 0;
     bool passOffscreen_ = false;

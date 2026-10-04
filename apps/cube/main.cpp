@@ -252,6 +252,15 @@ int main(int argc, char** argv)
     pipelineDesc.uniformBlocks[0].slot = 0;
     pipelineDesc.depthTest = true;
     pipelineDesc.cullMode = prisma::CullMode::Back;
+    if (offscreen)
+    {
+        pipelineDesc.targets.window = false;
+        pipelineDesc.targets.colorCount = 1;
+        pipelineDesc.targets.colors[0] = driver->caps().floatColorTargets
+                                                 ? prisma::TextureFormat::RGBA16F
+                                                 : prisma::TextureFormat::RGBA8;
+        pipelineDesc.targets.depth = prisma::TextureFormat::Depth32F;
+    }
     pipelineDesc.debugName = "cube pipeline";
     const prisma::PipelineHandle pipeline = driver->createPipeline(pipelineDesc);
 
