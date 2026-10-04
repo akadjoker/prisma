@@ -1,114 +1,107 @@
 # prisma
 
-Modern 3D renderer in C++14 for desktop, Android and web: PBR, dynamic lights, shadows, fog, HDR and bloom. Every effect can be switched on and off in code, and the minimum target is 30 fps with headroom on an integrated GPU.
+A rendering backend library in C++14. It gives one interface over OpenGL 4.6, OpenGL ES 3 and Vulkan, and the backend is picked in code when the driver is created. It is the base for a renderer aimed at modern lighting and materials that still runs well on integrated GPUs.
 
-Status: early work, written from scratch. Working today: the null backend, the start of a Vulkan 1.3 backend (device, swapchain and a clear pass) and one OpenGL backend that builds for OpenGL 4.6 or OpenGL ES 3 (`-DPRISMA_GLES=ON`), with vertex, index and uniform buffers, 2D textures and samplers, offscreen render targets (HDR colour, depth, several colour targets), shaders, pipelines with depth, cull and blend state, indexed draw and debug output (a spinning textured cube on screen). The rest of this page describes the planned design; names may change.
+## Features
+
+- One `Driver` interface for every backend.
+- Buffers (vertex, index, uniform), 2D textures, samplers, shaders and pipelines, all referenced by 32-bit handles.
+- Pipelines carry depth, cull and blend state.
+- Render passes with load and store operations, drawing to the window or to offscreen targets: several colour targets, depth, HDR and sRGB formats.
+- Viewport and scissor with a top-left origin.
+- The same conventions on every backend: clip depth from 0 to 1, linear colour with sRGB encoding on sRGB targets.
+- Driver debug messages delivered to the application's log function.
+- No window library inside the library: the application passes a few platform functions in a small struct.
+- No exceptions, no RTTI and no standard containers.
+
+## Backends
+
+| Backend | Platforms | State |
+|---|---|---|
+| OpenGL 4.6 | desktop | working |
+| OpenGL ES 3 | Android, web, desktop | working on desktop; Android and web not tested yet |
+| Vulkan 1.3 | desktop, Android | in progress: device, swapchain and clear |
+| Null | any | working; used by tests that need no GPU |
+
+Only core features of each API are required. Extensions are optional and reported through `Caps`.
+
+## Build
+
+Requires CMake 3.21, a C++14 compiler and the OpenGL development files. The Vulkan backend is built when the Vulkan SDK is found.
+
+```sh
+git clone --recursive <repository url>
+cd prisma
+cmake -S . -B build
+cmake --build build
+ctest --test-dir build
+```
+
+| Option | Default | Meaning |
+|---|---|---|
+| `PRISMA_OPENGL` | `ON` | Build the OpenGL backend |
+| `PRISMA_GLES` | `OFF` | Build the OpenGL backend for OpenGL ES 3 instead of OpenGL 4.6 |
+| `PRISMA_VULKAN` | `ON` when Vulkan is found | Build the Vulkan backend |
+| `PRISMA_BUILD_APPS` | `ON` | Build the samples |
+| `PRISMA_BUILD_TESTS` | `ON` | Build the tests |
+
+## Samples
+
+```sh
+./build/apps/clear             # a window cleared to one colour
+./build/apps/triangle          # one triangle
+./build/apps/cube              # a spinning textured cube
+./build/apps/cube offscreen    # the cube drawn to an HDR target, then copied to the window
+./build/apps/clear vulkan      # the clear sample on the Vulkan backend
+```
+
+Escape closes a sample.
+
+## Layout
+
+```text
+libprisma/include/prisma/rhi/   public headers: Driver.h, Types.h, Caps.h
+libprisma/src/prisma/rhi/       backends: gl/, vulkan/, null/
+apps/                           samples
+tests/                          tests
+external/                       submodules
+```
 
 ## Architecture
 
 ```mermaid
 flowchart TB
-    APP["Your app or engine"]
+    APP["Application"]
+    DRIVER["Driver<br/>createDriver(DriverDesc)"]
+    NULLD["NullDriver"]
+    GLD["GLDriver<br/>GLState"]
+    VKD["VulkanDriver"]
+    GLP["GLPlatform"]
+    VKP["VulkanPlatform"]
+    WIN["Window library"]
 
-    subgraph Render["Render layer"]
-        TECH["techniques: PBR, shadows, fog, post-processing"]
-    end
-
-    subgraph RHI["Backend interface"]
-        CREATE["createDriver(DriverDesc)<br/>DriverType: Null · OpenGL · Vulkan"]
-        DRV["Driver<br/>abstract interface"]
-        CAPS["Caps<br/>features and limits"]
-        TYPES["Types<br/>formats, handles, descriptors, states"]
-    end
-
-    subgraph Backends["Backends (each one implements Driver)"]
-        NULLD["NullDriver<br/>no window, for tests"]
-        GLD["GLDriver<br/>logic shared by GL and GLES"]
-        GL4["gl4<br/>OpenGL 4.6, desktop"]
-        GLES3["gles3<br/>OpenGL ES 3, Android and web"]
-        GLST["GLState · GLFormats · GLShaderCache"]
-        VKD["VulkanDriver<br/>desktop and Android"]
-    end
-
-    subgraph Boundary["Platform boundary"]
-        GLP["GLPlatform<br/>make current · function addresses<br/>swap · framebuffer size"]
-        VKP["VulkanPlatform<br/>instance extensions<br/>create surface · framebuffer size"]
-    end
-
-    subgraph Platform["Platform"]
-        ZEN["zen_plataform<br/>window, input, GL context, Vulkan loader"]
-    end
-
-    subgraph Native["Native APIs"]
-        OGL["OpenGL 4.6"]
-        OGLES["OpenGL ES 3 / WebGL2"]
-        VK["Vulkan"]
-    end
-
-    APP -->|scene: lights, materials, camera| TECH
-    APP -->|DriverDesc| CREATE
-    TECH -->|resources and commands| DRV
-    DRV --- CAPS
-    DRV --- TYPES
-
-    CREATE -->|DriverType::Null| NULLD
-    CREATE -->|DriverType::OpenGL| GLD
-    CREATE -->|DriverType::Vulkan| VKD
-
-    GLD --> GL4
-    GLD --> GLES3
-    GLD --- GLST
-
+    APP -->|resources and commands| DRIVER
+    DRIVER --> NULLD
+    DRIVER --> GLD
+    DRIVER --> VKD
     GLD -->|calls| GLP
     VKD -->|calls| VKP
-    GLP -->|filled from| ZEN
-    VKP -->|filled from| ZEN
-
-    GL4 --> OGL
-    GLES3 --> OGLES
-    VKD --> VK
+    APP -->|fills| GLP
+    APP -->|fills| VKP
+    GLP --> WIN
+    VKP --> WIN
 ```
 
-Design rules:
-
-- Each layer only knows the one below it. The renderer never sees a backend; a backend never sees a light or a material.
-- Backends do not call the platform directly. They receive a `GLPlatform` or a `VulkanPlatform`, which are structs of function pointers.
-- The renderer picks code paths from `Caps`, never from the backend name.
-- Backend resources are handles, not objects. The classes the app uses (texture, mesh, material) live in the render layer and keep the handle inside.
-
-## Classes
-
-| Name | Role |
-|---|---|
-| `Driver` | Single interface: resources, render pass, pipeline state, draw, compute, queries |
-| `createDriver` | Factory: creates the backend requested in `DriverDesc` |
-| `DriverType` | `Null`, `OpenGL`, `Vulkan` |
-| `Caps` | What the backend supports, and its limits |
-| `Types` | Formats, resource descriptors, pipeline states |
-| `BufferHandle`, `TextureHandle`, `SamplerHandle`, `ShaderHandle`, `PipelineHandle`, `RenderTargetHandle` | Backend resources: 32-bit handles (index + generation), not objects |
-| `NullDriver` | Backend with no GPU, for tests |
-| `GLDriver` | OpenGL backend; `gl4` on desktop, `gles3` on Android and web |
-| `GLState` | Cache of the current OpenGL state |
-| `GLFormats` | Format table from `Types` to OpenGL |
-| `GLShaderCache` | Compiled programs and their variants |
-| `VulkanDriver` | Vulkan backend |
-| `GLPlatform` | OpenGL boundary: current context, function addresses, swap, size |
-| `VulkanPlatform` | Vulkan boundary: instance extensions, surface creation, size |
-
-## Backend per platform
-
-The app requests the backend in code. A backend that is not in the binary is rejected with an error.
-
-| Platform | Backends in the binary | The app can request |
-|---|---|---|
-| Desktop | `NullDriver`, `GLDriver` (gl4), `VulkanDriver` | Vulkan or OpenGL |
-| Android | `NullDriver`, `GLDriver` (gles3), `VulkanDriver` | Vulkan or OpenGL |
-| Web | `NullDriver`, `GLDriver` (gles3) | OpenGL only (WebGL2, no compute) |
-
-The app gives a preference list, for example Vulkan then OpenGL. When the first backend fails to start, creation falls back to the next one.
+The library never calls the window library. The application fills `GLPlatform` or `VulkanPlatform` with functions from whatever it uses to open windows.
 
 ## Dependencies
 
-- `zen_plataform`: window, input and context.
-- `containers` (`ct`): containers and utilities, used instead of the standard library.
-- `math` (`mathc`): vectors, matrices, quaternions.
+| Submodule | Used by |
+|---|---|
+| `external/containers` | the library |
+| `external/zen_plataform` | samples and tests (window and input) |
+| `external/math` | samples |
+
+## License
+
+MIT. See [LICENSE](LICENSE).
