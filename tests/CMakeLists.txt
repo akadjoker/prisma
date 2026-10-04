@@ -20,6 +20,11 @@ target_link_libraries(test_sdkanimation PRIVATE prisma demo_common ct)
 target_compile_definitions(test_sdkanimation PRIVATE PRISMA_MEDIA_DIR="${PRISMA_MEDIA_DIR}")
 add_test(NAME sdkanimation COMMAND test_sdkanimation)
 
+add_executable(test_dfg test_dfg.cpp)
+target_include_directories(test_dfg PRIVATE ${PROJECT_SOURCE_DIR}/demos/common)
+target_link_libraries(test_dfg PRIVATE prisma ct)
+add_test(NAME dfg COMMAND test_dfg)
+
 add_executable(test_free_ranges test_free_ranges.cpp)
 target_include_directories(test_free_ranges PRIVATE ${PROJECT_SOURCE_DIR}/libprisma/src)
 target_link_libraries(test_free_ranges PRIVATE ct)
