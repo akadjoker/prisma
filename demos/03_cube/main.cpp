@@ -1,3 +1,4 @@
+#include "common/Projection.h"
 #include "common/ZenApp.h"
 #include "mathc.h"
 
@@ -300,11 +301,7 @@ int main(int argc, char** argv)
                 height > 0 ? static_cast<float>(width) / static_cast<float>(height) : 1.0f;
         const float angle = (still ? 0.0f : static_cast<float>(time_seconds())) + 0.6f;
 
-        Math::Mat4 depthZeroToOne = Math::Mat4::Identity();
-        depthZeroToOne.col2.z = 0.5f;
-        depthZeroToOne.col3.z = 0.5f;
-        const Math::Mat4 projection =
-                depthZeroToOne * Math::Mat4::Perspective(1.0f, aspect, 0.1f, 100.0f);
+        const Math::Mat4 projection = zenapp::perspectiveZeroToOne(1.0f, aspect, 0.1f, 100.0f);
         const Math::Mat4 view = Math::Mat4::Translation(Math::Vec3(0.0f, 0.0f, -5.0f));
         const Math::Mat4 model = Math::Mat4::RotationY(angle) * Math::Mat4::RotationX(angle * 0.7f);
         const Math::Mat4 modelViewProjection = projection * view * model;
