@@ -196,7 +196,6 @@ int main(int argc, char** argv)
         }
     }
 
-    const bool textured = driver->type() != prisma::DriverType::Vulkan;
     prisma::TextureDesc textureDesc;
     textureDesc.width = kTextureSize;
     textureDesc.height = kTextureSize;
@@ -204,13 +203,11 @@ int main(int argc, char** argv)
     textureDesc.data = pixels;
     textureDesc.generateMipmaps = true;
     textureDesc.debugName = "cube checker";
-    prisma::TextureHandle texture;
-    if (textured) texture = driver->createTexture(textureDesc);
+    const prisma::TextureHandle texture = driver->createTexture(textureDesc);
 
     prisma::SamplerDesc samplerDesc;
     samplerDesc.debugName = "cube sampler";
-    prisma::SamplerHandle sampler;
-    if (textured) sampler = driver->createSampler(samplerDesc);
+    const prisma::SamplerHandle sampler = driver->createSampler(samplerDesc);
 
     prisma::BufferDesc bufferDesc;
     bufferDesc.size = sizeof(vertices);
@@ -286,7 +283,7 @@ int main(int argc, char** argv)
     driver->destroy(fragmentShader);
 
     const bool ready = vertexBuffer.valid() && indexBuffer.valid() && uniformBuffer.valid() &&
-                       pipeline.valid() && (!textured || (texture.valid() && sampler.valid()));
+                       pipeline.valid() && texture.valid() && sampler.valid();
     if (!ready) log_error("cube: resource creation failed");
 
     const std::uint32_t kTargetWidth = 320;
@@ -390,7 +387,7 @@ int main(int argc, char** argv)
         driver->bindVertexBuffer(0, vertexBuffer, 0);
         driver->bindIndexBuffer(indexBuffer);
         driver->bindUniformBuffer(0, uniformBuffer, 0, sizeof(Math::Mat4));
-        if (textured) driver->bindTexture(0, texture, sampler);
+        driver->bindTexture(0, texture, sampler);
         driver->drawIndexed(36, 0);
         driver->endRenderPass();
         if (offscreen)

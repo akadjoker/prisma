@@ -73,6 +73,9 @@ struct VulkanPipeline
     VertexBufferLayout vertexBuffers[PipelineDesc::kMaxVertexBuffers];
     std::uint32_t uniformCount = 0;
     std::uint32_t uniformSlots[PipelineDesc::kMaxUniformBlocks] = {};
+    VkDescriptorSetLayout textureSetLayout = VK_NULL_HANDLE;
+    std::uint32_t textureCount = 0;
+    std::uint32_t textureSlots[PipelineDesc::kMaxTextures] = {};
 };
 
 struct UniformBinding
@@ -80,6 +83,29 @@ struct UniformBinding
     BufferHandle handle;
     std::uint32_t offset = 0;
     std::uint32_t size = 0;
+};
+
+struct VulkanTexture
+{
+    VkImage image = VK_NULL_HANDLE;
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+    VkImageView view = VK_NULL_HANDLE;
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+    std::uint32_t mipLevels = 1;
+    TextureFormat format = TextureFormat::RGBA8;
+    std::uint32_t usage = 0;
+};
+
+struct VulkanSampler
+{
+    VkSampler sampler = VK_NULL_HANDLE;
+};
+
+struct TextureSlot
+{
+    TextureHandle texture;
+    SamplerHandle sampler;
 };
 
 struct Garbage
@@ -90,7 +116,57 @@ struct Garbage
     VkPipeline pipeline = VK_NULL_HANDLE;
     VkPipelineLayout layout = VK_NULL_HANDLE;
     VkDescriptorSetLayout setLayout = VK_NULL_HANDLE;
+    VkDescriptorSetLayout textureSetLayout = VK_NULL_HANDLE;
+    VkImage image = VK_NULL_HANDLE;
+    VkImageView view = VK_NULL_HANDLE;
+    VkSampler sampler = VK_NULL_HANDLE;
 };
+
+bool isDepthFormat(TextureFormat format)
+{
+    return format == TextureFormat::Depth32F || format == TextureFormat::Depth24Stencil8;
+}
+
+std::uint32_t bytesPerPixel(TextureFormat format)
+{
+    switch (format)
+    {
+        case TextureFormat::R8:
+            return 1;
+        case TextureFormat::RG8:
+            return 2;
+        case TextureFormat::RGBA16F:
+            return 8;
+        default:
+            return 4;
+    }
+}
+
+std::uint32_t fullMipCount(std::uint32_t width, std::uint32_t height)
+{
+    std::uint32_t size = width > height ? width : height;
+    std::uint32_t levels = 1;
+    while (size > 1)
+    {
+        size >>= 1;
+        ++levels;
+    }
+    return levels;
+}
+
+VkSamplerAddressMode toVkAddress(AddressMode mode)
+{
+    switch (mode)
+    {
+        case AddressMode::Repeat:
+            return VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        case AddressMode::MirroredRepeat:
+            return VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT;
+        case AddressMode::ClampToEdge:
+            return VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    }
+    return VK_SAMPLER_ADDRESS_MODE_REPEAT;
+}
 
 bool sameTargets(const TargetFormats& a, const TargetFormats& b)
 {
@@ -257,7 +333,16 @@ public:
                 vkDestroyPipeline(device_, pipeline.pipeline, nullptr);
                 vkDestroyPipelineLayout(device_, pipeline.layout, nullptr);
                 vkDestroyDescriptorSetLayout(device_, pipeline.setLayout, nullptr);
+                vkDestroyDescriptorSetLayout(device_, pipeline.textureSetLayout, nullptr);
             }
+            for (VulkanTexture& texture: textures_)
+            {
+                vkDestroyImageView(device_, texture.view, nullptr);
+                vkDestroyImage(device_, texture.image, nullptr);
+                vkFreeMemory(device_, texture.memory, nullptr);
+            }
+            for (VulkanSampler& sampler: samplers_)
+                vkDestroySampler(device_, sampler.sampler, nullptr);
             for (VulkanShader& shader: shaders_)
                 vkDestroyShaderModule(device_, shader.module, nullptr);
             for (VulkanBuffer& buffer: buffers_)
@@ -406,7 +491,10 @@ public:
         bool valid = vertex && fragment && desc.attributeCount <= PipelineDesc::kMaxAttributes &&
                      desc.vertexBufferCount <= PipelineDesc::kMaxVertexBuffers &&
                      desc.targets.colorCount <= TargetFormats::kMaxColors &&
-                     desc.uniformBlockCount <= PipelineDesc::kMaxUniformBlocks;
+                     desc.uniformBlockCount <= PipelineDesc::kMaxUniformBlocks &&
+                     desc.textureCount <= PipelineDesc::kMaxTextures;
+        for (std::uint32_t i = 0; valid && i < desc.textureCount; ++i)
+            if (desc.textures[i].slot >= kMaxTextureSlots) valid = false;
         for (std::uint32_t i = 0; valid && i < desc.uniformBlockCount; ++i)
             if (desc.uniformBlocks[i].slot >= kMaxUniformSlots) valid = false;
         for (std::uint32_t i = 0; valid && i < desc.attributeCount; ++i)
@@ -516,7 +604,7 @@ public:
         rendering.colorAttachmentCount = colorCount;
         rendering.pColorAttachmentFormats = colorFormats;
         rendering.depthAttachmentFormat =
-                desc.targets.window ? depthFormat_ : toVkFormat(desc.targets.depth);
+                desc.targets.window ? depthFormat_ : textureFormat(desc.targets.depth);
 
         VulkanPipeline pipeline;
         pipeline.targets = desc.targets;
@@ -555,14 +643,50 @@ public:
             return PipelineHandle();
         }
 
+        pipeline.textureCount = desc.textureCount;
+        for (std::uint32_t i = 0; i < desc.textureCount; ++i)
+            pipeline.textureSlots[i] = desc.textures[i].slot;
+        for (std::uint32_t i = 1; i < pipeline.textureCount; ++i)
+            for (std::uint32_t j = i;
+                    j > 0 && pipeline.textureSlots[j - 1] > pipeline.textureSlots[j]; --j)
+            {
+                const std::uint32_t swapped = pipeline.textureSlots[j];
+                pipeline.textureSlots[j] = pipeline.textureSlots[j - 1];
+                pipeline.textureSlots[j - 1] = swapped;
+            }
+
+        VkDescriptorSetLayoutBinding textureBindings[PipelineDesc::kMaxTextures] = {};
+        for (std::uint32_t i = 0; i < pipeline.textureCount; ++i)
+        {
+            textureBindings[i].binding = pipeline.textureSlots[i];
+            textureBindings[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            textureBindings[i].descriptorCount = 1;
+            textureBindings[i].stageFlags =
+                    VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+        }
+        VkDescriptorSetLayoutCreateInfo textureSetLayout = {};
+        textureSetLayout.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        textureSetLayout.bindingCount = pipeline.textureCount;
+        textureSetLayout.pBindings = textureBindings;
+        if (vkCreateDescriptorSetLayout(device_, &textureSetLayout, nullptr,
+                    &pipeline.textureSetLayout) != VK_SUCCESS)
+        {
+            log("createPipeline: could not create the texture set layout");
+            vkDestroyDescriptorSetLayout(device_, pipeline.setLayout, nullptr);
+            return PipelineHandle();
+        }
+
+        const VkDescriptorSetLayout setLayouts[2] = { pipeline.setLayout,
+            pipeline.textureSetLayout };
         VkPipelineLayoutCreateInfo layout = {};
         layout.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-        layout.setLayoutCount = 1;
-        layout.pSetLayouts = &pipeline.setLayout;
+        layout.setLayoutCount = 2;
+        layout.pSetLayouts = setLayouts;
         if (vkCreatePipelineLayout(device_, &layout, nullptr, &pipeline.layout) != VK_SUCCESS)
         {
             log("createPipeline: could not create the pipeline layout");
             vkDestroyDescriptorSetLayout(device_, pipeline.setLayout, nullptr);
+            vkDestroyDescriptorSetLayout(device_, pipeline.textureSetLayout, nullptr);
             return PipelineHandle();
         }
 
@@ -586,14 +710,120 @@ public:
             log("createPipeline: could not create the pipeline");
             vkDestroyPipelineLayout(device_, pipeline.layout, nullptr);
             vkDestroyDescriptorSetLayout(device_, pipeline.setLayout, nullptr);
+            vkDestroyDescriptorSetLayout(device_, pipeline.textureSetLayout, nullptr);
             return PipelineHandle();
         }
         setName(VK_OBJECT_TYPE_PIPELINE, (std::uint64_t) pipeline.pipeline, desc.debugName);
         return handleCast<PipelineHandle>(pipelines_.insert(pipeline));
     }
 
-    TextureHandle createTexture(const TextureDesc&) override { return missing<TextureHandle>(); }
-    SamplerHandle createSampler(const SamplerDesc&) override { return missing<SamplerHandle>(); }
+    TextureHandle createTexture(const TextureDesc& desc) override
+    {
+        if (desc.format == TextureFormat::None || desc.width == 0 || desc.height == 0 ||
+                desc.width > caps_.maxTextureSize || desc.height > caps_.maxTextureSize)
+        {
+            log("createTexture: invalid size");
+            return TextureHandle();
+        }
+
+        const bool depth = isDepthFormat(desc.format);
+        const std::uint32_t fullChain = fullMipCount(desc.width, desc.height);
+        VulkanTexture texture;
+        texture.width = desc.width;
+        texture.height = desc.height;
+        texture.format = desc.format;
+        texture.usage = desc.usage;
+        texture.mipLevels = desc.mipLevels == 0 ? fullChain : desc.mipLevels;
+        if (texture.mipLevels > fullChain) texture.mipLevels = fullChain;
+
+        VkImageCreateInfo image = {};
+        image.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        image.imageType = VK_IMAGE_TYPE_2D;
+        image.format = textureFormat(desc.format);
+        image.extent.width = desc.width;
+        image.extent.height = desc.height;
+        image.extent.depth = 1;
+        image.mipLevels = texture.mipLevels;
+        image.arrayLayers = 1;
+        image.samples = VK_SAMPLE_COUNT_1_BIT;
+        image.tiling = VK_IMAGE_TILING_OPTIMAL;
+        image.usage = VK_IMAGE_USAGE_SAMPLED_BIT;
+        if (!depth)
+            image.usage |= VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+        if (desc.usage & kTextureRenderTarget)
+            image.usage |= depth ? VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT
+                                 : VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+        image.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        image.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        if (vkCreateImage(device_, &image, nullptr, &texture.image) != VK_SUCCESS)
+        {
+            log("createTexture: could not create the image");
+            return TextureHandle();
+        }
+
+        VkMemoryRequirements requirements;
+        vkGetImageMemoryRequirements(device_, texture.image, &requirements);
+        VkMemoryAllocateInfo allocate = {};
+        allocate.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        allocate.allocationSize = requirements.size;
+        allocate.memoryTypeIndex =
+                findMemoryType(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+        VkImageViewCreateInfo view = {};
+        view.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        view.image = texture.image;
+        view.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        view.format = image.format;
+        view.subresourceRange.aspectMask =
+                depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
+        view.subresourceRange.levelCount = texture.mipLevels;
+        view.subresourceRange.layerCount = 1;
+
+        if (allocate.memoryTypeIndex == UINT32_MAX ||
+                vkAllocateMemory(device_, &allocate, nullptr, &texture.memory) != VK_SUCCESS ||
+                vkBindImageMemory(device_, texture.image, texture.memory, 0) != VK_SUCCESS ||
+                vkCreateImageView(device_, &view, nullptr, &texture.view) != VK_SUCCESS)
+        {
+            log("createTexture: could not allocate memory or create the view");
+            vkDestroyImage(device_, texture.image, nullptr);
+            if (texture.memory) vkFreeMemory(device_, texture.memory, nullptr);
+            return TextureHandle();
+        }
+        setName(VK_OBJECT_TYPE_IMAGE, (std::uint64_t) texture.image, desc.debugName);
+
+        if (!depth && !uploadTexture(texture, desc.data, desc.generateMipmaps))
+        {
+            vkDestroyImageView(device_, texture.view, nullptr);
+            vkDestroyImage(device_, texture.image, nullptr);
+            vkFreeMemory(device_, texture.memory, nullptr);
+            return TextureHandle();
+        }
+        return handleCast<TextureHandle>(textures_.insert(texture));
+    }
+
+    SamplerHandle createSampler(const SamplerDesc& desc) override
+    {
+        VkSamplerCreateInfo info = {};
+        info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+        info.magFilter = desc.magFilter == Filter::Linear ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
+        info.minFilter = desc.minFilter == Filter::Linear ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
+        info.mipmapMode = desc.mipFilter == MipFilter::Linear ? VK_SAMPLER_MIPMAP_MODE_LINEAR
+                                                              : VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        info.addressModeU = toVkAddress(desc.addressU);
+        info.addressModeV = toVkAddress(desc.addressV);
+        info.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        info.maxAnisotropy = 1.0f;
+        info.maxLod = desc.mipFilter == MipFilter::None ? 0.25f : VK_LOD_CLAMP_NONE;
+
+        VulkanSampler sampler;
+        if (vkCreateSampler(device_, &info, nullptr, &sampler.sampler) != VK_SUCCESS)
+        {
+            log("createSampler: could not create the sampler");
+            return SamplerHandle();
+        }
+        setName(VK_OBJECT_TYPE_SAMPLER, (std::uint64_t) sampler.sampler, desc.debugName);
+        return handleCast<SamplerHandle>(samplers_.insert(sampler));
+    }
 
     void destroy(BufferHandle handle) override
     {
@@ -630,12 +860,36 @@ public:
         item.pipeline = pipeline->pipeline;
         item.layout = pipeline->layout;
         item.setLayout = pipeline->setLayout;
+        item.textureSetLayout = pipeline->textureSetLayout;
         garbage_.push_back(item);
         pipelines_.erase(slot);
     }
 
-    void destroy(TextureHandle) override {}
-    void destroy(SamplerHandle) override {}
+    void destroy(TextureHandle handle) override
+    {
+        const TextureSlotHandle slot = handleCast<TextureSlotHandle>(handle);
+        const VulkanTexture* texture = textures_.get(slot);
+        if (!texture) return;
+        Garbage item;
+        item.frame = frameNumber_;
+        item.image = texture->image;
+        item.view = texture->view;
+        item.memory = texture->memory;
+        garbage_.push_back(item);
+        textures_.erase(slot);
+    }
+
+    void destroy(SamplerHandle handle) override
+    {
+        const SamplerSlotHandle slot = handleCast<SamplerSlotHandle>(handle);
+        const VulkanSampler* sampler = samplers_.get(slot);
+        if (!sampler) return;
+        Garbage item;
+        item.frame = frameNumber_;
+        item.sampler = sampler->sampler;
+        garbage_.push_back(item);
+        samplers_.erase(slot);
+    }
 
     void beginFrame() override
     {
@@ -657,6 +911,7 @@ public:
         collectGarbage(false);
         vkResetDescriptorPool(device_, descriptorPools_[frameIndex_], 0);
         lastSet_ = VK_NULL_HANDLE;
+        lastTextureSet_ = VK_NULL_HANDLE;
 
         const VkResult acquired = vkAcquireNextImageKHR(device_, swapchain_, UINT64_MAX,
                 frame.imageAvailable, VK_NULL_HANDLE, &imageIndex_);
@@ -741,7 +996,9 @@ public:
         for (std::uint32_t i = 0; i < kMaxUniformSlots; ++i) uniformBindings_[i] = UniformBinding();
         vertexDirty_ = true;
         indexDirty_ = true;
+        for (std::uint32_t i = 0; i < kMaxTextureSlots; ++i) textureBindings_[i] = TextureSlot();
         uniformDirty_ = true;
+        textureDirty_ = true;
 
         Viewport viewport;
         viewport.width = static_cast<float>(passWidth_);
@@ -827,9 +1084,18 @@ public:
         uniformDirty_ = true;
     }
 
-    void bindTexture(std::uint32_t, TextureHandle, SamplerHandle) override
+    void bindTexture(std::uint32_t slot, TextureHandle texture, SamplerHandle sampler) override
     {
-        log("Vulkan: textures are not implemented yet");
+        if (slot >= kMaxTextureSlots ||
+                !textures_.contains(handleCast<TextureSlotHandle>(texture)) ||
+                !samplers_.contains(handleCast<SamplerSlotHandle>(sampler)))
+        {
+            log("bindTexture: invalid texture handle, sampler handle or slot");
+            return;
+        }
+        textureBindings_[slot].texture = texture;
+        textureBindings_[slot].sampler = sampler;
+        textureDirty_ = true;
     }
 
     void draw(std::uint32_t vertexCount, std::uint32_t firstVertex,
@@ -919,13 +1185,6 @@ public:
     }
 
 private:
-    template<typename Handle>
-    Handle missing() const
-    {
-        log("Vulkan: resources are not implemented yet");
-        return Handle();
-    }
-
     void log(const char* message) const
     {
         if (log_) log_(message);
@@ -934,6 +1193,8 @@ private:
     using BufferSlot = ct::Handle32<VulkanBuffer>;
     using ShaderSlot = ct::Handle32<VulkanShader>;
     using PipelineSlot = ct::Handle32<VulkanPipeline>;
+    using TextureSlotHandle = ct::Handle32<VulkanTexture>;
+    using SamplerSlotHandle = ct::Handle32<VulkanSampler>;
 
     void setName(VkObjectType type, std::uint64_t handle, const char* name) const
     {
@@ -1008,10 +1269,229 @@ private:
             if (item.pipeline) vkDestroyPipeline(device_, item.pipeline, nullptr);
             if (item.layout) vkDestroyPipelineLayout(device_, item.layout, nullptr);
             if (item.setLayout) vkDestroyDescriptorSetLayout(device_, item.setLayout, nullptr);
+            if (item.textureSetLayout)
+                vkDestroyDescriptorSetLayout(device_, item.textureSetLayout, nullptr);
             if (item.buffer) vkDestroyBuffer(device_, item.buffer, nullptr);
+            if (item.view) vkDestroyImageView(device_, item.view, nullptr);
+            if (item.image) vkDestroyImage(device_, item.image, nullptr);
+            if (item.sampler) vkDestroySampler(device_, item.sampler, nullptr);
             if (item.memory) vkFreeMemory(device_, item.memory, nullptr);
         }
         garbage_.resize(kept);
+    }
+
+    VkFormat textureFormat(TextureFormat format) const
+    {
+        return format == TextureFormat::Depth24Stencil8 ? depthStencilFormat_ : toVkFormat(format);
+    }
+
+    static void imageBarrier(VkCommandBuffer commands, VkImage image, std::uint32_t firstMip,
+            std::uint32_t mipCount, VkImageLayout from, VkImageLayout to)
+    {
+        VkImageMemoryBarrier2 barrier = {};
+        barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+        barrier.srcStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
+        barrier.srcAccessMask =
+                from == VK_IMAGE_LAYOUT_UNDEFINED
+                        ? 0
+                        : (VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_TRANSFER_READ_BIT);
+        barrier.dstStageMask = to == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                                       ? VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
+                                                 VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT
+                                       : VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
+        barrier.dstAccessMask =
+                to == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                        ? VK_ACCESS_2_SHADER_READ_BIT
+                        : (VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_TRANSFER_READ_BIT);
+        barrier.oldLayout = from;
+        barrier.newLayout = to;
+        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.image = image;
+        barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        barrier.subresourceRange.baseMipLevel = firstMip;
+        barrier.subresourceRange.levelCount = mipCount;
+        barrier.subresourceRange.layerCount = 1;
+
+        VkDependencyInfo dependency = {};
+        dependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        dependency.imageMemoryBarrierCount = 1;
+        dependency.pImageMemoryBarriers = &barrier;
+        vkCmdPipelineBarrier2(commands, &dependency);
+    }
+
+    bool uploadTexture(const VulkanTexture& texture, const void* data, bool generateMipmaps)
+    {
+        if (!uploadCommands_)
+        {
+            VkCommandBufferAllocateInfo allocate = {};
+            allocate.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+            allocate.commandPool = commandPool_;
+            allocate.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+            allocate.commandBufferCount = 1;
+            if (vkAllocateCommandBuffers(device_, &allocate, &uploadCommands_) != VK_SUCCESS)
+                return false;
+        }
+
+        VulkanBuffer staging;
+        if (data)
+        {
+            staging.size = texture.width * texture.height * bytesPerPixel(texture.format);
+            staging.vkUsage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+            if (!createVersion(staging, nullptr))
+            {
+                log("createTexture: could not create the upload buffer");
+                return false;
+            }
+            memcpy(staging.versions[0].mapped, data, staging.size);
+        }
+
+        VkCommandBuffer commands = uploadCommands_;
+        vkResetCommandBuffer(commands, 0);
+        VkCommandBufferBeginInfo begin = {};
+        begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        vkBeginCommandBuffer(commands, &begin);
+
+        if (!data)
+        {
+            imageBarrier(commands, texture.image, 0, texture.mipLevels, VK_IMAGE_LAYOUT_UNDEFINED,
+                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        }
+        else
+        {
+            imageBarrier(commands, texture.image, 0, texture.mipLevels, VK_IMAGE_LAYOUT_UNDEFINED,
+                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+
+            VkBufferImageCopy copy = {};
+            copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            copy.imageSubresource.layerCount = 1;
+            copy.imageExtent.width = texture.width;
+            copy.imageExtent.height = texture.height;
+            copy.imageExtent.depth = 1;
+            vkCmdCopyBufferToImage(commands, staging.versions[0].buffer, texture.image,
+                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+
+            std::uint32_t filled = 1;
+            if (generateMipmaps)
+            {
+                std::int32_t width = static_cast<std::int32_t>(texture.width);
+                std::int32_t height = static_cast<std::int32_t>(texture.height);
+                for (std::uint32_t mip = 1; mip < texture.mipLevels; ++mip)
+                {
+                    imageBarrier(commands, texture.image, mip - 1, 1,
+                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+                    const std::int32_t nextWidth = width > 1 ? width / 2 : 1;
+                    const std::int32_t nextHeight = height > 1 ? height / 2 : 1;
+
+                    VkImageBlit blit = {};
+                    blit.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+                    blit.srcSubresource.mipLevel = mip - 1;
+                    blit.srcSubresource.layerCount = 1;
+                    blit.srcOffsets[1].x = width;
+                    blit.srcOffsets[1].y = height;
+                    blit.srcOffsets[1].z = 1;
+                    blit.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+                    blit.dstSubresource.mipLevel = mip;
+                    blit.dstSubresource.layerCount = 1;
+                    blit.dstOffsets[1].x = nextWidth;
+                    blit.dstOffsets[1].y = nextHeight;
+                    blit.dstOffsets[1].z = 1;
+                    vkCmdBlitImage(commands, texture.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                            texture.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit,
+                            VK_FILTER_LINEAR);
+                    imageBarrier(commands, texture.image, mip - 1, 1,
+                            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                    width = nextWidth;
+                    height = nextHeight;
+                }
+                filled = texture.mipLevels;
+            }
+            const std::uint32_t firstPending = generateMipmaps ? filled - 1 : 0;
+            imageBarrier(commands, texture.image, firstPending, texture.mipLevels - firstPending,
+                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        }
+
+        vkEndCommandBuffer(commands);
+        VkSubmitInfo submit = {};
+        submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        submit.commandBufferCount = 1;
+        submit.pCommandBuffers = &commands;
+        const bool submitted = vkQueueSubmit(queue_, 1, &submit, VK_NULL_HANDLE) == VK_SUCCESS;
+        vkQueueWaitIdle(queue_);
+
+        if (data)
+        {
+            vkDestroyBuffer(device_, staging.versions[0].buffer, nullptr);
+            vkFreeMemory(device_, staging.versions[0].memory, nullptr);
+        }
+        if (!submitted) log("createTexture: could not submit the upload");
+        return submitted;
+    }
+
+    bool bindTextures(const VulkanPipeline& pipeline, VkCommandBuffer commands)
+    {
+        VkImageView views[PipelineDesc::kMaxTextures] = {};
+        VkSampler samplers[PipelineDesc::kMaxTextures] = {};
+        for (std::uint32_t i = 0; i < pipeline.textureCount; ++i)
+        {
+            const TextureSlot& binding = textureBindings_[pipeline.textureSlots[i]];
+            const VulkanTexture* texture =
+                    textures_.get(handleCast<TextureSlotHandle>(binding.texture));
+            const VulkanSampler* sampler =
+                    samplers_.get(handleCast<SamplerSlotHandle>(binding.sampler));
+            if (!texture || !sampler)
+            {
+                log("draw: a texture the pipeline needs is not bound");
+                return false;
+            }
+            views[i] = texture->view;
+            samplers[i] = sampler->sampler;
+        }
+
+        bool sameSet = lastTextureSet_ != VK_NULL_HANDLE &&
+                       lastTextureSetLayout_ == pipeline.textureSetLayout;
+        for (std::uint32_t i = 0; sameSet && i < pipeline.textureCount; ++i)
+            if (lastViews_[i] != views[i] || lastSamplers_[i] != samplers[i]) sameSet = false;
+
+        if (!sameSet)
+        {
+            VkDescriptorSetAllocateInfo allocate = {};
+            allocate.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+            allocate.descriptorPool = descriptorPools_[frameIndex_];
+            allocate.descriptorSetCount = 1;
+            allocate.pSetLayouts = &pipeline.textureSetLayout;
+            if (vkAllocateDescriptorSets(device_, &allocate, &lastTextureSet_) != VK_SUCCESS)
+            {
+                lastTextureSet_ = VK_NULL_HANDLE;
+                log("draw: out of descriptor sets for this frame");
+                return false;
+            }
+
+            VkDescriptorImageInfo infos[PipelineDesc::kMaxTextures] = {};
+            VkWriteDescriptorSet writes[PipelineDesc::kMaxTextures] = {};
+            for (std::uint32_t i = 0; i < pipeline.textureCount; ++i)
+            {
+                infos[i].sampler = samplers[i];
+                infos[i].imageView = views[i];
+                infos[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                writes[i].dstSet = lastTextureSet_;
+                writes[i].dstBinding = pipeline.textureSlots[i];
+                writes[i].descriptorCount = 1;
+                writes[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                writes[i].pImageInfo = &infos[i];
+                lastViews_[i] = views[i];
+                lastSamplers_[i] = samplers[i];
+            }
+            vkUpdateDescriptorSets(device_, pipeline.textureCount, writes, 0, nullptr);
+            lastTextureSetLayout_ = pipeline.textureSetLayout;
+        }
+        vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.layout, 1, 1,
+                &lastTextureSet_, 0, nullptr);
+        return true;
     }
 
     bool bindUniforms(const VulkanPipeline& pipeline, VkCommandBuffer commands)
@@ -1120,6 +1600,7 @@ private:
             vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline->pipeline);
             boundPipeline_ = pipeline->pipeline;
             uniformDirty_ = true;
+            textureDirty_ = true;
         }
         if (vertexDirty_ && pipeline->vertexBufferCount > 0)
         {
@@ -1130,6 +1611,11 @@ private:
         {
             if (!bindUniforms(*pipeline, commands)) return nullptr;
             uniformDirty_ = false;
+        }
+        if (textureDirty_ && pipeline->textureCount > 0)
+        {
+            if (!bindTextures(*pipeline, commands)) return nullptr;
+            textureDirty_ = false;
         }
         return pipeline;
     }
@@ -1338,6 +1824,12 @@ private:
                                VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT)
                                ? VK_FORMAT_D32_SFLOAT
                                : VK_FORMAT_X8_D24_UNORM_PACK32;
+        vkGetPhysicalDeviceFormatProperties(physicalDevice_, VK_FORMAT_D24_UNORM_S8_UINT,
+                &depthProperties);
+        depthStencilFormat_ = (depthProperties.optimalTilingFeatures &
+                                      VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT)
+                                      ? VK_FORMAT_D24_UNORM_S8_UINT
+                                      : VK_FORMAT_D32_SFLOAT_S8_UINT;
         if (messenger_)
             setObjectName_ = reinterpret_cast<PFN_vkSetDebugUtilsObjectNameEXT>(
                     vkGetDeviceProcAddr(device_, "vkSetDebugUtilsObjectNameEXT"));
@@ -1663,6 +2155,8 @@ private:
     ct::SlotMap32<VulkanBuffer> buffers_;
     ct::SlotMap32<VulkanShader> shaders_;
     ct::SlotMap32<VulkanPipeline> pipelines_;
+    ct::SlotMap32<VulkanTexture> textures_;
+    ct::SlotMap32<VulkanSampler> samplers_;
     ct::Vector<Garbage> garbage_;
 
     PipelineHandle pipeline_;
@@ -1685,6 +2179,19 @@ private:
     VkDescriptorSetLayout lastSetLayout_ = VK_NULL_HANDLE;
     VkBuffer lastSetBuffers_[PipelineDesc::kMaxUniformBlocks] = {};
     std::uint32_t lastSetRanges_[PipelineDesc::kMaxUniformBlocks] = {};
+
+    enum : std::uint32_t
+    {
+        kMaxTextureSlots = 16
+    };
+    TextureSlot textureBindings_[kMaxTextureSlots];
+    bool textureDirty_ = true;
+    VkDescriptorSet lastTextureSet_ = VK_NULL_HANDLE;
+    VkDescriptorSetLayout lastTextureSetLayout_ = VK_NULL_HANDLE;
+    VkImageView lastViews_[PipelineDesc::kMaxTextures] = {};
+    VkSampler lastSamplers_[PipelineDesc::kMaxTextures] = {};
+    VkCommandBuffer uploadCommands_ = VK_NULL_HANDLE;
+    VkFormat depthStencilFormat_ = VK_FORMAT_D24_UNORM_S8_UINT;
 
     VkFormat depthFormat_ = VK_FORMAT_D32_SFLOAT;
     VkImage depthImage_ = VK_NULL_HANDLE;
