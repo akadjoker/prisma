@@ -62,6 +62,37 @@ inline bool loadEnvironmentFaces(const char* path, EnvironmentFaces* out)
     return decodeEnvironmentFaces(bytes.data(), bytes.size(), out);
 }
 
+inline prisma::TextureHandle createEnvironmentCubemap(prisma::Driver* driver,
+        const EnvironmentFaces& environment, const char* name = nullptr)
+{
+    const size_t perFace = static_cast<size_t>(environment.size) * environment.size * 4;
+    ct::Vector<uint16_t> half;
+    half.resize(perFace * 6);
+    for (size_t i = 0; i < half.size(); ++i) half[i] = ibl::floatToHalf(environment.data[i]);
+
+    prisma::TextureDesc desc;
+    desc.type = prisma::TextureType::TextureCube;
+    desc.format = prisma::TextureFormat::RGBA16F;
+    desc.width = environment.size;
+    desc.height = environment.size;
+    desc.mipLevels = 0;
+    desc.generateMipmaps = true;
+    desc.data = half.data();
+    desc.debugName = name;
+    return driver->createTexture(desc);
+}
+
+inline unsigned mipLevelCount(unsigned size)
+{
+    unsigned levels = 1;
+    while (size > 1)
+    {
+        size >>= 1;
+        ++levels;
+    }
+    return levels;
+}
+
 inline void computeEnvironmentSh(const EnvironmentFaces& environment, float (*sh)[3])
 {
     const float* faces[6];
