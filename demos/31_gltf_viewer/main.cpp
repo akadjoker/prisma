@@ -1,9 +1,12 @@
+#include "common/FrameStats.h"
 #include "common/GltfGpu.h"
 #include "common/Ibl.h"
 #include "common/Lights.h"
 #include "common/Projection.h"
 #include "common/ZenApp.h"
 #include "mathc.h"
+
+#include <ct/sort.hpp>
 
 #include <math.h>
 #include <stddef.h>
@@ -134,6 +137,7 @@ int main(int argc, char** argv)
     const char* skipArgument = zenapp::argumentValue(argc, argv, "skipmips");
     const unsigned skipMips = skipArgument ? static_cast<unsigned>(atoi(skipArgument)) : 0;
     const bool useFileCamera = zenapp::hasArgument(argc, argv, "camera");
+    const bool autoWalk = zenapp::hasArgument(argc, argv, "autowalk");
 
     zenapp::GltfModel model;
     if (!zenapp::loadGltf(modelPath, &model))
@@ -315,10 +319,14 @@ int main(int argc, char** argv)
         flyPitch = asinf(forward.y);
     }
     double lastTime = time_seconds();
+    if (zenapp::hasArgument(argc, argv, "novsync")) window_set_vsync(window, false);
+    static const char* const phaseNames[4] = { "cull", "uniforms", "record", "present" };
+    zenapp::FrameStats stats("gltf viewer", phaseNames, 4);
     int frames = 0;
     while (ready && !window_should_close(window))
     {
         window_begin_frame(window);
+        stats.begin();
         if (key_pressed(window, KEY_ESCAPE)) window_set_should_close(window, true);
 
         int width = 1;
@@ -362,6 +370,11 @@ int main(int argc, char** argv)
             if (key_down(window, KEY_A)) flyEye = flyEye - right * speed;
             if (key_down(window, KEY_E)) flyEye.y += speed;
             if (key_down(window, KEY_Q)) flyEye.y -= speed;
+            if (autoWalk)
+            {
+                flyYaw += 0.5f * delta;
+                flyEye = flyEye + forward * (4.0f * delta * cosf(static_cast<float>(now) * 0.4f));
+            }
             fov = model.camera.yfov;
             nearPlane = model.camera.nearPlane;
             farPlane = model.camera.farPlane < 400.0f ? model.camera.farPlane : 400.0f;
@@ -409,24 +422,16 @@ int main(int argc, char** argv)
                 draws.push_back(draw);
             }
         }
-        for (size_t i = 1; i < draws.size(); ++i)
-        {
-            const Draw value = draws[i];
-            size_t j = i;
-            const auto before = [](const Draw& a, const Draw& b) {
+        if (draws.size() > 1)
+            ct::sort(draws.data(), draws.data() + draws.size(), [](const Draw& a, const Draw& b) {
                 if (a.blend != b.blend) return !a.blend;
                 if (a.blend) return a.distance > b.distance;
                 if (a.doubleSided != b.doubleSided) return !a.doubleSided;
-                return a.material < b.material;
-            };
-            while (j > 0 && before(value, draws[j - 1]))
-            {
-                draws[j] = draws[j - 1];
-                --j;
-            }
-            draws[j] = value;
-        }
+                if (a.material != b.material) return a.material < b.material;
+                return a.primitive < b.primitive;
+            });
 
+        stats.phase(0);
         FrameUniforms frame;
         frame.viewProjection = projection * view;
         frame.inverseViewProjection = frame.viewProjection.Inverse();
@@ -451,6 +456,7 @@ int main(int argc, char** argv)
                 projection.Data(), nearPlane, farPlane);
         zenapp::buildClusteredBuffers(lights, froxelizer, view.Data(), &clustered);
 
+        stats.phase(1);
         driver->beginFrame();
         driver->updateBuffer(frameBuffer, 0, &frame, sizeof(frame));
         if (draws.size() > 0)
@@ -500,8 +506,11 @@ int main(int argc, char** argv)
             zenapp::drawGltfPrimitive(driver, gpu, model.primitives[draw.primitive]);
         }
         driver->endRenderPass();
+        stats.phase(2);
         zenapp::endFrame(driver);
         driver->present();
+        stats.phase(3);
+        stats.end();
 
         if (maxFrames > 0 && ++frames >= maxFrames) window_set_should_close(window, true);
     }
