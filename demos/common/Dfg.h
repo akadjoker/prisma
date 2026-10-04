@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Half.h"
 #include "prisma/rhi/Driver.h"
 
 #include <ct/vector.hpp>
@@ -99,28 +100,6 @@ inline void computeDfg(unsigned size, unsigned sampleCount, ct::Vector<float>* r
                     rg->data() + (static_cast<size_t>(row) * size + column) * 2);
         }
     }
-}
-
-inline uint16_t floatToHalf(float value)
-{
-    uint32_t bits;
-    memcpy(&bits, &value, sizeof(bits));
-    const uint32_t sign = (bits >> 16) & 0x8000u;
-    int32_t exponent = static_cast<int32_t>((bits >> 23) & 0xFFu) - 127 + 15;
-    uint32_t mantissa = bits & 0x7FFFFFu;
-    if (exponent <= 0)
-    {
-        if (exponent < -10) return static_cast<uint16_t>(sign);
-        mantissa |= 0x800000u;
-        const uint32_t shift = static_cast<uint32_t>(14 - exponent);
-        uint32_t half = mantissa >> shift;
-        if ((mantissa >> (shift - 1)) & 1u) ++half;
-        return static_cast<uint16_t>(sign | half);
-    }
-    if (exponent >= 31) return static_cast<uint16_t>(sign | 0x7C00u);
-    uint32_t half = sign | (static_cast<uint32_t>(exponent) << 10) | (mantissa >> 13);
-    if (mantissa & 0x1000u) ++half;
-    return static_cast<uint16_t>(half);
 }
 
 inline prisma::TextureHandle createDfgTexture(prisma::Driver* driver, unsigned size = 64,
