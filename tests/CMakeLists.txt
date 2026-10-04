@@ -52,6 +52,13 @@ if(TARGET demo_ibl)
   add_test(NAME gltf COMMAND test_gltf)
 endif()
 
+if(TARGET mathc)
+  add_executable(test_light_shadows test_light_shadows.cpp)
+  target_include_directories(test_light_shadows PRIVATE ${PROJECT_SOURCE_DIR}/demos/common)
+  target_link_libraries(test_light_shadows PRIVATE mathc ct)
+  add_test(NAME light_shadows COMMAND test_light_shadows)
+endif()
+
 add_executable(test_free_ranges test_free_ranges.cpp)
 target_include_directories(test_free_ranges PRIVATE ${PROJECT_SOURCE_DIR}/libprisma/src)
 target_link_libraries(test_free_ranges PRIVATE ct)
