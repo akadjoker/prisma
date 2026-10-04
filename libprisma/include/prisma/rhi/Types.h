@@ -164,6 +164,8 @@ struct ShaderDesc
 {
     ShaderStage stage = ShaderStage::Vertex;
     const char* source = nullptr;
+    const void* spirv = nullptr;
+    std::uint32_t spirvSize = 0;
     const char* debugName = nullptr;
 };
 

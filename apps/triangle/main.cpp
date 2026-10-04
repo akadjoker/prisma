@@ -2,6 +2,11 @@
 
 #include <stdlib.h>
 
+#ifdef PRISMA_APP_SPIRV
+#include "triangle.frag.h"
+#include "triangle.vert.h"
+#endif
+
 namespace
 {
 
@@ -71,9 +76,17 @@ int main(int argc, char** argv)
     prisma::ShaderDesc shaderDesc;
     shaderDesc.stage = prisma::ShaderStage::Vertex;
     shaderDesc.source = kVertexSource;
+#ifdef PRISMA_APP_SPIRV
+    shaderDesc.spirv = triangle_vert;
+    shaderDesc.spirvSize = sizeof(triangle_vert);
+#endif
     const prisma::ShaderHandle vertexShader = driver->createShader(shaderDesc);
     shaderDesc.stage = prisma::ShaderStage::Fragment;
     shaderDesc.source = kFragmentSource;
+#ifdef PRISMA_APP_SPIRV
+    shaderDesc.spirv = triangle_frag;
+    shaderDesc.spirvSize = sizeof(triangle_frag);
+#endif
     const prisma::ShaderHandle fragmentShader = driver->createShader(shaderDesc);
 
     prisma::PipelineDesc pipelineDesc;
