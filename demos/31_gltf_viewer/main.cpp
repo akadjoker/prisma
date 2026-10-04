@@ -303,6 +303,18 @@ int main(int argc, char** argv)
 
     ct::Vector<Draw> draws;
     draws.reserve(maxDraws);
+
+    Math::Vec3 flyEye(0.0f, 0.0f, 0.0f);
+    float flyYaw = 0.0f;
+    float flyPitch = 0.0f;
+    if (fileCamera)
+    {
+        flyEye = Math::Vec3(model.camera.world[12], model.camera.world[13], model.camera.world[14]);
+        const Math::Vec3 forward(-model.camera.world[8], -model.camera.world[9], -model.camera.world[10]);
+        flyYaw = atan2f(forward.x, -forward.z);
+        flyPitch = asinf(forward.y);
+    }
+    double lastTime = time_seconds();
     int frames = 0;
     while (ready && !window_should_close(window))
     {
@@ -323,15 +335,38 @@ int main(int argc, char** argv)
         Math::Mat4 view;
         if (fileCamera)
         {
-            const Math::Mat4 cameraWorld = nodeMatrix(model.camera.world);
+            const double now = time_seconds();
+            const float delta = static_cast<float>(now - lastTime);
+            lastTime = now;
+            int mouseDx = 0;
+            int mouseDy = 0;
+            mouse_delta(window, &mouseDx, &mouseDy);
+            const float turn = 1.6f * delta;
+            if (mouse_button_down(window, MOUSE_RIGHT))
+            {
+                flyYaw += 0.004f * static_cast<float>(mouseDx);
+                flyPitch -= 0.004f * static_cast<float>(mouseDy);
+            }
+            if (key_down(window, KEY_LEFT)) flyYaw -= turn;
+            if (key_down(window, KEY_RIGHT)) flyYaw += turn;
+            if (key_down(window, KEY_UP)) flyPitch += turn;
+            if (key_down(window, KEY_DOWN)) flyPitch -= turn;
+            flyPitch = flyPitch > 1.5f ? 1.5f : (flyPitch < -1.5f ? -1.5f : flyPitch);
+            const Math::Vec3 forward(sinf(flyYaw) * cosf(flyPitch), sinf(flyPitch),
+                    -cosf(flyYaw) * cosf(flyPitch));
+            const Math::Vec3 right(cosf(flyYaw), 0.0f, sinf(flyYaw));
+            const float speed = (key_down(window, KEY_LEFT_SHIFT) ? 12.0f : 3.0f) * delta;
+            if (key_down(window, KEY_W)) flyEye = flyEye + forward * speed;
+            if (key_down(window, KEY_S)) flyEye = flyEye - forward * speed;
+            if (key_down(window, KEY_D)) flyEye = flyEye + right * speed;
+            if (key_down(window, KEY_A)) flyEye = flyEye - right * speed;
+            if (key_down(window, KEY_E)) flyEye.y += speed;
+            if (key_down(window, KEY_Q)) flyEye.y -= speed;
             fov = model.camera.yfov;
             nearPlane = model.camera.nearPlane;
             farPlane = model.camera.farPlane < 400.0f ? model.camera.farPlane : 400.0f;
-            eye = Math::Vec3(model.camera.world[12], model.camera.world[13], model.camera.world[14]);
-            const Math::Vec3 forward(-model.camera.world[8], -model.camera.world[9],
-                    -model.camera.world[10]);
+            eye = flyEye;
             view = Math::Mat4::LookAt(eye, eye + forward, Math::Vec3(0.0f, 1.0f, 0.0f));
-            (void) cameraWorld;
         }
         else
         {
