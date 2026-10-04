@@ -20,6 +20,7 @@ public:
     void viewport(std::int32_t x, std::int32_t y, std::int32_t width, std::int32_t height);
     void depthRange(float minDepth, float maxDepth);
     void scissorTest(bool enabled);
+    void framebufferSrgb(bool enabled);
     void scissor(std::int32_t x, std::int32_t y, std::int32_t width, std::int32_t height);
     void clearColor(const float color[4]);
     void clearDepth(float depth);
@@ -72,7 +73,8 @@ private:
         kActiveUnit = 1u << 16,
         kDepthRange = 1u << 17,
         kScissorTest = 1u << 18,
-        kScissor = 1u << 19
+        kScissor = 1u << 19,
+        kFramebufferSrgb = 1u << 20
     };
 
     struct UniformRange
@@ -94,6 +96,7 @@ private:
     float clearDepth_ = 1.0f;
     float depthRange_[2] = { 0.0f, 1.0f };
     bool scissorTest_ = false;
+    bool framebufferSrgb_ = false;
     std::int32_t scissor_[4] = { 0, 0, 0, 0 };
 
     std::uint32_t program_ = 0;

@@ -11,7 +11,7 @@ const char* kVertexSource = ZENAPP_SHADER_HEADER "layout(location = 0) in vec2 a
                                                  "void main()\n"
                                                  "{\n"
                                                  "    vColor = aColor;\n"
-                                                 "    gl_Position = vec4(aPosition, 0.0, 1.0);\n"
+                                                 "    gl_Position = vec4(aPosition, 0.5, 1.0);\n"
                                                  "}\n";
 
 const char* kFragmentSource = ZENAPP_SHADER_HEADER "in vec3 vColor;\n"

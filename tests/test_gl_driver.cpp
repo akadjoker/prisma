@@ -43,7 +43,7 @@ void framebufferSize(void* user, std::uint32_t* width, std::uint32_t* height)
 
 const char* kVertexSource =
         SHADER_HEADER "layout(location = 0) in vec2 aPosition;\n"
-                      "void main() { gl_Position = vec4(aPosition, 0.0, 1.0); }\n";
+                      "void main() { gl_Position = vec4(aPosition, 0.5, 1.0); }\n";
 
 const char* kFragmentSource = SHADER_HEADER "out vec4 oColor;\n"
                                             "void main() { oColor = vec4(1.0, 0.0, 0.0, 1.0); }\n";
@@ -66,7 +66,7 @@ const std::uint16_t kQuadIndices[6] = { 0, 1, 2, 0, 2, 3 };
 const char* kTexturedVertexSource = SHADER_HEADER
         "layout(location = 0) in vec2 aPosition;\n"
         "out vec2 vUv;\n"
-        "void main() { vUv = aPosition * 0.5 + 0.5; gl_Position = vec4(aPosition, 0.0, 1.0); }\n";
+        "void main() { vUv = aPosition * 0.5 + 0.5; gl_Position = vec4(aPosition, 0.5, 1.0); }\n";
 
 const char* kTexturedFragmentSource =
         SHADER_HEADER "in vec2 vUv;\n"
@@ -89,7 +89,7 @@ const char* kNoBufferVertexSource = SHADER_HEADER
         "void main()\n"
         "{\n"
         "    vec2 corner = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));\n"
-        "    gl_Position = vec4(corner * 2.0 - 1.0, 0.0, 1.0);\n"
+        "    gl_Position = vec4(corner * 2.0 - 1.0, 0.5, 1.0);\n"
         "}\n";
 
 const unsigned char kFourTexels[16] = {
@@ -332,13 +332,24 @@ int main()
         CHECK(pixelIs(80, 120, 0, 255, 0));
         CHECK(pixelIs(240, 120, 0, 0, 0));
 
-        const Params nearBlue = { { 0.0f, 0.0f, 1.0f, 1.0f }, { 0.0f, 0.0f, -0.5f, 0.0f } };
+        const Params nearBlue = { { 0.0f, 0.0f, 1.0f, 1.0f }, { 0.0f, 0.0f, 0.2f, 0.0f } };
         driver->updateBuffer(params, 0, &nearBlue, sizeof(nearBlue));
         driver->bindPipeline(flatDepth);
         driver->bindVertexBuffer(buffer, 0);
         driver->draw(3, 0);
-        const Params farRed = { { 1.0f, 0.0f, 0.0f, 1.0f }, { 0.0f, 0.0f, 0.5f, 0.0f } };
+        const Params farRed = { { 1.0f, 0.0f, 0.0f, 1.0f }, { 0.0f, 0.0f, 0.8f, 0.0f } };
         driver->updateBuffer(params, 0, &farRed, sizeof(farRed));
+        driver->draw(3, 0);
+        CHECK(pixelIs(160, 120, 0, 0, 255));
+
+        const Params behindNear = { { 1.0f, 1.0f, 0.0f, 1.0f }, { 0.0f, 0.0f, -0.5f, 0.0f } };
+        driver->updateBuffer(params, 0, &behindNear, sizeof(behindNear));
+        driver->bindPipeline(flat);
+        driver->bindVertexBuffer(buffer, 0);
+        driver->draw(3, 0);
+        CHECK(pixelIs(160, 120, 0, 0, 255));
+        const Params beyondFar = { { 1.0f, 1.0f, 0.0f, 1.0f }, { 0.0f, 0.0f, 1.5f, 0.0f } };
+        driver->updateBuffer(params, 0, &beyondFar, sizeof(beyondFar));
         driver->draw(3, 0);
         CHECK(pixelIs(160, 120, 0, 0, 255));
 
@@ -536,12 +547,12 @@ int main()
             driver->beginFrame();
             driver->beginRenderPass(offscreen);
             driver->bindUniformBuffer(2, params, 0, sizeof(Params));
-            const Params nearBright = { { 4.0f, 2.0f, 0.5f, 1.0f }, { 0.0f, 0.0f, -0.5f, 0.0f } };
+            const Params nearBright = { { 4.0f, 2.0f, 0.5f, 1.0f }, { 0.0f, 0.0f, 0.2f, 0.0f } };
             driver->updateBuffer(params, 0, &nearBright, sizeof(nearBright));
             driver->bindPipeline(flatDepth);
             driver->bindVertexBuffer(buffer, 0);
             driver->draw(3, 0);
-            const Params farGreen = { { 0.0f, 9.0f, 0.0f, 1.0f }, { 0.0f, 0.0f, 0.5f, 0.0f } };
+            const Params farGreen = { { 0.0f, 9.0f, 0.0f, 1.0f }, { 0.0f, 0.0f, 0.8f, 0.0f } };
             driver->updateBuffer(params, 0, &farGreen, sizeof(farGreen));
             driver->draw(3, 0);
             driver->endRenderPass();
@@ -563,6 +574,59 @@ int main()
             driver->destroy(hdrDepth);
             driver->destroy(hdr);
         }
+
+        TextureDesc srgbDesc;
+        srgbDesc.format = TextureFormat::RGBA8Srgb;
+        srgbDesc.width = 16;
+        srgbDesc.height = 16;
+        srgbDesc.usage = kTextureSampled | kTextureRenderTarget;
+        const TextureHandle srgbTarget = driver->createTexture(srgbDesc);
+        srgbDesc.format = TextureFormat::RGB10A2;
+        const TextureHandle tenBitTarget = driver->createTexture(srgbDesc);
+        CHECK(srgbTarget.valid());
+        CHECK(tenBitTarget.valid());
+
+        const Params half = { { 0.5f, 0.5f, 0.5f, 1.0f }, { 0.0f, 0.0f, 0.5f, 0.0f } };
+        RenderPassDesc srgbPass;
+        srgbPass.colors[0] = srgbTarget;
+        srgbPass.colorCount = 1;
+        RenderPassDesc tenBitPass;
+        tenBitPass.colors[0] = tenBitTarget;
+        tenBitPass.colorCount = 1;
+
+        messages = 0;
+        window_begin_frame(window);
+        driver->beginFrame();
+        driver->updateBuffer(params, 0, &half, sizeof(half));
+        driver->beginRenderPass(srgbPass);
+        driver->bindUniformBuffer(2, params, 0, sizeof(Params));
+        driver->bindPipeline(flat);
+        driver->bindVertexBuffer(buffer, 0);
+        driver->draw(3, 0);
+        driver->endRenderPass();
+        driver->beginRenderPass(tenBitPass);
+        driver->bindUniformBuffer(2, params, 0, sizeof(Params));
+        driver->bindPipeline(flat);
+        driver->bindVertexBuffer(buffer, 0);
+        driver->draw(3, 0);
+        driver->endRenderPass();
+
+        driver->beginRenderPass(black);
+        driver->bindPipeline(textured);
+        driver->bindVertexBuffer(buffer, 0);
+        driver->bindTexture(3, srgbTarget, nearest);
+        driver->draw(3, 0);
+        CHECK(pixelIs(160, 120, 128, 128, 128, 2));
+        driver->bindTexture(3, tenBitTarget, nearest);
+        driver->draw(3, 0);
+        CHECK(pixelIs(160, 120, 128, 128, 128, 2));
+        driver->endRenderPass();
+        driver->endFrame();
+        driver->present();
+        CHECK(messages == 0);
+        if (messages) printf("unexpected: %s\n", lastMessage);
+        driver->destroy(tenBitTarget);
+        driver->destroy(srgbTarget);
 
         TextureDesc targetDesc;
         targetDesc.width = 32;

@@ -6,6 +6,7 @@
 #include <ct/vector.hpp>
 
 #include <stdio.h>
+#include <string.h>
 
 namespace prisma
 {
@@ -75,6 +76,8 @@ GLFormat toGLFormat(TextureFormat format)
             return { GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE };
         case TextureFormat::RGBA8Srgb:
             return { GL_SRGB8_ALPHA8, GL_RGBA, GL_UNSIGNED_BYTE };
+        case TextureFormat::RGB10A2:
+            return { GL_RGB10_A2, GL_RGBA, GL_UNSIGNED_INT_2_10_10_10_REV };
         case TextureFormat::RGBA16F:
             return { GL_RGBA16F, GL_RGBA, GL_HALF_FLOAT };
         case TextureFormat::R11G11B10F:
@@ -288,6 +291,7 @@ public:
 #ifndef PRISMA_GLES
         glEnable(GL_PRIMITIVE_RESTART_FIXED_INDEX);
         glEnable(GL_PROGRAM_POINT_SIZE);
+        glClipControl(GL_LOWER_LEFT, GL_ZERO_TO_ONE);
 #endif
     }
 
@@ -348,7 +352,29 @@ public:
                 desc.stage == ShaderStage::Vertex ? GL_VERTEX_SHADER : GL_FRAGMENT_SHADER);
         label(GL_SHADER, shader.id, desc.debugName);
         const char* source = desc.source;
-        glShaderSource(shader.id, 1, &source, nullptr);
+#ifdef PRISMA_GLES
+        if (desc.stage == ShaderStage::Vertex)
+        {
+            GLint versionLine = 0;
+            if (strncmp(source, "#version", 8) == 0)
+            {
+                const char* end = strchr(source, '\n');
+                versionLine = static_cast<GLint>(end ? end - source + 1 : strlen(source));
+            }
+            const char* parts[4] = {
+                source,
+                versionLine > 0 ? "#define main prismaUserMain\n#line 2\n"
+                                : "#define main prismaUserMain\n#line 1\n",
+                source + versionLine,
+                "\n#undef main\nvoid main()\n{\n    prismaUserMain();\n"
+                "    gl_Position.z = 2.0 * gl_Position.z - gl_Position.w;\n}\n",
+            };
+            const GLint lengths[4] = { versionLine, -1, -1, -1 };
+            glShaderSource(shader.id, 4, parts, lengths);
+        }
+        else
+#endif
+            glShaderSource(shader.id, 1, &source, nullptr);
         glCompileShader(shader.id);
 
         GLint compiled = GL_FALSE;
@@ -591,6 +617,7 @@ public:
         indexBuffer_ = BufferHandle();
         vertexDirty_ = true;
         indexDirty_ = true;
+        state_.framebufferSrgb(passOffscreen_);
         passWidth_ = width;
         passHeight_ = height;
         state_.viewport(0, 0, static_cast<std::int32_t>(width), static_cast<std::int32_t>(height));

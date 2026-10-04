@@ -65,6 +65,18 @@ void GLState::scissorTest(bool enabled)
         glDisable(GL_SCISSOR_TEST);
 }
 
+void GLState::framebufferSrgb(bool enabled)
+{
+#ifdef PRISMA_GLES
+    (void) enabled;
+#else
+    if (same(kFramebufferSrgb, framebufferSrgb_, enabled)) return;
+    if (enabled) glEnable(GL_FRAMEBUFFER_SRGB);
+    else
+        glDisable(GL_FRAMEBUFFER_SRGB);
+#endif
+}
+
 void GLState::scissor(std::int32_t x, std::int32_t y, std::int32_t width, std::int32_t height)
 {
     if ((known_ & kScissor) && scissor_[0] == x && scissor_[1] == y && scissor_[2] == width &&
