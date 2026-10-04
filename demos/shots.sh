@@ -37,6 +37,9 @@ done <<LIST
 15_soldier soldier 10
 16_tessellation tessellation 10
 17_point_sprites point_sprites 10
+18_cascaded_shadows cascaded_shadows 10
+19_variance_shadows variance_shadows 10
+20_contact_hardening contact_hardening 10
 21_pn_triangles pn_triangles 10
 22_displacement displacement 10
 23_fluid fluid 400

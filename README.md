@@ -98,6 +98,14 @@ Numbered, one concept each. Run any of them on Vulkan with the `vulkan` argument
 | `15_soldier` | animated skinned characters |
 | `16_tessellation` | a Bezier surface on the tessellator |
 | `17_point_sprites` | a geometry shader turns points into quads |
+| `18_cascaded_shadows` | four shadow cascades over a power plant (C tints the cascades, T switches scene) |
+| `19_variance_shadows` | blurred depth moments and Chebyshev shadows (up and down change the blur) |
+| `20_contact_hardening` | soft shadows that widen with distance from the caster (up and down change the light size) |
+| `21_pn_triangles` | curved PN triangles on the tessellator (up and down, W, P) |
+| `22_displacement` | displacement mapping with crack-free tessellation levels (up and down, W) |
+| `23_fluid` | a 2D smoothed-particle hydrodynamics fluid in compute shaders |
+| `24_nbody` | 8192 bodies attracting each other, shared-memory tiles in compute |
+| `25_oit` | order-independent transparency with per-pixel linked lists (O toggles) |
 
 See [demos/README.md](demos/README.md) for pictures of each demo. The demos that load meshes and textures read them from a media folder: set `PRISMA_MEDIA` or the CMake option `PRISMA_MEDIA_DIR`. A demo whose feature is missing on the GPU prints a line and exits.
 
