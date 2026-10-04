@@ -26,6 +26,7 @@ struct GLBuffer
 struct GLShader
 {
     GLuint id = 0;
+    ShaderStage stage = ShaderStage::Vertex;
 };
 
 struct GLTexture
@@ -61,6 +62,7 @@ struct GLFramebuffer
     TargetFormats formats;
 };
 
+const GLenum kStorageBufferOffsetAlignment = 0x90DF;
 const GLenum kTextureMaxAnisotropy = 0x84FE;
 const GLenum kMaxTextureMaxAnisotropy = 0x84FF;
 
@@ -282,6 +284,7 @@ struct GLPipeline
 {
     GLuint program = 0;
     GLuint vertexArray = 0;
+    bool compute = false;
     GLenum topology = GL_TRIANGLES;
     VertexBufferLayout vertexBuffers[PipelineDesc::kMaxVertexBuffers];
     std::uint32_t vertexBufferCount = 0;
@@ -550,6 +553,19 @@ public:
         copyImage_ = true;
 #endif
         caps_.compressedTextureCopy = copyImage_;
+        caps_.indirectDraw = caps_.compute;
+        if (caps_.compute)
+        {
+            GLint vertexBlocks = 0;
+            GLint fragmentBlocks = 0;
+            glGetIntegerv(GL_MAX_VERTEX_SHADER_STORAGE_BLOCKS, &vertexBlocks);
+            glGetIntegerv(GL_MAX_FRAGMENT_SHADER_STORAGE_BLOCKS, &fragmentBlocks);
+            caps_.storageBuffersInGraphics =
+                    vertexBlocks >= static_cast<GLint>(PipelineDesc::kMaxStorageBuffers) &&
+                    fragmentBlocks >= static_cast<GLint>(PipelineDesc::kMaxStorageBuffers);
+            glGetIntegerv(kStorageBufferOffsetAlignment, &value);
+            caps_.storageBufferOffsetAlignment = static_cast<std::uint32_t>(value);
+        }
 #ifdef PRISMA_GLES
         caps_.timerQueries = glESExt::EXT_disjoint_timer_query;
 #else
@@ -597,6 +613,12 @@ public:
     BufferHandle createBuffer(const BufferDesc& desc) override
     {
         if (desc.size == 0) return BufferHandle();
+        if ((desc.usage == BufferUsage::Storage || desc.usage == BufferUsage::Indirect) &&
+                !caps_.compute)
+        {
+            log("createBuffer: storage and indirect buffers are not supported");
+            return BufferHandle();
+        }
 
         GLBuffer buffer;
         buffer.size = desc.size;
@@ -607,6 +629,93 @@ public:
         glBufferData(target, desc.size, desc.data, toGLUpdate(desc.update));
         label(GL_BUFFER, buffer.id, desc.debugName);
         return handleCast<BufferHandle>(buffers_.insert(buffer));
+    }
+
+    PipelineHandle createComputePipeline(const ComputePipelineDesc& desc) override
+    {
+        const GLShader* shader = shaders_.get(handleCast<ShaderSlot>(desc.shader));
+        if (!caps_.compute || !shader || shader->stage != ShaderStage::Compute ||
+                desc.uniformBlockCount > ComputePipelineDesc::kMaxUniformBlocks ||
+                desc.textureCount > ComputePipelineDesc::kMaxTextures ||
+                desc.storageBufferCount > ComputePipelineDesc::kMaxStorageBuffers ||
+                desc.storageTextureCount > ComputePipelineDesc::kMaxStorageTextures)
+        {
+            log("createComputePipeline: compute not supported, invalid shader or too many "
+                "bindings");
+            return PipelineHandle();
+        }
+
+        GLPipeline pipeline;
+        pipeline.compute = true;
+        pipeline.program = glCreateProgram();
+        glAttachShader(pipeline.program, shader->id);
+        glLinkProgram(pipeline.program);
+        glDetachShader(pipeline.program, shader->id);
+        GLint linked = GL_FALSE;
+        glGetProgramiv(pipeline.program, GL_LINK_STATUS, &linked);
+        if (!linked)
+        {
+            char message[1024];
+            glGetProgramInfoLog(pipeline.program, sizeof(message), nullptr, message);
+            log(message);
+            glDeleteProgram(pipeline.program);
+            return PipelineHandle();
+        }
+        label(GL_PROGRAM, pipeline.program, desc.debugName);
+
+        for (std::uint32_t i = 0; i < desc.uniformBlockCount; ++i)
+        {
+            const GLuint index =
+                    glGetUniformBlockIndex(pipeline.program, desc.uniformBlocks[i].name);
+            if (index == GL_INVALID_INDEX)
+            {
+                log("createComputePipeline: uniform block not found in the shader");
+                continue;
+            }
+            glUniformBlockBinding(pipeline.program, index, desc.uniformBlocks[i].slot);
+        }
+        state_.useProgram(pipeline.program);
+        for (std::uint32_t i = 0; i < desc.textureCount; ++i)
+        {
+            const GLint location = glGetUniformLocation(pipeline.program, desc.textures[i].name);
+            if (location < 0)
+            {
+                log("createComputePipeline: texture not found in the shader");
+                continue;
+            }
+            glUniform1i(location, static_cast<GLint>(desc.textures[i].slot));
+        }
+        bool mapped =
+                mapStorageBuffers(pipeline.program, desc.storageBuffers, desc.storageBufferCount);
+        for (std::uint32_t i = 0; mapped && i < desc.storageTextureCount; ++i)
+        {
+            const StorageBinding& binding = desc.storageTextures[i];
+            const GLint location = glGetUniformLocation(pipeline.program, binding.name);
+            if (location < 0)
+            {
+                log("createComputePipeline: storage texture not found in the shader");
+                continue;
+            }
+#ifdef PRISMA_GLES
+            GLint unit = -1;
+            glGetUniformiv(pipeline.program, location, &unit);
+            if (unit != static_cast<GLint>(binding.slot))
+            {
+                log("createComputePipeline: on OpenGL ES a storage texture must declare "
+                    "layout(binding = slot)");
+                mapped = false;
+            }
+#else
+            glUniform1i(location, static_cast<GLint>(binding.slot));
+#endif
+        }
+        if (!mapped)
+        {
+            state_.programDeleted(pipeline.program);
+            glDeleteProgram(pipeline.program);
+            return PipelineHandle();
+        }
+        return handleCast<PipelineHandle>(pipelines_.insert(pipeline));
     }
 
     void updateBuffer(BufferHandle handle, std::uint32_t offset, const void* data,
@@ -631,9 +740,16 @@ public:
     {
         if (!desc.source) return ShaderHandle();
 
+        if (desc.stage == ShaderStage::Compute && !caps_.compute)
+        {
+            log("createShader: compute shaders are not supported");
+            return ShaderHandle();
+        }
         GLShader shader;
-        shader.id = glCreateShader(
-                desc.stage == ShaderStage::Vertex ? GL_VERTEX_SHADER : GL_FRAGMENT_SHADER);
+        shader.stage = desc.stage;
+        shader.id = glCreateShader(desc.stage == ShaderStage::Vertex     ? GL_VERTEX_SHADER
+                                   : desc.stage == ShaderStage::Fragment ? GL_FRAGMENT_SHADER
+                                                                         : GL_COMPUTE_SHADER);
         label(GL_SHADER, shader.id, desc.debugName);
         const char* source = desc.source;
 #ifdef PRISMA_GLES
@@ -695,6 +811,13 @@ public:
         {
             log("createTexture: a multisampled texture must be a 2D render target only, with one "
                 "mip, no data and a supported sample count");
+            return TextureHandle();
+        }
+
+        if ((desc.usage & kTextureStorage) &&
+                (!caps_.compute || desc.samples != 1 || !isStorageFormat(desc.format, caps_.gles)))
+        {
+            log("createTexture: this format cannot be used as a storage texture");
             return TextureHandle();
         }
 
@@ -922,6 +1045,8 @@ public:
         if (!vertex || !fragment || desc.attributeCount > PipelineDesc::kMaxAttributes ||
                 desc.uniformBlockCount > PipelineDesc::kMaxUniformBlocks ||
                 desc.textureCount > PipelineDesc::kMaxTextures ||
+                desc.storageBufferCount > PipelineDesc::kMaxStorageBuffers ||
+                (desc.storageBufferCount > 0 && !caps_.storageBuffersInGraphics) ||
                 desc.targets.colorCount > TargetFormats::kMaxColors || !validVertexInput(desc))
         {
             log("createPipeline: invalid shader handle or too many attributes or uniform blocks");
@@ -1005,6 +1130,12 @@ public:
                 continue;
             }
             glUniform1i(location, static_cast<GLint>(binding.slot));
+        }
+        if (!mapStorageBuffers(pipeline.program, desc.storageBuffers, desc.storageBufferCount))
+        {
+            state_.programDeleted(pipeline.program);
+            glDeleteProgram(pipeline.program);
+            return PipelineHandle();
         }
         glGenVertexArrays(1, &pipeline.vertexArray);
         state_.bindVertexArray(pipeline.vertexArray);
@@ -1182,6 +1313,11 @@ public:
     {
         std::uint32_t width = 0;
         std::uint32_t height = 0;
+        if (computeActive_)
+        {
+            log("beginRenderPass: a compute pass is still open");
+            return;
+        }
         passActive_ = false;
         passOffscreen_ = desc.colorCount > 0 || desc.depth.texture.valid();
         passColorCount_ = desc.colorCount;
@@ -1387,6 +1523,136 @@ public:
                     reinterpret_cast<const void*>(offset), static_cast<GLsizei>(instanceCount));
     }
 
+    void drawIndirect(BufferHandle handle, std::uint32_t offset, std::uint32_t drawCount,
+            std::uint32_t stride) override
+    {
+        const GLBuffer* arguments =
+                indirectBuffer(handle, offset, drawCount, stride, sizeof(DrawIndirectCommand));
+        if (!arguments) return;
+        const GLPipeline* pipeline = prepareDraw(0, 1);
+        if (!pipeline) return;
+
+        const std::size_t step = stride ? stride : sizeof(DrawIndirectCommand);
+        glBindBuffer(GL_DRAW_INDIRECT_BUFFER, arguments->id);
+#ifdef PRISMA_GLES
+        for (std::uint32_t i = 0; i < drawCount; ++i)
+            glDrawArraysIndirect(pipeline->topology,
+                    reinterpret_cast<const void*>(offset + i * step));
+#else
+        glMultiDrawArraysIndirect(pipeline->topology,
+                reinterpret_cast<const void*>(static_cast<std::size_t>(offset)),
+                static_cast<GLsizei>(drawCount), static_cast<GLsizei>(step));
+#endif
+    }
+
+    void drawIndexedIndirect(BufferHandle handle, std::uint32_t offset, std::uint32_t drawCount,
+            std::uint32_t stride) override
+    {
+        const GLBuffer* arguments = indirectBuffer(handle, offset, drawCount, stride,
+                sizeof(DrawIndexedIndirectCommand));
+        if (!arguments) return;
+        const GLPipeline* pipeline = prepareDraw(0, 1);
+        if (!pipeline) return;
+
+        const GLBuffer* indices = buffers_.get(handleCast<BufferSlot>(indexBuffer_));
+        if (!indices || indices->usage != BufferUsage::Index)
+        {
+            log("drawIndexedIndirect: no valid index buffer bound");
+            return;
+        }
+        if (indexDirty_)
+        {
+            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, indices->id);
+            indexDirty_ = false;
+        }
+        const GLenum type =
+                indices->indexFormat == IndexFormat::UInt32 ? GL_UNSIGNED_INT : GL_UNSIGNED_SHORT;
+        const std::size_t step = stride ? stride : sizeof(DrawIndexedIndirectCommand);
+        glBindBuffer(GL_DRAW_INDIRECT_BUFFER, arguments->id);
+#ifdef PRISMA_GLES
+        for (std::uint32_t i = 0; i < drawCount; ++i)
+            glDrawElementsIndirect(pipeline->topology, type,
+                    reinterpret_cast<const void*>(offset + i * step));
+#else
+        glMultiDrawElementsIndirect(pipeline->topology, type,
+                reinterpret_cast<const void*>(static_cast<std::size_t>(offset)),
+                static_cast<GLsizei>(drawCount), static_cast<GLsizei>(step));
+#endif
+    }
+
+    void beginComputePass() override
+    {
+        if (passActive_ || computeActive_ || !caps_.compute)
+        {
+            log("beginComputePass: compute not supported, or another pass is still open");
+            return;
+        }
+        computeActive_ = true;
+        pipeline_ = PipelineHandle();
+    }
+
+    void bindStorageBuffer(std::uint32_t slot, BufferHandle handle, std::uint32_t offset,
+            std::uint32_t size) override
+    {
+        const GLBuffer* buffer = buffers_.get(handleCast<BufferSlot>(handle));
+        if (!buffer || buffer->usage != BufferUsage::Storage || size == 0 ||
+                static_cast<std::uint64_t>(offset) + size > buffer->size ||
+                slot >= PipelineDesc::kMaxStorageBuffers ||
+                offset % caps_.storageBufferOffsetAlignment != 0)
+        {
+            log("bindStorageBuffer: invalid buffer handle, range, alignment or slot");
+            return;
+        }
+        glBindBufferRange(GL_SHADER_STORAGE_BUFFER, slot, buffer->id, offset, size);
+    }
+
+    void bindStorageTexture(std::uint32_t slot, TextureHandle handle, std::uint32_t mip,
+            StorageAccess access) override
+    {
+        const GLTexture* texture = textures_.get(handleCast<TextureSlot>(handle));
+        if (!texture || !(texture->usage & kTextureStorage) || mip >= texture->mipLevels ||
+                slot >= ComputePipelineDesc::kMaxStorageTextures)
+        {
+            log("bindStorageTexture: invalid slot or mip, or the texture was not created with "
+                "kTextureStorage");
+            return;
+        }
+        const GLenum mode = access == StorageAccess::Read    ? GL_READ_ONLY
+                            : access == StorageAccess::Write ? GL_WRITE_ONLY
+                                                             : GL_READ_WRITE;
+        glBindImageTexture(slot, texture->id, static_cast<GLint>(mip),
+                texture->type != TextureType::Texture2D ? GL_TRUE : GL_FALSE, 0, mode,
+                toGLFormat(texture->format).internal);
+    }
+
+    void dispatch(std::uint32_t x, std::uint32_t y, std::uint32_t z) override
+    {
+        if (!prepareDispatch()) return;
+        glDispatchCompute(x, y, z);
+        glMemoryBarrier(GL_ALL_BARRIER_BITS);
+    }
+
+    void dispatchIndirect(BufferHandle handle, std::uint32_t offset) override
+    {
+        const GLBuffer* arguments = buffers_.get(handleCast<BufferSlot>(handle));
+        if (!arguments ||
+                (arguments->usage != BufferUsage::Indirect &&
+                        arguments->usage != BufferUsage::Storage) ||
+                offset % 4 != 0 ||
+                static_cast<std::uint64_t>(offset) + sizeof(DispatchIndirectCommand) >
+                        arguments->size)
+        {
+            log("dispatchIndirect: invalid buffer or offset");
+            return;
+        }
+        if (!prepareDispatch()) return;
+        glBindBuffer(GL_DISPATCH_INDIRECT_BUFFER, arguments->id);
+        glDispatchComputeIndirect(offset);
+        glMemoryBarrier(GL_ALL_BARRIER_BITS);
+    }
+
+    void endComputePass() override { computeActive_ = false; }
+
     void endRenderPass() override
     {
         if (!passActive_) return;
@@ -1527,6 +1793,64 @@ private:
         if (family == FormatFamily::BC) return caps_.textureBC;
         if (family == FormatFamily::ETC2) return caps_.textureETC2;
         return caps_.textureASTC;
+    }
+
+    bool mapStorageBuffers(GLuint program, const StorageBinding* blocks, std::uint32_t count)
+    {
+        for (std::uint32_t i = 0; i < count; ++i)
+        {
+            const GLuint index =
+                    glGetProgramResourceIndex(program, GL_SHADER_STORAGE_BLOCK, blocks[i].name);
+            if (index == GL_INVALID_INDEX)
+            {
+                log("createPipeline: storage block not found in the shaders");
+                continue;
+            }
+#ifdef PRISMA_GLES
+            const GLenum property = GL_BUFFER_BINDING;
+            GLint binding = -1;
+            glGetProgramResourceiv(program, GL_SHADER_STORAGE_BLOCK, index, 1, &property, 1,
+                    nullptr, &binding);
+            if (binding != static_cast<GLint>(blocks[i].slot))
+            {
+                log("createPipeline: on OpenGL ES a storage block must declare "
+                    "layout(binding = slot)");
+                return false;
+            }
+#else
+            glShaderStorageBlockBinding(program, index, blocks[i].slot);
+#endif
+        }
+        return true;
+    }
+
+    const GLBuffer* indirectBuffer(BufferHandle handle, std::uint32_t offset,
+            std::uint32_t drawCount, std::uint32_t stride, std::uint32_t commandSize)
+    {
+        const GLBuffer* arguments = buffers_.get(handleCast<BufferSlot>(handle));
+        const bool usable = caps_.indirectDraw && arguments &&
+                            (arguments->usage == BufferUsage::Indirect ||
+                                    arguments->usage == BufferUsage::Storage);
+        if (!validIndirect(usable, usable ? arguments->size : 0, offset, drawCount, stride,
+                    commandSize))
+        {
+            log("drawIndirect: indirect draws not supported, or invalid buffer, offset, count or "
+                "stride");
+            return nullptr;
+        }
+        return arguments;
+    }
+
+    const GLPipeline* prepareDispatch()
+    {
+        const GLPipeline* pipeline = pipelines_.get(handleCast<PipelineSlot>(pipeline_));
+        if (!computeActive_ || !pipeline || !pipeline->compute)
+        {
+            log("dispatch: no active compute pass or no compute pipeline bound in this pass");
+            return nullptr;
+        }
+        state_.useProgram(pipeline->program);
+        return pipeline;
     }
 
     static bool hasExtension(const char* name)
@@ -1796,6 +2120,10 @@ private:
             case BufferUsage::Uniform:
                 state_.bindUniformBuffer(buffer.id);
                 return GL_UNIFORM_BUFFER;
+            case BufferUsage::Storage:
+            case BufferUsage::Indirect:
+                glBindBuffer(GL_COPY_WRITE_BUFFER, buffer.id);
+                return GL_COPY_WRITE_BUFFER;
         }
         return GL_ARRAY_BUFFER;
     }
@@ -1803,7 +2131,7 @@ private:
     const GLPipeline* prepareDraw(std::uint64_t vertexEnd, std::uint32_t instanceCount)
     {
         const GLPipeline* pipeline = pipelines_.get(handleCast<PipelineSlot>(pipeline_));
-        if (!passActive_ || !pipeline || instanceCount == 0)
+        if (!passActive_ || !pipeline || pipeline->compute || instanceCount == 0)
         {
             log("draw: no active render pass, no pipeline bound in this pass or no instances");
             return nullptr;
@@ -1818,7 +2146,8 @@ private:
         for (std::uint32_t i = 0; i < pipeline->vertexBufferCount; ++i)
         {
             buffers[i] = buffers_.get(handleCast<BufferSlot>(vertexBuffers_[i]));
-            if (!buffers[i] || buffers[i]->usage != BufferUsage::Vertex)
+            if (!buffers[i] || (buffers[i]->usage != BufferUsage::Vertex &&
+                                       buffers[i]->usage != BufferUsage::Storage))
             {
                 log("draw: a vertex buffer the pipeline needs is not bound");
                 return nullptr;
@@ -1919,6 +2248,7 @@ private:
     ct::Vector<GLFramebuffer> framebuffers_;
     GLuint colorResolves_[RenderPassDesc::kMaxColorTargets] = {};
     GLuint copyFramebuffers_[2] = { 0, 0 };
+    bool computeActive_ = false;
     bool copyImage_ = false;
     GLuint depthResolve_ = 0;
     GLuint passFramebuffer_ = 0;

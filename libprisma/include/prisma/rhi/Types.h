@@ -74,7 +74,9 @@ enum class BufferUsage : std::uint8_t
 {
     Vertex,
     Index,
-    Uniform
+    Uniform,
+    Storage,
+    Indirect
 };
 
 enum class IndexFormat : std::uint8_t
@@ -140,7 +142,8 @@ enum class TextureFormat : std::uint8_t
 enum TextureUsage : std::uint32_t
 {
     kTextureSampled = 1u << 0,
-    kTextureRenderTarget = 1u << 1
+    kTextureRenderTarget = 1u << 1,
+    kTextureStorage = 1u << 2
 };
 
 enum class TextureType : std::uint8_t
@@ -242,7 +245,8 @@ struct SamplerDesc
 enum class ShaderStage : std::uint8_t
 {
     Vertex,
-    Fragment
+    Fragment,
+    Compute
 };
 
 struct ShaderDesc
@@ -394,6 +398,65 @@ struct TextureBinding
     std::uint32_t slot = 0;
 };
 
+struct StorageBinding
+{
+    const char* name = nullptr;
+    std::uint32_t slot = 0;
+};
+
+enum class StorageAccess : std::uint8_t
+{
+    Read,
+    Write,
+    ReadWrite
+};
+
+struct DrawIndirectCommand
+{
+    std::uint32_t vertexCount = 0;
+    std::uint32_t instanceCount = 1;
+    std::uint32_t firstVertex = 0;
+    std::uint32_t firstInstance = 0;
+};
+
+struct DrawIndexedIndirectCommand
+{
+    std::uint32_t indexCount = 0;
+    std::uint32_t instanceCount = 1;
+    std::uint32_t firstIndex = 0;
+    std::int32_t baseVertex = 0;
+    std::uint32_t firstInstance = 0;
+};
+
+struct DispatchIndirectCommand
+{
+    std::uint32_t x = 1;
+    std::uint32_t y = 1;
+    std::uint32_t z = 1;
+};
+
+struct ComputePipelineDesc
+{
+    enum : std::uint32_t
+    {
+        kMaxUniformBlocks = 4,
+        kMaxTextures = 8,
+        kMaxStorageBuffers = 4,
+        kMaxStorageTextures = 4
+    };
+
+    ShaderHandle shader;
+    UniformBlockBinding uniformBlocks[kMaxUniformBlocks];
+    std::uint32_t uniformBlockCount = 0;
+    TextureBinding textures[kMaxTextures];
+    std::uint32_t textureCount = 0;
+    StorageBinding storageBuffers[kMaxStorageBuffers];
+    std::uint32_t storageBufferCount = 0;
+    StorageBinding storageTextures[kMaxStorageTextures];
+    std::uint32_t storageTextureCount = 0;
+    const char* debugName = nullptr;
+};
+
 struct PipelineDesc
 {
     enum : std::uint32_t
@@ -401,7 +464,8 @@ struct PipelineDesc
         kMaxAttributes = 16,
         kMaxVertexBuffers = 4,
         kMaxUniformBlocks = 4,
-        kMaxTextures = 8
+        kMaxTextures = 8,
+        kMaxStorageBuffers = 4
     };
 
     ShaderHandle vertexShader;
@@ -418,6 +482,8 @@ struct PipelineDesc
 
     TextureBinding textures[kMaxTextures];
     std::uint32_t textureCount = 0;
+    StorageBinding storageBuffers[kMaxStorageBuffers];
+    std::uint32_t storageBufferCount = 0;
 
     bool depthTest = false;
     bool depthWrite = true;

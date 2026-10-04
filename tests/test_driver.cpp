@@ -9,6 +9,7 @@
 #include "array.frag.h"
 #include "cube.frag.h"
 #include "cube_array.frag.h"
+#include "fill.comp.h"
 #include "flat.frag.h"
 #include "flat.vert.h"
 #include "instanced.frag.h"
@@ -19,9 +20,11 @@
 #include "red.frag.h"
 #include "scaled.frag.h"
 #include "shadow.frag.h"
+#include "storage.frag.h"
 #include "textured.frag.h"
 #include "textured.vert.h"
 #include "two_targets.frag.h"
+#include "vertices.comp.h"
 #include "volume.frag.h"
 #define SPIRV(name) name, static_cast<std::uint32_t>(sizeof(name))
 #else
@@ -31,9 +34,11 @@
 #ifdef PRISMA_GLES
 #define SHADER_HEADER "#version 300 es\nprecision highp float;\n"
 #define SHADER_HEADER_320 "#version 320 es\nprecision highp float;\n"
+#define SHADER_HEADER_310 "#version 310 es\nprecision highp float;\n"
 #else
 #define SHADER_HEADER "#version 460 core\n"
 #define SHADER_HEADER_320 SHADER_HEADER
+#define SHADER_HEADER_310 SHADER_HEADER
 #endif
 
 namespace
@@ -197,6 +202,37 @@ const char* kCubeArrayFragmentSource =
                           "uniform highp samplerCubeArray uTexture;\n"
                           "out vec4 oColor;\n"
                           "void main() { oColor = texture(uTexture, uPlace); }\n";
+
+const char* kFillComputeSource = SHADER_HEADER_310
+        "layout(local_size_x = 8, local_size_y = 8) in;\n"
+        "layout(std140) uniform Params { vec4 uColor; vec4 uPlace; };\n"
+        "layout(rgba8, binding = 0) uniform highp writeonly image2D uImage;\n"
+        "void main() { imageStore(uImage, ivec2(gl_GlobalInvocationID.xy), uColor); }\n";
+
+const char* kVerticesComputeSource =
+        SHADER_HEADER_310 "layout(local_size_x = 1) in;\n"
+                          "layout(std430, binding = 0) buffer Vertices { vec4 uPositions[3]; };\n"
+                          "layout(std430, binding = 1) buffer Arguments { uint uArguments[4]; };\n"
+                          "void main()\n"
+                          "{\n"
+                          "    uPositions[0] = vec4(-1.0, -1.0, 0.0, 1.0);\n"
+                          "    uPositions[1] = vec4(3.0, -1.0, 0.0, 1.0);\n"
+                          "    uPositions[2] = vec4(-1.0, 3.0, 0.0, 1.0);\n"
+                          "    uArguments[0] = 3u;\n"
+                          "    uArguments[1] = 1u;\n"
+                          "    uArguments[2] = 0u;\n"
+                          "    uArguments[3] = 0u;\n"
+                          "}\n";
+
+const char* kStorageVertexSource =
+        SHADER_HEADER_310 "layout(location = 0) in vec2 aPosition;\n"
+                          "layout(std140) uniform Params { vec4 uColor; vec4 uPlace; };\n"
+                          "void main() { gl_Position = vec4(aPosition, uPlace.z, 1.0); }\n";
+
+const char* kStorageFragmentSource = SHADER_HEADER_310
+        "layout(std430, binding = 1) readonly buffer Colors { vec4 uColors[2]; };\n"
+        "out vec4 oColor;\n"
+        "void main() { oColor = uColors[1]; }\n";
 
 const char* kVolumeFragmentSource =
         SHADER_HEADER "in vec2 vUv;\n"
@@ -2310,6 +2346,230 @@ int main(int argc, char** argv)
             driver->destroy(copied);
             driver->destroy(copySource);
         }
+
+        if (driver->caps().compute)
+        {
+            const ShaderHandle fillShader =
+                    makeShader(driver, ShaderStage::Compute, kFillComputeSource, SPIRV(fill_comp));
+            const ShaderHandle verticesShader = makeShader(driver, ShaderStage::Compute,
+                    kVerticesComputeSource, SPIRV(vertices_comp));
+            CHECK(fillShader.valid());
+            CHECK(verticesShader.valid());
+
+            ComputePipelineDesc fillDesc;
+            fillDesc.shader = fillShader;
+            fillDesc.uniformBlockCount = 1;
+            fillDesc.uniformBlocks[0].name = "Params";
+            fillDesc.uniformBlocks[0].slot = 2;
+            fillDesc.storageTextureCount = 1;
+            fillDesc.storageTextures[0].name = "uImage";
+            fillDesc.storageTextures[0].slot = 0;
+            const PipelineHandle fillPipeline = driver->createComputePipeline(fillDesc);
+            ComputePipelineDesc verticesDesc;
+            verticesDesc.shader = verticesShader;
+            verticesDesc.storageBufferCount = 2;
+            verticesDesc.storageBuffers[0].name = "Vertices";
+            verticesDesc.storageBuffers[0].slot = 0;
+            verticesDesc.storageBuffers[1].name = "Arguments";
+            verticesDesc.storageBuffers[1].slot = 1;
+            const PipelineHandle verticesPipeline = driver->createComputePipeline(verticesDesc);
+            CHECK(fillPipeline.valid());
+            CHECK(verticesPipeline.valid());
+            messages = 0;
+            fillDesc.shader = flatFragment;
+            CHECK(!driver->createComputePipeline(fillDesc).valid());
+            CHECK(messages == 1);
+
+            TextureDesc filledDesc;
+            filledDesc.width = 8;
+            filledDesc.height = 8;
+            filledDesc.usage = kTextureSampled | kTextureStorage;
+            const TextureHandle filled = driver->createTexture(filledDesc);
+            CHECK(filled.valid());
+            messages = 0;
+            filledDesc.format = TextureFormat::RGBA8Srgb;
+            CHECK(!driver->createTexture(filledDesc).valid());
+            CHECK(messages == 1);
+
+            BufferDesc gpuVerticesDesc;
+            gpuVerticesDesc.usage = BufferUsage::Storage;
+            gpuVerticesDesc.size = sizeof(float) * 12;
+            const BufferHandle gpuVertices = driver->createBuffer(gpuVerticesDesc);
+            BufferDesc gpuArgumentsDesc;
+            gpuArgumentsDesc.usage = BufferUsage::Storage;
+            gpuArgumentsDesc.size = sizeof(DrawIndirectCommand);
+            const BufferHandle gpuArguments = driver->createBuffer(gpuArgumentsDesc);
+            CHECK(gpuVertices.valid());
+            CHECK(gpuArguments.valid());
+
+            DrawIndexedIndirectCommand halves[2];
+            halves[0].indexCount = 3;
+            halves[1].indexCount = 3;
+            halves[1].firstIndex = 3;
+            BufferDesc halvesDesc;
+            halvesDesc.usage = BufferUsage::Indirect;
+            halvesDesc.size = sizeof(halves);
+            halvesDesc.data = halves;
+            const BufferHandle halvesBuffer = driver->createBuffer(halvesDesc);
+            const DispatchIndirectCommand once;
+            BufferDesc onceDesc;
+            onceDesc.usage = BufferUsage::Indirect;
+            onceDesc.size = sizeof(once);
+            onceDesc.data = &once;
+            const BufferHandle onceBuffer = driver->createBuffer(onceDesc);
+            CHECK(halvesBuffer.valid());
+            CHECK(onceBuffer.valid());
+
+            PipelineDesc wideDesc = flatPipelineDesc;
+            wideDesc.targets = TargetFormats();
+            wideDesc.blend = false;
+            wideDesc.depthTest = false;
+            wideDesc.vertexBuffers[0].stride = sizeof(float) * 4;
+            const PipelineHandle wide = driver->createPipeline(wideDesc);
+            CHECK(wide.valid());
+
+            const float kTwoColors[8] = { 1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f };
+            BufferDesc colorsDesc;
+            colorsDesc.usage = BufferUsage::Storage;
+            colorsDesc.size = sizeof(kTwoColors);
+            colorsDesc.data = kTwoColors;
+            const BufferHandle colors = driver->createBuffer(colorsDesc);
+            CHECK(colors.valid());
+            ShaderHandle storageVertex;
+            ShaderHandle storageFragment;
+            PipelineHandle storagePipeline;
+            if (driver->caps().storageBuffersInGraphics)
+            {
+                storageVertex = makeShader(driver, ShaderStage::Vertex, kStorageVertexSource,
+                        SPIRV(flat_vert));
+                storageFragment = makeShader(driver, ShaderStage::Fragment, kStorageFragmentSource,
+                        SPIRV(storage_frag));
+                PipelineDesc storageDesc = wideDesc;
+                storageDesc.vertexBuffers[0].stride = sizeof(float) * 2;
+                storageDesc.vertexShader = storageVertex;
+                storageDesc.fragmentShader = storageFragment;
+                storageDesc.storageBufferCount = 1;
+                storageDesc.storageBuffers[0].name = "Colors";
+                storageDesc.storageBuffers[0].slot = 1;
+                storagePipeline = driver->createPipeline(storageDesc);
+                CHECK(storagePipeline.valid());
+            }
+
+            messages = 0;
+            window_begin_frame(window);
+            driver->beginFrame();
+            driver->dispatch(1, 1, 1);
+            CHECK(messages == 1);
+            driver->bindStorageTexture(0, texture, 0, StorageAccess::Write);
+            CHECK(messages == 2);
+            messages = 0;
+
+            driver->beginComputePass();
+            driver->bindPipeline(fillPipeline);
+            driver->bindUniformBuffer(2, params, kParamGreen * stride, sizeof(Params));
+            driver->bindStorageTexture(0, filled, 0, StorageAccess::Write);
+            driver->dispatch(1, 1, 1);
+            driver->bindPipeline(verticesPipeline);
+            driver->bindStorageBuffer(0, gpuVertices, 0, sizeof(float) * 12);
+            driver->bindStorageBuffer(1, gpuArguments, 0, sizeof(DrawIndirectCommand));
+            driver->dispatch(1, 1, 1);
+            driver->bindPipeline(flat);
+            driver->dispatch(1, 1, 1);
+            CHECK(messages == 1);
+            messages = 0;
+            driver->endComputePass();
+
+            driver->beginRenderPass(black);
+            driver->bindPipeline(textured);
+            driver->bindVertexBuffer(0, buffer, 0);
+            driver->bindTexture(3, filled, nearest);
+            driver->draw(3, 0);
+            driver->endRenderPass();
+            CHECK(pixelIs(160, 120, 0, 255, 0));
+            CHECK(pixelIs(10, 10, 0, 255, 0));
+
+            driver->beginComputePass();
+            driver->bindPipeline(fillPipeline);
+            driver->bindUniformBuffer(2, params, kParamBlueMid * stride, sizeof(Params));
+            driver->bindStorageTexture(0, filled, 0, StorageAccess::Write);
+            driver->dispatchIndirect(onceBuffer, 0);
+            driver->endComputePass();
+
+            driver->beginRenderPass(black);
+            driver->bindPipeline(textured);
+            driver->bindVertexBuffer(0, buffer, 0);
+            driver->bindTexture(3, filled, nearest);
+            driver->draw(3, 0);
+            driver->endRenderPass();
+            CHECK(pixelIs(160, 120, 0, 0, 255));
+
+            driver->beginRenderPass(black);
+            driver->bindUniformBuffer(2, params, kParamRed * stride, sizeof(Params));
+            driver->bindPipeline(wide);
+            driver->bindVertexBuffer(0, gpuVertices, 0);
+            driver->drawIndirect(gpuArguments, 0, 1);
+            driver->endRenderPass();
+            CHECK(pixelIs(160, 120, 255, 0, 0));
+            CHECK(pixelIs(300, 10, 255, 0, 0));
+
+            driver->beginRenderPass(black);
+            driver->bindUniformBuffer(2, params, kParamGreen * stride, sizeof(Params));
+            driver->bindPipeline(flat);
+            driver->bindVertexBuffer(0, quad, 0);
+            driver->bindIndexBuffer(quadIndices);
+            driver->drawIndexedIndirect(halvesBuffer, 0, 2, sizeof(DrawIndexedIndirectCommand));
+            driver->endRenderPass();
+            CHECK(pixelIs(140, 40, 0, 255, 0));
+            CHECK(pixelIs(20, 200, 0, 255, 0));
+            CHECK(pixelIs(240, 120, 0, 0, 0));
+
+            driver->beginRenderPass(black);
+            driver->bindUniformBuffer(2, params, kParamGreen * stride, sizeof(Params));
+            driver->bindPipeline(flat);
+            driver->bindVertexBuffer(0, quad, 0);
+            driver->bindIndexBuffer(quadIndices);
+            driver->drawIndexedIndirect(halvesBuffer, sizeof(DrawIndexedIndirectCommand), 1);
+            CHECK(messages == 0);
+            driver->drawIndexedIndirect(halvesBuffer, sizeof(DrawIndexedIndirectCommand), 2);
+            CHECK(messages == 1);
+            messages = 0;
+            driver->endRenderPass();
+            CHECK(pixelIs(140, 40, 0, 0, 0));
+            CHECK(pixelIs(20, 200, 0, 255, 0));
+
+            if (storagePipeline.valid())
+            {
+                driver->beginRenderPass(black);
+                driver->bindUniformBuffer(2, params, kParamGreen * stride, sizeof(Params));
+                driver->bindStorageBuffer(1, colors, 0, sizeof(kTwoColors));
+                driver->bindPipeline(storagePipeline);
+                driver->bindVertexBuffer(0, buffer, 0);
+                driver->draw(3, 0);
+                driver->endRenderPass();
+                CHECK(pixelIs(160, 120, 0, 0, 255));
+            }
+            driver->endFrame();
+            driver->present();
+            CHECK(messages == 0);
+            if (messages) printf("unexpected: %s\n", lastMessage);
+
+            driver->destroy(storagePipeline);
+            driver->destroy(storageFragment);
+            driver->destroy(storageVertex);
+            driver->destroy(colors);
+            driver->destroy(wide);
+            driver->destroy(onceBuffer);
+            driver->destroy(halvesBuffer);
+            driver->destroy(gpuArguments);
+            driver->destroy(gpuVertices);
+            driver->destroy(filled);
+            driver->destroy(verticesPipeline);
+            driver->destroy(fillPipeline);
+            driver->destroy(verticesShader);
+            driver->destroy(fillShader);
+        }
+        printf("compute %d, indirect %d, storage buffers in graphics %d\n", driver->caps().compute,
+                driver->caps().indirectDraw, driver->caps().storageBuffersInGraphics);
 
         CHECK(driver->caps().occlusionQueries);
         const QueryHandle visibleQuery = driver->createQuery(QueryType::Occlusion);

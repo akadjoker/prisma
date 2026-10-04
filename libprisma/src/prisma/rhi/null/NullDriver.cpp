@@ -33,6 +33,12 @@ public:
         return handleCast<PipelineHandle>(pipelines_.insert(0));
     }
 
+    PipelineHandle createComputePipeline(const ComputePipelineDesc& desc) override
+    {
+        if (!shaders_.contains(handleCast<Slot>(desc.shader))) return PipelineHandle();
+        return handleCast<PipelineHandle>(pipelines_.insert(0));
+    }
+
     void updateBuffer(BufferHandle, std::uint32_t, const void*, std::uint32_t) override {}
     void updateTexture(TextureHandle, std::uint32_t, std::uint32_t, const void*) override {}
     void updateTextureRegion(TextureHandle, const TextureRegion&, const void*) override {}
@@ -80,7 +86,15 @@ public:
     void bindTexture(std::uint32_t, TextureHandle, SamplerHandle) override {}
     void draw(std::uint32_t, std::uint32_t, std::uint32_t) override {}
     void drawIndexed(std::uint32_t, std::uint32_t, std::uint32_t) override {}
+    void drawIndirect(BufferHandle, std::uint32_t, std::uint32_t, std::uint32_t) override {}
+    void drawIndexedIndirect(BufferHandle, std::uint32_t, std::uint32_t, std::uint32_t) override {}
     void endRenderPass() override {}
+    void beginComputePass() override {}
+    void bindStorageBuffer(std::uint32_t, BufferHandle, std::uint32_t, std::uint32_t) override {}
+    void bindStorageTexture(std::uint32_t, TextureHandle, std::uint32_t, StorageAccess) override {}
+    void dispatch(std::uint32_t, std::uint32_t, std::uint32_t) override {}
+    void dispatchIndirect(BufferHandle, std::uint32_t) override {}
+    void endComputePass() override {}
     void endFrame() override {}
     void present() override {}
     bool readPixels(const RenderTarget&, const Rect&, void*) override { return false; }

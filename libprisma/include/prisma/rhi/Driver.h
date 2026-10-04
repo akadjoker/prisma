@@ -17,6 +17,7 @@ public:
     virtual BufferHandle createBuffer(const BufferDesc& desc) = 0;
     virtual ShaderHandle createShader(const ShaderDesc& desc) = 0;
     virtual PipelineHandle createPipeline(const PipelineDesc& desc) = 0;
+    virtual PipelineHandle createComputePipeline(const ComputePipelineDesc& desc) = 0;
     virtual TextureHandle createTexture(const TextureDesc& desc) = 0;
     virtual SamplerHandle createSampler(const SamplerDesc& desc) = 0;
     virtual void updateBuffer(BufferHandle handle, std::uint32_t offset, const void* data,
@@ -57,7 +58,20 @@ public:
             std::uint32_t instanceCount = 1) = 0;
     virtual void drawIndexed(std::uint32_t indexCount, std::uint32_t firstIndex,
             std::uint32_t instanceCount = 1) = 0;
+    virtual void drawIndirect(BufferHandle arguments, std::uint32_t offset, std::uint32_t drawCount,
+            std::uint32_t stride = 0) = 0;
+    virtual void drawIndexedIndirect(BufferHandle arguments, std::uint32_t offset,
+            std::uint32_t drawCount, std::uint32_t stride = 0) = 0;
     virtual void endRenderPass() = 0;
+
+    virtual void beginComputePass() = 0;
+    virtual void bindStorageBuffer(std::uint32_t slot, BufferHandle handle, std::uint32_t offset,
+            std::uint32_t size) = 0;
+    virtual void bindStorageTexture(std::uint32_t slot, TextureHandle texture, std::uint32_t mip,
+            StorageAccess access) = 0;
+    virtual void dispatch(std::uint32_t x, std::uint32_t y, std::uint32_t z) = 0;
+    virtual void dispatchIndirect(BufferHandle arguments, std::uint32_t offset) = 0;
+    virtual void endComputePass() = 0;
     virtual void endFrame() = 0;
     virtual void present() = 0;
 

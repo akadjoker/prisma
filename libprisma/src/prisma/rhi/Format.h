@@ -132,6 +132,24 @@ inline bool validRegion(TextureFormat format, std::uint32_t levelWidth, std::uin
     return true;
 }
 
+inline bool isStorageFormat(TextureFormat format, bool gles)
+{
+    if (format == TextureFormat::RGBA8 || format == TextureFormat::RGBA16F) return true;
+    if (gles) return false;
+    return format == TextureFormat::R8 || format == TextureFormat::RG8 ||
+           format == TextureFormat::RGB10A2 || format == TextureFormat::R11G11B10F;
+}
+
+inline bool validIndirect(bool valid, std::uint32_t bufferSize, std::uint32_t offset,
+        std::uint32_t drawCount, std::uint32_t stride, std::uint32_t commandSize)
+{
+    const std::uint32_t step = stride ? stride : commandSize;
+    return valid && drawCount > 0 && step >= commandSize && step % 4 == 0 && offset % 4 == 0 &&
+           static_cast<std::uint64_t>(offset) + static_cast<std::uint64_t>(drawCount - 1) * step +
+                           commandSize <=
+                   bufferSize;
+}
+
 inline TextureRegion sourceRegion(const TextureCopy& copy)
 {
     TextureRegion region;
