@@ -17,6 +17,8 @@ public:
     virtual BufferHandle createBuffer(const BufferDesc& desc) = 0;
     virtual ShaderHandle createShader(const ShaderDesc& desc) = 0;
     virtual PipelineHandle createPipeline(const PipelineDesc& desc) = 0;
+    virtual void updateBuffer(BufferHandle handle, std::uint32_t offset, const void* data,
+            std::uint32_t size) = 0;
     virtual void destroy(BufferHandle handle) = 0;
     virtual void destroy(ShaderHandle handle) = 0;
     virtual void destroy(PipelineHandle handle) = 0;
@@ -25,7 +27,11 @@ public:
     virtual void beginRenderPass(const RenderPassDesc& desc) = 0;
     virtual void bindPipeline(PipelineHandle handle) = 0;
     virtual void bindVertexBuffer(BufferHandle handle, std::uint32_t offset) = 0;
+    virtual void bindIndexBuffer(BufferHandle handle, IndexFormat format) = 0;
+    virtual void bindUniformBuffer(std::uint32_t slot, BufferHandle handle, std::uint32_t offset,
+            std::uint32_t size) = 0;
     virtual void draw(std::uint32_t vertexCount, std::uint32_t firstVertex) = 0;
+    virtual void drawIndexed(std::uint32_t indexCount, std::uint32_t firstIndex) = 0;
     virtual void endRenderPass() = 0;
     virtual void endFrame() = 0;
     virtual void present() = 0;

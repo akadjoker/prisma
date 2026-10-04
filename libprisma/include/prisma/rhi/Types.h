@@ -51,7 +51,9 @@ using PipelineHandle = ct::Handle32<PipelineTag>;
 
 enum class BufferUsage : std::uint8_t
 {
-    Vertex
+    Vertex,
+    Index,
+    Uniform
 };
 
 struct BufferDesc
@@ -59,7 +61,14 @@ struct BufferDesc
     BufferUsage usage = BufferUsage::Vertex;
     std::uint32_t size = 0;
     const void* data = nullptr;
+    bool dynamic = false;
     const char* debugName = nullptr;
+};
+
+enum class IndexFormat : std::uint8_t
+{
+    UInt16,
+    UInt32
 };
 
 enum class ShaderStage : std::uint8_t
@@ -98,11 +107,57 @@ enum class Topology : std::uint8_t
     Points
 };
 
+enum class CompareOp : std::uint8_t
+{
+    Never,
+    Less,
+    Equal,
+    LessEqual,
+    Greater,
+    NotEqual,
+    GreaterEqual,
+    Always
+};
+
+enum class CullMode : std::uint8_t
+{
+    None,
+    Front,
+    Back
+};
+
+enum class FrontFace : std::uint8_t
+{
+    CounterClockwise,
+    Clockwise
+};
+
+enum class BlendFactor : std::uint8_t
+{
+    Zero,
+    One,
+    SrcColor,
+    OneMinusSrcColor,
+    SrcAlpha,
+    OneMinusSrcAlpha,
+    DstColor,
+    OneMinusDstColor,
+    DstAlpha,
+    OneMinusDstAlpha
+};
+
+struct UniformBlockBinding
+{
+    const char* name = nullptr;
+    std::uint32_t slot = 0;
+};
+
 struct PipelineDesc
 {
     enum : std::uint32_t
     {
-        kMaxAttributes = 8
+        kMaxAttributes = 8,
+        kMaxUniformBlocks = 4
     };
 
     ShaderHandle vertexShader;
@@ -111,6 +166,23 @@ struct PipelineDesc
     std::uint32_t attributeCount = 0;
     std::uint32_t vertexStride = 0;
     Topology topology = Topology::Triangles;
+
+    UniformBlockBinding uniformBlocks[kMaxUniformBlocks];
+    std::uint32_t uniformBlockCount = 0;
+
+    bool depthTest = false;
+    bool depthWrite = true;
+    CompareOp depthCompare = CompareOp::Less;
+
+    CullMode cullMode = CullMode::None;
+    FrontFace frontFace = FrontFace::CounterClockwise;
+
+    bool blend = false;
+    BlendFactor srcColor = BlendFactor::One;
+    BlendFactor dstColor = BlendFactor::Zero;
+    BlendFactor srcAlpha = BlendFactor::One;
+    BlendFactor dstAlpha = BlendFactor::Zero;
+
     const char* debugName = nullptr;
 };
 

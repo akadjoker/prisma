@@ -50,14 +50,34 @@ const char* kFragmentSource = SHADER_HEADER "out vec4 oColor;\n"
 
 const float kCoveringTriangle[6] = { -1.0f, -1.0f, 3.0f, -1.0f, -1.0f, 3.0f };
 
-bool pixelIs(int x, int y, int r, int g, int b)
+const char* kFlatVertexSource =
+        SHADER_HEADER "layout(location = 0) in vec2 aPosition;\n"
+                      "layout(std140) uniform Params { vec4 uColor; vec4 uPlace; };\n"
+                      "void main() { gl_Position = vec4(aPosition, uPlace.z, 1.0); }\n";
+
+const char* kFlatFragmentSource =
+        SHADER_HEADER "layout(std140) uniform Params { vec4 uColor; vec4 uPlace; };\n"
+                      "out vec4 oColor;\n"
+                      "void main() { oColor = uColor; }\n";
+
+const float kLeftHalfQuad[8] = { -1.0f, -1.0f, 0.0f, -1.0f, 0.0f, 1.0f, -1.0f, 1.0f };
+const std::uint16_t kQuadIndices[6] = { 0, 1, 2, 0, 2, 3 };
+
+struct Params
+{
+    float color[4];
+    float place[4];
+};
+
+bool pixelIs(int x, int y, int r, int g, int b, int tolerance = 1)
 {
     unsigned char pixel[4] = { 0, 0, 0, 0 };
     glReadPixels(x, y, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, pixel);
     const int dr = pixel[0] - r;
     const int dg = pixel[1] - g;
     const int db = pixel[2] - b;
-    const bool same = dr >= -1 && dr <= 1 && dg >= -1 && dg <= 1 && db >= -1 && db <= 1;
+    const bool same = dr >= -tolerance && dr <= tolerance && dg >= -tolerance && dg <= tolerance &&
+                      db >= -tolerance && db <= tolerance;
     if (!same) printf("pixel (%d,%d) is %d,%d,%d\n", x, y, pixel[0], pixel[1], pixel[2]);
     return same;
 }
@@ -195,6 +215,103 @@ int main()
         driver->present();
         CHECK(messages == 0);
         if (messages) printf("unexpected: %s\n", lastMessage);
+
+        BufferDesc quadDesc;
+        quadDesc.size = sizeof(kLeftHalfQuad);
+        quadDesc.data = kLeftHalfQuad;
+        const BufferHandle quad = driver->createBuffer(quadDesc);
+
+        BufferDesc indexDesc;
+        indexDesc.usage = BufferUsage::Index;
+        indexDesc.size = sizeof(kQuadIndices);
+        indexDesc.data = kQuadIndices;
+        const BufferHandle quadIndices = driver->createBuffer(indexDesc);
+
+        BufferDesc paramsDesc;
+        paramsDesc.usage = BufferUsage::Uniform;
+        paramsDesc.size = sizeof(Params);
+        paramsDesc.dynamic = true;
+        const BufferHandle params = driver->createBuffer(paramsDesc);
+        CHECK(quad.valid());
+        CHECK(quadIndices.valid());
+        CHECK(params.valid());
+        CHECK(driver->caps().uniformBufferOffsetAlignment >= 1);
+
+        ShaderDesc flatDesc;
+        flatDesc.source = kFlatVertexSource;
+        const ShaderHandle flatVertex = driver->createShader(flatDesc);
+        flatDesc.stage = ShaderStage::Fragment;
+        flatDesc.source = kFlatFragmentSource;
+        const ShaderHandle flatFragment = driver->createShader(flatDesc);
+
+        PipelineDesc flatPipelineDesc;
+        flatPipelineDesc.vertexShader = flatVertex;
+        flatPipelineDesc.fragmentShader = flatFragment;
+        flatPipelineDesc.vertexStride = sizeof(float) * 2;
+        flatPipelineDesc.attributeCount = 1;
+        flatPipelineDesc.attributes[0].format = VertexFormat::Float2;
+        flatPipelineDesc.uniformBlockCount = 1;
+        flatPipelineDesc.uniformBlocks[0].name = "Params";
+        flatPipelineDesc.uniformBlocks[0].slot = 2;
+        const PipelineHandle flat = driver->createPipeline(flatPipelineDesc);
+        flatPipelineDesc.depthTest = true;
+        const PipelineHandle flatDepth = driver->createPipeline(flatPipelineDesc);
+        flatPipelineDesc.depthTest = false;
+        flatPipelineDesc.blend = true;
+        flatPipelineDesc.srcColor = BlendFactor::SrcAlpha;
+        flatPipelineDesc.dstColor = BlendFactor::OneMinusSrcAlpha;
+        const PipelineHandle flatBlend = driver->createPipeline(flatPipelineDesc);
+        CHECK(flat.valid());
+        CHECK(flatDepth.valid());
+        CHECK(flatBlend.valid());
+
+        RenderPassDesc black;
+        messages = 0;
+        window_begin_frame(window);
+        driver->beginFrame();
+        driver->beginRenderPass(black);
+        driver->bindUniformBuffer(2, params, 0, sizeof(Params));
+
+        const Params green = { { 0.0f, 1.0f, 0.0f, 1.0f }, { 0.0f, 0.0f, 0.0f, 0.0f } };
+        driver->updateBuffer(params, 0, &green, sizeof(green));
+        driver->bindPipeline(flat);
+        driver->bindVertexBuffer(quad, 0);
+        driver->bindIndexBuffer(quadIndices, IndexFormat::UInt16);
+        driver->drawIndexed(6, 0);
+        CHECK(pixelIs(80, 120, 0, 255, 0));
+        CHECK(pixelIs(240, 120, 0, 0, 0));
+
+        const Params nearBlue = { { 0.0f, 0.0f, 1.0f, 1.0f }, { 0.0f, 0.0f, -0.5f, 0.0f } };
+        driver->updateBuffer(params, 0, &nearBlue, sizeof(nearBlue));
+        driver->bindPipeline(flatDepth);
+        driver->bindVertexBuffer(buffer, 0);
+        driver->draw(3, 0);
+        const Params farRed = { { 1.0f, 0.0f, 0.0f, 1.0f }, { 0.0f, 0.0f, 0.5f, 0.0f } };
+        driver->updateBuffer(params, 0, &farRed, sizeof(farRed));
+        driver->draw(3, 0);
+        CHECK(pixelIs(160, 120, 0, 0, 255));
+
+        const Params halfWhite = { { 1.0f, 1.0f, 1.0f, 0.5f }, { 0.0f, 0.0f, 0.0f, 0.0f } };
+        driver->updateBuffer(params, 0, &halfWhite, sizeof(halfWhite));
+        driver->bindPipeline(flatBlend);
+        driver->bindVertexBuffer(buffer, 0);
+        driver->draw(3, 0);
+        CHECK(pixelIs(160, 120, 128, 128, 255, 2));
+
+        driver->endRenderPass();
+        driver->endFrame();
+        driver->present();
+        CHECK(messages == 0);
+        if (messages) printf("unexpected: %s\n", lastMessage);
+
+        driver->destroy(flatBlend);
+        driver->destroy(flatDepth);
+        driver->destroy(flat);
+        driver->destroy(flatVertex);
+        driver->destroy(flatFragment);
+        driver->destroy(params);
+        driver->destroy(quadIndices);
+        driver->destroy(quad);
 
         driver->destroy(pipeline);
         driver->destroy(vertexShader);

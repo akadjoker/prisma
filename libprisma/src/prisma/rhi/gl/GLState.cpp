@@ -5,14 +5,32 @@
 namespace prisma
 {
 
-void GLState::reset() { known_ = 0; }
+void GLState::reset()
+{
+    known_ = 0;
+    knownUniformSlots_ = 0;
+}
+
+bool GLState::same(std::uint32_t bit, bool& stored, bool value)
+{
+    if ((known_ & bit) && stored == value) return true;
+    stored = value;
+    known_ |= bit;
+    return false;
+}
+
+bool GLState::same(std::uint32_t bit, std::uint32_t& stored, std::uint32_t value)
+{
+    if ((known_ & bit) && stored == value) return true;
+    stored = value;
+    known_ |= bit;
+    return false;
+}
 
 void GLState::bindFramebuffer(std::uint32_t framebuffer)
 {
-    if ((known_ & kFramebuffer) && framebuffer_ == framebuffer) return;
+    if (same(kFramebuffer, framebuffer_, framebuffer)) return;
     glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
-    framebuffer_ = framebuffer;
-    known_ |= kFramebuffer;
 }
 
 void GLState::viewport(std::int32_t x, std::int32_t y, std::int32_t width, std::int32_t height)
@@ -48,26 +66,103 @@ void GLState::clearDepth(float depth)
 
 void GLState::useProgram(std::uint32_t program)
 {
-    if ((known_ & kProgram) && program_ == program) return;
+    if (same(kProgram, program_, program)) return;
     glUseProgram(program);
-    program_ = program;
-    known_ |= kProgram;
 }
 
 void GLState::bindVertexArray(std::uint32_t vertexArray)
 {
-    if ((known_ & kVertexArray) && vertexArray_ == vertexArray) return;
+    if (same(kVertexArray, vertexArray_, vertexArray)) return;
     glBindVertexArray(vertexArray);
-    vertexArray_ = vertexArray;
-    known_ |= kVertexArray;
 }
 
 void GLState::bindArrayBuffer(std::uint32_t buffer)
 {
-    if ((known_ & kArrayBuffer) && arrayBuffer_ == buffer) return;
+    if (same(kArrayBuffer, arrayBuffer_, buffer)) return;
     glBindBuffer(GL_ARRAY_BUFFER, buffer);
-    arrayBuffer_ = buffer;
-    known_ |= kArrayBuffer;
+}
+
+void GLState::bindUniformBuffer(std::uint32_t buffer)
+{
+    if (same(kUniformBuffer, uniformBuffer_, buffer)) return;
+    glBindBuffer(GL_UNIFORM_BUFFER, buffer);
+}
+
+void GLState::bindUniformBufferRange(std::uint32_t slot, std::uint32_t buffer, std::uint32_t offset,
+        std::uint32_t size)
+{
+    if (slot >= kMaxUniformSlots) return;
+    UniformRange& range = uniformSlots_[slot];
+    const std::uint32_t bit = 1u << slot;
+    if ((knownUniformSlots_ & bit) && range.buffer == buffer && range.offset == offset &&
+            range.size == size)
+        return;
+    glBindBufferRange(GL_UNIFORM_BUFFER, slot, buffer, offset, size);
+    range.buffer = buffer;
+    range.offset = offset;
+    range.size = size;
+    knownUniformSlots_ |= bit;
+    uniformBuffer_ = buffer;
+    known_ |= kUniformBuffer;
+}
+
+void GLState::depthTest(bool enabled)
+{
+    if (same(kDepthTest, depthTest_, enabled)) return;
+    if (enabled) glEnable(GL_DEPTH_TEST);
+    else
+        glDisable(GL_DEPTH_TEST);
+}
+
+void GLState::depthMask(bool enabled)
+{
+    if (same(kDepthMask, depthMask_, enabled)) return;
+    glDepthMask(enabled ? GL_TRUE : GL_FALSE);
+}
+
+void GLState::depthFunc(std::uint32_t func)
+{
+    if (same(kDepthFunc, depthFunc_, func)) return;
+    glDepthFunc(func);
+}
+
+void GLState::cullFace(bool enabled, std::uint32_t face)
+{
+    if (!same(kCullEnabled, cullEnabled_, enabled))
+    {
+        if (enabled) glEnable(GL_CULL_FACE);
+        else
+            glDisable(GL_CULL_FACE);
+    }
+    if (enabled && !same(kCullFace, cullFace_, face)) glCullFace(face);
+}
+
+void GLState::frontFace(std::uint32_t mode)
+{
+    if (same(kFrontFace, frontFace_, mode)) return;
+    glFrontFace(mode);
+}
+
+void GLState::blend(bool enabled)
+{
+    if (same(kBlend, blend_, enabled)) return;
+    if (enabled) glEnable(GL_BLEND);
+    else
+        glDisable(GL_BLEND);
+}
+
+void GLState::blendFunc(std::uint32_t srcColor, std::uint32_t dstColor, std::uint32_t srcAlpha,
+        std::uint32_t dstAlpha)
+{
+    if ((known_ & kBlendFunc) && blendFunc_[0] == srcColor && blendFunc_[1] == dstColor &&
+            blendFunc_[2] == srcAlpha && blendFunc_[3] == dstAlpha)
+        return;
+    glBlendFuncSeparate(srcColor, dstColor, srcAlpha, dstAlpha);
+    blendFunc_[0] = srcColor;
+    blendFunc_[1] = dstColor;
+    blendFunc_[2] = srcAlpha;
+    blendFunc_[3] = dstAlpha;
+    known_ |= kBlendFunc;
 }
 
 void GLState::programDeleted(std::uint32_t program)
@@ -80,9 +175,12 @@ void GLState::vertexArrayDeleted(std::uint32_t vertexArray)
     if (vertexArray_ == vertexArray) known_ &= ~static_cast<std::uint32_t>(kVertexArray);
 }
 
-void GLState::arrayBufferDeleted(std::uint32_t buffer)
+void GLState::bufferDeleted(std::uint32_t buffer)
 {
     if (arrayBuffer_ == buffer) known_ &= ~static_cast<std::uint32_t>(kArrayBuffer);
+    if (uniformBuffer_ == buffer) known_ &= ~static_cast<std::uint32_t>(kUniformBuffer);
+    for (std::uint32_t slot = 0; slot < kMaxUniformSlots; ++slot)
+        if (uniformSlots_[slot].buffer == buffer) knownUniformSlots_ &= ~(1u << slot);
 }
 
 } // namespace prisma

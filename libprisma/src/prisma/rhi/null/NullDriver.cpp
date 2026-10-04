@@ -33,6 +33,7 @@ public:
         return handleCast<PipelineHandle>(pipelines_.insert(0));
     }
 
+    void updateBuffer(BufferHandle, std::uint32_t, const void*, std::uint32_t) override {}
     void destroy(BufferHandle handle) override { buffers_.erase(handleCast<Slot>(handle)); }
     void destroy(ShaderHandle handle) override { shaders_.erase(handleCast<Slot>(handle)); }
     void destroy(PipelineHandle handle) override { pipelines_.erase(handleCast<Slot>(handle)); }
@@ -41,7 +42,10 @@ public:
     void beginRenderPass(const RenderPassDesc&) override {}
     void bindPipeline(PipelineHandle) override {}
     void bindVertexBuffer(BufferHandle, std::uint32_t) override {}
+    void bindIndexBuffer(BufferHandle, IndexFormat) override {}
+    void bindUniformBuffer(std::uint32_t, BufferHandle, std::uint32_t, std::uint32_t) override {}
     void draw(std::uint32_t, std::uint32_t) override {}
+    void drawIndexed(std::uint32_t, std::uint32_t) override {}
     void endRenderPass() override {}
     void endFrame() override {}
     void present() override {}

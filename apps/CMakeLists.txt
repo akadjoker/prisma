@@ -1,7 +1,10 @@
 if(PRISMA_OPENGL)
-  foreach(app clear triangle)
+  add_library(mathc STATIC ${PROJECT_SOURCE_DIR}/external/math/mathc.cpp)
+  target_include_directories(mathc PUBLIC ${PROJECT_SOURCE_DIR}/external/math)
+
+  foreach(app clear triangle cube)
     add_executable(${app} ${app}/main.cpp)
     target_include_directories(${app} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-    target_link_libraries(${app} PRIVATE prisma platform)
+    target_link_libraries(${app} PRIVATE prisma platform mathc)
   endforeach()
 endif()

@@ -14,6 +14,7 @@ struct Caps
     bool debugOutput = false;
     std::uint32_t maxTextureSize = 0;
     std::uint32_t maxColorTargets = 0;
+    std::uint32_t uniformBufferOffsetAlignment = 1;
 };
 
 } // namespace prisma

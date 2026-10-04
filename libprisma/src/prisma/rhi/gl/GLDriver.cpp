@@ -15,6 +15,7 @@ struct GLBuffer
 {
     GLuint id = 0;
     std::uint32_t size = 0;
+    BufferUsage usage = BufferUsage::Vertex;
 };
 
 struct GLShader
@@ -30,6 +31,15 @@ struct GLPipeline
     std::uint32_t vertexStride = 0;
     std::uint32_t attributeCount = 0;
     VertexAttribute attributes[PipelineDesc::kMaxAttributes];
+
+    bool depthTest = false;
+    bool depthWrite = true;
+    GLenum depthFunc = GL_LESS;
+    bool cull = false;
+    GLenum cullFace = GL_BACK;
+    GLenum frontFace = GL_CCW;
+    bool blend = false;
+    GLenum blendFunc[4] = { GL_ONE, GL_ZERO, GL_ONE, GL_ZERO };
 };
 
 GLint componentCount(VertexFormat format)
@@ -64,6 +74,58 @@ GLenum toGLTopology(Topology topology)
     return GL_TRIANGLES;
 }
 
+GLenum toGLCompare(CompareOp op)
+{
+    switch (op)
+    {
+        case CompareOp::Never:
+            return GL_NEVER;
+        case CompareOp::Less:
+            return GL_LESS;
+        case CompareOp::Equal:
+            return GL_EQUAL;
+        case CompareOp::LessEqual:
+            return GL_LEQUAL;
+        case CompareOp::Greater:
+            return GL_GREATER;
+        case CompareOp::NotEqual:
+            return GL_NOTEQUAL;
+        case CompareOp::GreaterEqual:
+            return GL_GEQUAL;
+        case CompareOp::Always:
+            return GL_ALWAYS;
+    }
+    return GL_LESS;
+}
+
+GLenum toGLBlendFactor(BlendFactor factor)
+{
+    switch (factor)
+    {
+        case BlendFactor::Zero:
+            return GL_ZERO;
+        case BlendFactor::One:
+            return GL_ONE;
+        case BlendFactor::SrcColor:
+            return GL_SRC_COLOR;
+        case BlendFactor::OneMinusSrcColor:
+            return GL_ONE_MINUS_SRC_COLOR;
+        case BlendFactor::SrcAlpha:
+            return GL_SRC_ALPHA;
+        case BlendFactor::OneMinusSrcAlpha:
+            return GL_ONE_MINUS_SRC_ALPHA;
+        case BlendFactor::DstColor:
+            return GL_DST_COLOR;
+        case BlendFactor::OneMinusDstColor:
+            return GL_ONE_MINUS_DST_COLOR;
+        case BlendFactor::DstAlpha:
+            return GL_DST_ALPHA;
+        case BlendFactor::OneMinusDstAlpha:
+            return GL_ONE_MINUS_DST_ALPHA;
+    }
+    return GL_ONE;
+}
+
 class GLDriver final : public Driver
 {
 public:
@@ -86,6 +148,8 @@ public:
         caps_.maxTextureSize = static_cast<std::uint32_t>(value);
         glGetIntegerv(GL_MAX_DRAW_BUFFERS, &value);
         caps_.maxColorTargets = static_cast<std::uint32_t>(value);
+        glGetIntegerv(GL_UNIFORM_BUFFER_OFFSET_ALIGNMENT, &value);
+        caps_.uniformBufferOffsetAlignment = static_cast<std::uint32_t>(value);
 #ifdef PRISMA_GLES
         caps_.gles = true;
         caps_.compute = major > 3 || (major == 3 && minor >= 1);
@@ -95,6 +159,8 @@ public:
         caps_.versionMajor = static_cast<std::uint32_t>(major);
         caps_.versionMinor = static_cast<std::uint32_t>(minor);
         caps_.debugOutput = debug_;
+
+        glGenVertexArrays(1, &scratchVertexArray_);
     }
 
     ~GLDriver() override
@@ -106,6 +172,7 @@ public:
         }
         for (GLShader& shader: shaders_) glDeleteShader(shader.id);
         for (GLBuffer& buffer: buffers_) glDeleteBuffers(1, &buffer.id);
+        glDeleteVertexArrays(1, &scratchVertexArray_);
     }
 
     DriverType type() const override { return DriverType::OpenGL; }
@@ -117,11 +184,25 @@ public:
 
         GLBuffer buffer;
         buffer.size = desc.size;
+        buffer.usage = desc.usage;
         glGenBuffers(1, &buffer.id);
-        state_.bindArrayBuffer(buffer.id);
-        glBufferData(GL_ARRAY_BUFFER, desc.size, desc.data, GL_STATIC_DRAW);
+        const GLenum target = bindForEdit(buffer);
+        glBufferData(target, desc.size, desc.data, desc.dynamic ? GL_DYNAMIC_DRAW : GL_STATIC_DRAW);
         label(GL_BUFFER, buffer.id, desc.debugName);
         return handleCast<BufferHandle>(buffers_.insert(buffer));
+    }
+
+    void updateBuffer(BufferHandle handle, std::uint32_t offset, const void* data,
+            std::uint32_t size) override
+    {
+        const GLBuffer* buffer = buffers_.get(handleCast<BufferSlot>(handle));
+        if (!buffer || !data || offset + size > buffer->size)
+        {
+            log("updateBuffer: invalid buffer handle or range");
+            return;
+        }
+        const GLenum target = bindForEdit(*buffer);
+        glBufferSubData(target, offset, size, data);
     }
 
     ShaderHandle createShader(const ShaderDesc& desc) override
@@ -153,9 +234,10 @@ public:
     {
         const GLShader* vertex = shaders_.get(handleCast<ShaderSlot>(desc.vertexShader));
         const GLShader* fragment = shaders_.get(handleCast<ShaderSlot>(desc.fragmentShader));
-        if (!vertex || !fragment || desc.attributeCount > PipelineDesc::kMaxAttributes)
+        if (!vertex || !fragment || desc.attributeCount > PipelineDesc::kMaxAttributes ||
+                desc.uniformBlockCount > PipelineDesc::kMaxUniformBlocks)
         {
-            log("createPipeline: invalid shader handle or too many attributes");
+            log("createPipeline: invalid shader handle or too many attributes or uniform blocks");
             return PipelineHandle();
         }
 
@@ -181,6 +263,29 @@ public:
         pipeline.topology = toGLTopology(desc.topology);
         pipeline.vertexStride = desc.vertexStride;
         pipeline.attributeCount = desc.attributeCount;
+        pipeline.depthTest = desc.depthTest;
+        pipeline.depthWrite = desc.depthWrite;
+        pipeline.depthFunc = toGLCompare(desc.depthCompare);
+        pipeline.cull = desc.cullMode != CullMode::None;
+        pipeline.cullFace = desc.cullMode == CullMode::Front ? GL_FRONT : GL_BACK;
+        pipeline.frontFace = desc.frontFace == FrontFace::Clockwise ? GL_CW : GL_CCW;
+        pipeline.blend = desc.blend;
+        pipeline.blendFunc[0] = toGLBlendFactor(desc.srcColor);
+        pipeline.blendFunc[1] = toGLBlendFactor(desc.dstColor);
+        pipeline.blendFunc[2] = toGLBlendFactor(desc.srcAlpha);
+        pipeline.blendFunc[3] = toGLBlendFactor(desc.dstAlpha);
+
+        for (std::uint32_t i = 0; i < desc.uniformBlockCount; ++i)
+        {
+            const UniformBlockBinding& block = desc.uniformBlocks[i];
+            const GLuint index = glGetUniformBlockIndex(pipeline.program, block.name);
+            if (index == GL_INVALID_INDEX)
+            {
+                log("createPipeline: uniform block not found in the shaders");
+                continue;
+            }
+            glUniformBlockBinding(pipeline.program, index, block.slot);
+        }
         glGenVertexArrays(1, &pipeline.vertexArray);
         state_.bindVertexArray(pipeline.vertexArray);
         label(GL_PROGRAM, pipeline.program, desc.debugName);
@@ -198,7 +303,7 @@ public:
         const GLBuffer* buffer = buffers_.get(slot);
         if (!buffer) return;
         glDeleteBuffers(1, &buffer->id);
-        state_.arrayBufferDeleted(buffer->id);
+        state_.bufferDeleted(buffer->id);
         buffers_.erase(slot);
     }
 
@@ -242,6 +347,7 @@ public:
         }
         if (desc.depthLoad == LoadOp::Clear)
         {
+            state_.depthMask(true);
             state_.clearDepth(desc.clearDepth);
             mask |= GL_DEPTH_BUFFER_BIT;
         }
@@ -252,6 +358,7 @@ public:
     {
         pipeline_ = handle;
         vertexDirty_ = true;
+        indexDirty_ = true;
     }
 
     void bindVertexBuffer(BufferHandle handle, std::uint32_t offset) override
@@ -261,17 +368,106 @@ public:
         vertexDirty_ = true;
     }
 
+    void bindIndexBuffer(BufferHandle handle, IndexFormat format) override
+    {
+        indexBuffer_ = handle;
+        indexFormat_ = format;
+        indexDirty_ = true;
+    }
+
+    void bindUniformBuffer(std::uint32_t slot, BufferHandle handle, std::uint32_t offset,
+            std::uint32_t size) override
+    {
+        const GLBuffer* buffer = buffers_.get(handleCast<BufferSlot>(handle));
+        if (!buffer || buffer->usage != BufferUsage::Uniform || offset + size > buffer->size ||
+                slot >= GLState::kMaxUniformSlots)
+        {
+            log("bindUniformBuffer: invalid buffer handle, range or slot");
+            return;
+        }
+        state_.bindUniformBufferRange(slot, buffer->id, offset, size);
+    }
+
     void draw(std::uint32_t vertexCount, std::uint32_t firstVertex) override
+    {
+        const GLPipeline* pipeline = prepareDraw();
+        if (!pipeline) return;
+        glDrawArrays(pipeline->topology, static_cast<GLint>(firstVertex),
+                static_cast<GLsizei>(vertexCount));
+    }
+
+    void drawIndexed(std::uint32_t indexCount, std::uint32_t firstIndex) override
+    {
+        const GLPipeline* pipeline = prepareDraw();
+        if (!pipeline) return;
+
+        const GLBuffer* indices = buffers_.get(handleCast<BufferSlot>(indexBuffer_));
+        if (!indices || indices->usage != BufferUsage::Index)
+        {
+            log("drawIndexed: no valid index buffer bound");
+            return;
+        }
+        if (indexDirty_)
+        {
+            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, indices->id);
+            indexDirty_ = false;
+        }
+
+        const bool wide = indexFormat_ == IndexFormat::UInt32;
+        const std::size_t offset = static_cast<std::size_t>(firstIndex) * (wide ? 4 : 2);
+        glDrawElements(pipeline->topology, static_cast<GLsizei>(indexCount),
+                wide ? GL_UNSIGNED_INT : GL_UNSIGNED_SHORT, reinterpret_cast<const void*>(offset));
+    }
+
+    void endRenderPass() override {}
+    void endFrame() override {}
+
+    void present() override { platform_.swapBuffers(platform_.user); }
+
+private:
+    using BufferSlot = ct::Handle32<GLBuffer>;
+    using ShaderSlot = ct::Handle32<GLShader>;
+    using PipelineSlot = ct::Handle32<GLPipeline>;
+
+    GLenum bindForEdit(const GLBuffer& buffer)
+    {
+        switch (buffer.usage)
+        {
+            case BufferUsage::Vertex:
+                state_.bindArrayBuffer(buffer.id);
+                return GL_ARRAY_BUFFER;
+            case BufferUsage::Index:
+                state_.bindVertexArray(scratchVertexArray_);
+                glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, buffer.id);
+                return GL_ELEMENT_ARRAY_BUFFER;
+            case BufferUsage::Uniform:
+                state_.bindUniformBuffer(buffer.id);
+                return GL_UNIFORM_BUFFER;
+        }
+        return GL_ARRAY_BUFFER;
+    }
+
+    const GLPipeline* prepareDraw()
     {
         const GLPipeline* pipeline = pipelines_.get(handleCast<PipelineSlot>(pipeline_));
         const GLBuffer* buffer = buffers_.get(handleCast<BufferSlot>(vertexBuffer_));
-        if (!pipeline || !buffer)
+        if (!pipeline || !buffer || buffer->usage != BufferUsage::Vertex)
         {
             log("draw: no valid pipeline or vertex buffer bound");
-            return;
+            return nullptr;
         }
 
         state_.useProgram(pipeline->program);
+        state_.depthTest(pipeline->depthTest);
+        state_.depthMask(pipeline->depthWrite);
+        if (pipeline->depthTest) state_.depthFunc(pipeline->depthFunc);
+        state_.cullFace(pipeline->cull, pipeline->cullFace);
+        state_.frontFace(pipeline->frontFace);
+        state_.blend(pipeline->blend);
+        if (pipeline->blend)
+            state_.blendFunc(pipeline->blendFunc[0], pipeline->blendFunc[1], pipeline->blendFunc[2],
+                    pipeline->blendFunc[3]);
+
         state_.bindVertexArray(pipeline->vertexArray);
         if (vertexDirty_)
         {
@@ -287,19 +483,8 @@ public:
             }
             vertexDirty_ = false;
         }
-        glDrawArrays(pipeline->topology, static_cast<GLint>(firstVertex),
-                static_cast<GLsizei>(vertexCount));
+        return pipeline;
     }
-
-    void endRenderPass() override {}
-    void endFrame() override {}
-
-    void present() override { platform_.swapBuffers(platform_.user); }
-
-private:
-    using BufferSlot = ct::Handle32<GLBuffer>;
-    using ShaderSlot = ct::Handle32<GLShader>;
-    using PipelineSlot = ct::Handle32<GLPipeline>;
 
     void log(const char* message) const
     {
@@ -328,6 +513,7 @@ private:
     bool debug_;
     GLState state_;
     Caps caps_;
+    GLuint scratchVertexArray_ = 0;
 
     ct::SlotMap32<GLBuffer> buffers_;
     ct::SlotMap32<GLShader> shaders_;
@@ -335,8 +521,11 @@ private:
 
     PipelineHandle pipeline_;
     BufferHandle vertexBuffer_;
+    BufferHandle indexBuffer_;
+    IndexFormat indexFormat_ = IndexFormat::UInt16;
     std::uint32_t vertexOffset_ = 0;
     bool vertexDirty_ = true;
+    bool indexDirty_ = true;
 };
 
 } // namespace
