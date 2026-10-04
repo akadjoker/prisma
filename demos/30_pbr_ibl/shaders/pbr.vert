@@ -20,6 +20,7 @@ layout(set = 0, binding = 2, std140) uniform Object
 
 layout(location = 0) out vec3 vNormal;
 layout(location = 1) out vec3 vWorld;
+layout(location = 2) out vec3 vClip;
 
 void main()
 {
@@ -27,4 +28,5 @@ void main()
     vWorld = world.xyz;
     vNormal = mat3(uModel) * aNormal;
     gl_Position = uViewProjection * world;
+    vClip = gl_Position.xyw;
 }

@@ -1,7 +1,7 @@
 #include "Check.h"
 #include "Dfg.h"
 #include "Environment.h"
-#include "Headless.h"
+#include "GpuContext.h"
 #include "Prefilter.h"
 #include "prisma/rhi/Driver.h"
 #include "prisma/rhi/ShaderBlob.h"
@@ -61,49 +61,14 @@ int main(int argc, char** argv)
 {
     using namespace prisma;
 
-    bool useVulkan = false;
-    for (int i = 1; i < argc; ++i)
-        if (strcmp(argv[i], "vulkan") == 0) useVulkan = true;
-
-    headless::Context context;
-    headless::Surface surface;
-    surface.width = 64;
-    surface.height = 64;
-    if (!useVulkan)
-    {
-#ifdef PRISMA_GLES
-        const bool es = true;
-#else
-        const bool es = false;
-#endif
-        if (!headless::openContext(&context, es, true) ||
-                !headless::openSurface(&context, 64, 64, &surface))
-        {
-            printf("headless OpenGL context could not be created\n");
-            return 1;
-        }
-    }
-    GLPlatform gl = headless::glPlatform(&surface);
-    VulkanPlatform vulkan;
-#ifdef PRISMA_TEST_VULKAN
-    vulkan = headless::vulkanPlatform(&surface);
-#endif
-
-    DriverDesc desc;
-    desc.type = useVulkan ? DriverType::Vulkan : DriverType::OpenGL;
-    desc.gl = &gl;
-    desc.vulkan = &vulkan;
-    desc.log = captureLog;
-    desc.debug = true;
-    DriverError error = DriverError::None;
-    Driver* driver = createDriver(desc, &error);
-    CHECK(driver != nullptr);
-    if (!driver) return 1;
+    GpuContext gpu;
+    if (!gpu.open(argc, argv, captureLog)) return 1;
+    Driver* driver = gpu.driver;
 
     if (!driver->caps().floatColorTargets)
     {
         printf("test_prefilter: float colour targets are not available, skipped\n");
-        destroyDriver(driver);
+        gpu.close();
         return 0;
     }
 
@@ -188,7 +153,7 @@ int main(int argc, char** argv)
     CHECK(probe.valid() && probeBuffer.valid() && sampler.valid() && pipeline.valid());
     if (!(probe.valid() && probeBuffer.valid() && sampler.valid() && pipeline.valid()))
     {
-        destroyDriver(driver);
+        gpu.close();
         return 1;
     }
 
@@ -277,9 +242,7 @@ int main(int argc, char** argv)
     driver->destroy(probe);
     driver->destroy(filtered.texture);
     driver->destroy(source);
-    destroyDriver(driver);
-    headless::closeSurface(&surface);
-    headless::closeContext(&context);
+    gpu.close();
 
     printf(failures ? "test_prefilter: %d failures\n" : "test_prefilter: all passed\n", failures);
     return failures ? 1 : 0;

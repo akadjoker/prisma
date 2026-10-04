@@ -1,6 +1,7 @@
-#include "pbr_surface.glsl"
+#ifndef LIGHTING_GLSL
+#define LIGHTING_GLSL
 
-const int kMaxLights = 16;
+#include "pbr_surface.glsl"
 
 struct LightData
 {
@@ -8,14 +9,6 @@ struct LightData
     vec4 colorIntensity;
     vec4 direction;
     vec4 spot;
-};
-
-layout(set = 0, binding = 3, std140) uniform Lights
-{
-    vec4 uSunDirection;
-    vec4 uSunColorIntensity;
-    vec4 uLightCounts;
-    LightData uLights[kMaxLights];
 };
 
 struct Light
@@ -72,18 +65,17 @@ float angleAttenuation(vec3 lightDir, vec3 l, vec2 scaleOffset)
     return attenuation * attenuation;
 }
 
-Light directionalLight()
+Light directionalLight(vec4 direction, vec4 colorIntensity)
 {
     Light light;
-    light.radiance = uSunColorIntensity.rgb * uSunColorIntensity.w;
-    light.l = uSunDirection.xyz;
+    light.radiance = colorIntensity.rgb * colorIntensity.w;
+    light.l = direction.xyz;
     light.attenuation = 1.0;
     return light;
 }
 
-Light punctualLight(int index, vec3 worldPosition)
+Light punctualLight(LightData data, vec3 worldPosition)
 {
-    LightData data = uLights[index];
     vec3 posToLight = data.positionFalloff.xyz - worldPosition;
     Light light;
     light.radiance = data.colorIntensity.rgb * data.colorIntensity.w;
@@ -110,13 +102,4 @@ vec3 surfaceShading(PbrSurface surface, Light light, vec3 n, vec3 v)
     return (fd + fr) * light.radiance * (light.attenuation * noL);
 }
 
-vec3 evaluateLights(PbrSurface surface, vec3 n, vec3 v, vec3 worldPosition)
-{
-    vec3 color = vec3(0.0);
-    if (uSunColorIntensity.w > 0.0)
-        color += surfaceShading(surface, directionalLight(), n, v);
-    int count = int(uLightCounts.x);
-    for (int i = 0; i < count; ++i)
-        color += surfaceShading(surface, punctualLight(i, worldPosition), n, v);
-    return color;
-}
+#endif

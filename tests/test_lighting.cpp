@@ -1,5 +1,5 @@
 #include "Check.h"
-#include "Headless.h"
+#include "GpuContext.h"
 #include "Lights.h"
 #include "prisma/rhi/Driver.h"
 #include "prisma/rhi/ShaderBlob.h"
@@ -87,49 +87,23 @@ void referenceShade(const float* n, const float* v, const float* l, const float*
     }
 }
 
+struct ArrayLights
+{
+    float sunDirection[4];
+    float sunColorIntensity[4];
+    float counts[4];
+    zenapp::LightData lights[16];
+};
+
 } // namespace
 
 int main(int argc, char** argv)
 {
     using namespace prisma;
 
-    bool useVulkan = false;
-    for (int i = 1; i < argc; ++i)
-        if (strcmp(argv[i], "vulkan") == 0) useVulkan = true;
-
-    headless::Context context;
-    headless::Surface surface;
-    surface.width = 64;
-    surface.height = 64;
-    if (!useVulkan)
-    {
-#ifdef PRISMA_GLES
-        const bool es = true;
-#else
-        const bool es = false;
-#endif
-        if (!headless::openContext(&context, es, true) ||
-                !headless::openSurface(&context, 64, 64, &surface))
-        {
-            printf("headless OpenGL context could not be created\n");
-            return 1;
-        }
-    }
-    GLPlatform gl = headless::glPlatform(&surface);
-    VulkanPlatform vulkan;
-#ifdef PRISMA_TEST_VULKAN
-    vulkan = headless::vulkanPlatform(&surface);
-#endif
-
-    DriverDesc desc;
-    desc.type = useVulkan ? DriverType::Vulkan : DriverType::OpenGL;
-    desc.gl = &gl;
-    desc.vulkan = &vulkan;
-    desc.debug = true;
-    DriverError error = DriverError::None;
-    Driver* driver = createDriver(desc, &error);
-    CHECK(driver != nullptr);
-    if (!driver) return 1;
+    GpuContext gpu;
+    if (!gpu.open(argc, argv)) return 1;
+    Driver* driver = gpu.driver;
 
     TextureDesc targetDesc;
     targetDesc.width = 4;
@@ -140,7 +114,7 @@ int main(int argc, char** argv)
     const unsigned alignment = driver->caps().uniformBufferOffsetAlignment;
     const unsigned probeStride = (sizeof(Probe) + alignment - 1) / alignment * alignment;
     const unsigned lightsOffset = probeStride;
-    const unsigned lightsStride = (sizeof(zenapp::LightUniforms) + alignment - 1) / alignment * alignment;
+    const unsigned lightsStride = (sizeof(ArrayLights) + alignment - 1) / alignment * alignment;
     BufferDesc bufferDesc;
     bufferDesc.usage = BufferUsage::Uniform;
     bufferDesc.size = probeStride + lightsStride;
@@ -163,12 +137,14 @@ int main(int argc, char** argv)
     CHECK(target.valid() && buffer.valid() && pipeline.valid());
     if (!(target.valid() && buffer.valid() && pipeline.valid()))
     {
-        destroyDriver(driver);
+        gpu.close();
         return 1;
     }
 
-    zenapp::LightUniforms lights;
-    zenapp::clearLights(&lights);
+    zenapp::LightSet set;
+    zenapp::clearLights(&set);
+    ArrayLights lights;
+    memset(&lights, 0, sizeof(lights));
     ct::Vector<unsigned char> bytes;
     bytes.resize(probeStride + lightsStride);
 
@@ -183,7 +159,7 @@ int main(int argc, char** argv)
         driver->beginRenderPass(pass);
         driver->bindPipeline(pipeline);
         driver->bindUniformBuffer(0, buffer, 0, sizeof(Probe));
-        driver->bindUniformBuffer(3, buffer, lightsOffset, sizeof(zenapp::LightUniforms));
+        driver->bindUniformBuffer(3, buffer, lightsOffset, sizeof(ArrayLights));
         driver->draw(3, 0);
         driver->endRenderPass();
         unsigned char pixel[4] = { 0, 0, 0, 0 };
@@ -247,11 +223,15 @@ int main(int argc, char** argv)
     const float spotRadius = 3.5f;
     const float spotInner = 0.25f;
     const float spotOuter = 0.5f;
-    zenapp::setSunLight(&lights, sunToLight, sunColor, 2.0f);
-    zenapp::addPointLight(&lights, pointPosition, pointColor, 12.0f, pointRadius);
-    zenapp::addSpotLight(&lights, spotPosition, spotDirection, spotColor, 18.0f, spotRadius,
+    zenapp::setSunLight(&set, sunToLight, sunColor, 2.0f);
+    zenapp::addPointLight(&set, pointPosition, pointColor, 12.0f, pointRadius);
+    zenapp::addSpotLight(&set, spotPosition, spotDirection, spotColor, 18.0f, spotRadius,
             spotInner, spotOuter);
-    CHECK(lights.counts[0] == 2.0f);
+    CHECK(set.count == 2);
+    memcpy(lights.sunDirection, set.sunDirection, sizeof(lights.sunDirection));
+    memcpy(lights.sunColorIntensity, set.sunColorIntensity, sizeof(lights.sunColorIntensity));
+    lights.counts[0] = static_cast<float>(set.count);
+    memcpy(lights.lights, set.lights, sizeof(zenapp::LightData) * set.count);
 
     struct Case
     {
@@ -343,9 +323,7 @@ int main(int argc, char** argv)
     driver->destroy(pipeline);
     driver->destroy(buffer);
     driver->destroy(target);
-    destroyDriver(driver);
-    headless::closeSurface(&surface);
-    headless::closeContext(&context);
+    gpu.close();
 
     printf(failures ? "test_lighting: %d failures\n" : "test_lighting: all passed\n", failures);
     return failures ? 1 : 0;

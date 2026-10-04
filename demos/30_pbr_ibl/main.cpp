@@ -5,6 +5,7 @@
 #include "mathc.h"
 
 #include <math.h>
+#include <stddef.h>
 #include <string.h>
 
 #include "pbr.frag.h"
@@ -41,7 +42,8 @@ const unsigned kRows = 3;
 const unsigned kSegments = 64;
 const unsigned kRings = 32;
 const float kSpacing = 1.1f;
-const unsigned kMarkers = 4;
+const unsigned kFairyLights = 48;
+const unsigned kMarkers = 4 + kFairyLights;
 
 const float kRowColors[kRows][4] = { { 0.80f, 0.08f, 0.06f, 1.0f }, { 1.00f, 0.71f, 0.29f, 1.0f },
     { 0.95f, 0.95f, 0.96f, 1.0f } };
@@ -156,10 +158,8 @@ int main(int argc, char** argv)
     const unsigned objectStride = (sizeof(ObjectUniforms) + alignment - 1) / alignment * alignment;
     const unsigned sphereCount = kColumns * kRows;
     const unsigned objectCount = sphereCount + kMarkers;
-    const unsigned lightsStride =
-            (sizeof(zenapp::LightUniforms) + alignment - 1) / alignment * alignment;
     ct::Vector<unsigned char> uniformBytes;
-    uniformBytes.resize(static_cast<size_t>(frameStride) + objectStride * objectCount + lightsStride);
+    uniformBytes.resize(static_cast<size_t>(frameStride) + objectStride * objectCount);
     bufferDesc.usage = prisma::BufferUsage::Uniform;
     bufferDesc.size = static_cast<std::uint32_t>(uniformBytes.size());
     bufferDesc.data = nullptr;
@@ -167,7 +167,12 @@ int main(int argc, char** argv)
     bufferDesc.debugName = "uniforms";
     const prisma::BufferHandle uniformBuffer = driver->createBuffer(bufferDesc);
 
-    const unsigned lightsOffset = frameStride + objectStride * objectCount;
+    static zenapp::ClusteredBuffers clustered;
+    zenapp::Froxelizer froxelizer;
+    froxelizer.setDepthRange(2.0f, 40.0f);
+    bufferDesc.size = sizeof(clustered);
+    bufferDesc.debugName = "clustered lights";
+    const prisma::BufferHandle clusteredBuffer = driver->createBuffer(bufferDesc);
     const prisma::ShaderHandle pbrVertex = zenapp::createShader(driver, pbr_vert);
     const prisma::ShaderHandle pbrFragment = zenapp::createShader(driver, pbr_frag);
     const prisma::ShaderHandle skyVertex = zenapp::createShader(driver, sky_vert);
@@ -204,7 +209,7 @@ int main(int argc, char** argv)
     driver->destroy(skyFragment);
 
     const bool ready = iblReady && vertexBuffer.valid() && indexBuffer.valid() &&
-                       uniformBuffer.valid() && pbrPipeline.valid() && skyPipeline.valid();
+                       uniformBuffer.valid() && clusteredBuffer.valid() && pbrPipeline.valid() && skyPipeline.valid();
     if (!ready) log_error("pbr ibl: resource creation failed");
 
     prisma::RenderPassDesc pass;
@@ -250,10 +255,12 @@ int main(int argc, char** argv)
         frame.exposure[3] = 0.0f;
         memcpy(uniformBytes.data(), &frame, sizeof(frame));
 
-        zenapp::LightUniforms lights;
+        zenapp::LightSet lights;
         zenapp::clearLights(&lights);
         float markerPosition[kMarkers][3];
         float markerColor[kMarkers][3];
+        float markerScale[kMarkers];
+        unsigned markerCount = 0;
         if (lightsOn)
         {
             const float sunDirection[3] = { 0.5f, 0.8f, 0.6f };
@@ -267,18 +274,36 @@ int main(int argc, char** argv)
                                     static_cast<float>(i) * 2.0944f;
                 const float position[3] = { 3.4f * sinf(angle), 1.4f * cosf(angle * 1.3f), 1.6f };
                 zenapp::addPointLight(&lights, position, colors[i], 14.0f, 6.0f);
-                memcpy(markerPosition[i], position, sizeof(position));
-                memcpy(markerColor[i], colors[i], sizeof(colors[i]));
+                memcpy(markerPosition[markerCount], position, sizeof(position));
+                memcpy(markerColor[markerCount], colors[i], sizeof(colors[i]));
+                markerScale[markerCount++] = 0.09f;
             }
             const float spotPosition[3] = { -3.0f, 3.2f, 3.2f };
             const float spotDirection[3] = { 1.9f, -2.1f, -3.2f };
             const float spotColor[3] = { 1.0f, 0.9f, 0.7f };
             zenapp::addSpotLight(&lights, spotPosition, spotDirection, spotColor, 45.0f, 10.0f,
                     0.22f, 0.4f);
-            memcpy(markerPosition[3], spotPosition, sizeof(spotPosition));
-            memcpy(markerColor[3], spotColor, sizeof(spotColor));
+            memcpy(markerPosition[markerCount], spotPosition, sizeof(spotPosition));
+            memcpy(markerColor[markerCount], spotColor, sizeof(spotColor));
+            markerScale[markerCount++] = 0.09f;
+            for (unsigned i = 0; i < kFairyLights; ++i)
+            {
+                const float phase = static_cast<float>(i) * 6.28318531f / static_cast<float>(kFairyLights);
+                const float angle = phase * 3.0f + time * 0.35f;
+                const float position[3] = { 4.6f * sinf(phase * 2.0f + time * 0.2f),
+                    2.3f * sinf(angle), 0.9f + 0.9f * cosf(angle * 1.7f) };
+                const float hue = phase * 3.0f;
+                const float color[3] = { 0.55f + 0.45f * sinf(hue), 0.55f + 0.45f * sinf(hue + 2.094f),
+                    0.55f + 0.45f * sinf(hue + 4.188f) };
+                zenapp::addPointLight(&lights, position, color, 5.0f, 1.9f);
+                memcpy(markerPosition[markerCount], position, sizeof(position));
+                memcpy(markerColor[markerCount], color, sizeof(color));
+                markerScale[markerCount++] = 0.045f;
+            }
         }
-        memcpy(uniformBytes.data() + lightsOffset, &lights, sizeof(lights));
+        froxelizer.prepare(static_cast<unsigned>(width), static_cast<unsigned>(height),
+                projection.Data(), 0.1f, 100.0f);
+        zenapp::buildClusteredBuffers(lights, froxelizer, view.Data(), &clustered);
 
         for (unsigned row = 0; row < kRows; ++row)
         {
@@ -303,11 +328,11 @@ int main(int argc, char** argv)
         {
             ObjectUniforms object;
             memset(&object, 0, sizeof(object));
-            if (lightsOn)
+            if (i < markerCount)
             {
                 object.model = Math::Mat4::Translation(Math::Vec3(markerPosition[i][0],
                                        markerPosition[i][1], markerPosition[i][2])) *
-                               Math::Mat4::Scale(Math::Vec3(0.09f, 0.09f, 0.09f));
+                               Math::Mat4::Scale(Math::Vec3(markerScale[i], markerScale[i], markerScale[i]));
                 memcpy(object.baseColor, markerColor[i], sizeof(markerColor[i]));
                 object.baseColor[3] = 1.0f;
                 object.material[2] = 1.6f;
@@ -322,6 +347,7 @@ int main(int argc, char** argv)
         driver->beginFrame();
         driver->updateBuffer(uniformBuffer, 0, uniformBytes.data(),
                 static_cast<std::uint32_t>(uniformBytes.size()));
+        driver->updateBuffer(clusteredBuffer, 0, &clustered, sizeof(clustered));
         driver->beginRenderPass(pass);
 
         driver->bindPipeline(skyPipeline);
@@ -334,7 +360,14 @@ int main(int argc, char** argv)
         driver->bindIndexBuffer(indexBuffer);
         driver->bindUniformBuffer(0, uniformBuffer, 0, sizeof(FrameUniforms));
         zenapp::bindIbl(driver, ibl);
-        driver->bindUniformBuffer(3, uniformBuffer, lightsOffset, sizeof(zenapp::LightUniforms));
+        driver->bindUniformBuffer(3, clusteredBuffer, offsetof(zenapp::ClusteredBuffers, cluster),
+                sizeof(zenapp::ClusterUniforms));
+        driver->bindUniformBuffer(4, clusteredBuffer, offsetof(zenapp::ClusteredBuffers, lights),
+                sizeof(clustered.lights));
+        driver->bindUniformBuffer(5, clusteredBuffer, offsetof(zenapp::ClusteredBuffers, froxels),
+                sizeof(clustered.froxels));
+        driver->bindUniformBuffer(6, clusteredBuffer, offsetof(zenapp::ClusteredBuffers, records),
+                sizeof(clustered.records));
         for (unsigned i = 0; i < objectCount; ++i)
         {
             driver->bindUniformBuffer(2, uniformBuffer, frameStride + i * objectStride,
@@ -350,6 +383,7 @@ int main(int argc, char** argv)
 
     driver->destroy(skyPipeline);
     driver->destroy(pbrPipeline);
+    driver->destroy(clusteredBuffer);
     driver->destroy(uniformBuffer);
     driver->destroy(indexBuffer);
     driver->destroy(vertexBuffer);
