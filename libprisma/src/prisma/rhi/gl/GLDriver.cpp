@@ -339,6 +339,7 @@ struct GLPipeline
     GLuint program = 0;
     GLuint vertexArray = 0;
     bool compute = false;
+    bool vertexBinding = false;
     GLint patchVertices = 0;
     GLenum topology = GL_TRIANGLES;
     VertexBufferLayout vertexBuffers[PipelineDesc::kMaxVertexBuffers];
@@ -672,6 +673,13 @@ public:
         caps_.floatLinearFiltering = true;
 #endif
 
+#ifdef PRISMA_GLES
+        vertexBinding_ = caps_.compute && glBindVertexBuffer != nullptr &&
+                         glVertexAttribFormat != nullptr && glVertexAttribIFormat != nullptr &&
+                         glVertexAttribBinding != nullptr && glVertexBindingDivisor != nullptr;
+#else
+        vertexBinding_ = true;
+#endif
         glGenVertexArrays(1, &scratchVertexArray_);
 #ifndef PRISMA_GLES
         glEnable(GL_PRIMITIVE_RESTART_FIXED_INDEX);
@@ -1312,14 +1320,31 @@ public:
         glGenVertexArrays(1, &pipeline.vertexArray);
         state_.bindVertexArray(pipeline.vertexArray);
         label(GL_PROGRAM, pipeline.program, desc.debugName);
+        pipeline.vertexBinding = vertexBinding_;
+        for (std::uint32_t i = 0; i < desc.attributeCount; ++i)
+            if (desc.attributes[i].offset > 2047) pipeline.vertexBinding = false;
         for (std::uint32_t i = 0; i < desc.attributeCount; ++i)
         {
             const VertexAttribute& attribute = desc.attributes[i];
             pipeline.attributes[i] = attribute;
             glEnableVertexAttribArray(attribute.location);
-            glVertexAttribDivisor(attribute.location,
-                    desc.vertexBuffers[attribute.buffer].step == VertexStep::Instance ? 1 : 0);
+            if (!pipeline.vertexBinding)
+            {
+                glVertexAttribDivisor(attribute.location,
+                        desc.vertexBuffers[attribute.buffer].step == VertexStep::Instance ? 1 : 0);
+                continue;
+            }
+            const GLVertexFormat format = toGLVertexFormat(attribute.format);
+            if (format.integer)
+                glVertexAttribIFormat(attribute.location, format.components, format.type,
+                        attribute.offset);
+            else
+                glVertexAttribFormat(attribute.location, format.components, format.type,
+                        format.normalized, attribute.offset);
+            glVertexAttribBinding(attribute.location, attribute.buffer);
         }
+        for (std::uint32_t i = 0; pipeline.vertexBinding && i < desc.vertexBufferCount; ++i)
+            glVertexBindingDivisor(i, desc.vertexBuffers[i].step == VertexStep::Instance ? 1 : 0);
         return handleCast<PipelineHandle>(pipelines_.insert(pipeline));
     }
 
@@ -2756,6 +2781,13 @@ private:
         state_.alphaToCoverage(pipeline->alphaToCoverage);
 
         state_.bindVertexArray(pipeline->vertexArray);
+        if (vertexDirty_ && pipeline->vertexBinding)
+        {
+            for (std::uint32_t i = 0; i < pipeline->vertexBufferCount; ++i)
+                glBindVertexBuffer(i, buffers[i]->id, vertexOffsets_[i],
+                        static_cast<GLsizei>(pipeline->vertexBuffers[i].stride));
+            vertexDirty_ = false;
+        }
         if (vertexDirty_)
         {
             for (std::uint32_t i = 0; i < pipeline->attributeCount; ++i)
@@ -2841,6 +2873,7 @@ private:
     GLuint copyFramebuffers_[2] = { 0, 0 };
     bool computeActive_ = false;
     bool copyImage_ = false;
+    bool vertexBinding_ = false;
     GLuint depthResolve_ = 0;
     GLuint passFramebuffer_ = 0;
 
