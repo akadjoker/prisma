@@ -34,7 +34,7 @@ The same test, with checks made by reading pixels back, runs on OpenGL 4.6, Open
 Requires CMake 3.21, a C++14 compiler and the OpenGL development files. The Vulkan backend is built when the Vulkan SDK is found.
 
 ```sh
-git clone --recursive <repository url>
+git clone --recursive https://github.com/akadjoker/prisma.git
 cd prisma
 cmake -S . -B build
 cmake --build build
