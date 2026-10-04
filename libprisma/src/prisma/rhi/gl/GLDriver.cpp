@@ -1844,6 +1844,7 @@ public:
             currentSurface_ = SwapchainHandle();
         }
         if (!mainSwapped_) platform_.swapBuffers(platform_.user);
+        glFlush();
         mainSwapped_ = false;
         mainDrawn_ = false;
     }

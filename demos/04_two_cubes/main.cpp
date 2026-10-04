@@ -165,7 +165,7 @@ int main(int argc, char** argv)
         const float angle = (still ? 0.0f : static_cast<float>(time_seconds())) + 0.6f;
 
         const Math::Mat4 projection = zenapp::perspectiveZeroToOne(1.0f, aspect, 0.1f, 100.0f);
-        const Math::Mat4 view = Math::Mat4::Translation(Math::Vec3(0.0f, 0.0f, -9.0f)) *
+        const Math::Mat4 view = Math::Mat4::Translation(Math::Vec3(0.0f, 0.0f, -7.5f)) *
                                 Math::Mat4::RotationX(0.5f);
         const Math::Mat4 viewProjection = projection * view;
 
@@ -192,7 +192,7 @@ int main(int argc, char** argv)
             driver->drawIndexed(36, 0);
         }
         driver->endRenderPass();
-        driver->endFrame();
+        zenapp::endFrame(driver);
         driver->present();
 
         if (maxFrames > 0 && ++frames >= maxFrames) window_set_should_close(window, true);

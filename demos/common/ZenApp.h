@@ -3,6 +3,13 @@
 #include "platform.h"
 #include "prisma/rhi/Driver.h"
 #include "prisma/rhi/ShaderBlob.h"
+#include "third_party/stb_image_write.h"
+
+#ifdef PRISMA_HEADLESS
+#include "Headless.h"
+#endif
+
+#include <ct/vector.hpp>
 
 #include <stdlib.h>
 #include <string.h>
@@ -65,9 +72,31 @@ inline bool createSurface(void* user, void* instance, std::uint64_t* surface)
 
 inline void log(const char* message) { log_error("prisma: %s", message); }
 
+inline int environmentInt(const char* name, int fallback)
+{
+    const char* value = getenv(name);
+    return value && *value ? atoi(value) : fallback;
+}
+
 inline PlatformWindow* openWindowEx(const char* title, prisma::DriverType type, int width,
         int height, int x, int y, int monitor, bool resizable, bool vsync)
 {
+#ifdef PRISMA_HEADLESS
+    WindowConfig fake = {};
+    fake.title = title;
+    fake.width = environmentInt("PRISMA_SHOT_WIDTH", 960);
+    fake.height = environmentInt("PRISMA_SHOT_HEIGHT", 540);
+    fake.render = RENDER_GL;
+    (void) type;
+    (void) width;
+    (void) height;
+    (void) x;
+    (void) y;
+    (void) monitor;
+    (void) resizable;
+    (void) vsync;
+    return window_create(&fake);
+#else
     WindowConfig config = {};
     config.title = title;
     config.width = width;
@@ -103,6 +132,7 @@ inline PlatformWindow* openWindowEx(const char* title, prisma::DriverType type, 
     config.gl.minor = 6;
     return window_create(&config);
 #endif
+#endif
 }
 
 inline PlatformWindow* openWindow(const char* title, prisma::DriverType type)
@@ -124,20 +154,90 @@ inline prisma::ShaderHandle createShader(prisma::Driver* driver, const prisma::S
     return driver->createShader(desc);
 }
 
+inline PlatformWindow*& captureWindow()
+{
+    static PlatformWindow* window = nullptr;
+    return window;
+}
+
+inline void writeCapture(prisma::Driver* driver, PlatformWindow* window, const char* path)
+{
+    int width = 0;
+    int height = 0;
+    window_get_framebuffer_size(window, &width, &height);
+    if (width <= 0 || height <= 0) return;
+    ct::Vector<unsigned char> pixels;
+    pixels.resize(static_cast<size_t>(width) * static_cast<size_t>(height) * 4);
+    prisma::Rect rect;
+    rect.width = static_cast<std::uint32_t>(width);
+    rect.height = static_cast<std::uint32_t>(height);
+    if (!driver->readPixels(prisma::RenderTarget(), rect, pixels.data()))
+    {
+        log_error("capture: could not read the window");
+        return;
+    }
+    for (size_t i = 3; i < pixels.size(); i += 4) pixels[i] = 255;
+    if (!stbi_write_png(path, width, height, 4, pixels.data(), width * 4))
+        log_error("capture: could not write %s", path);
+}
+
+inline void endFrame(prisma::Driver* driver)
+{
+    static int frame = 0;
+    static bool done = false;
+    ++frame;
+    const char* path = getenv("PRISMA_SHOT");
+    PlatformWindow* window = captureWindow();
+    if (path && *path && window && !done && frame >= environmentInt("PRISMA_SHOT_FRAME", 20))
+    {
+        writeCapture(driver, window, path);
+        done = true;
+        window_set_should_close(window, true);
+    }
+    driver->endFrame();
+}
+
 inline prisma::Driver* createDriver(PlatformWindow* window, prisma::DriverType type)
 {
+    captureWindow() = window;
     prisma::GLPlatform gl;
+    prisma::VulkanPlatform vulkan;
+#ifdef PRISMA_HEADLESS
+    static headless::Context context;
+    static headless::Surface surface;
+    int surfaceWidth = 0;
+    int surfaceHeight = 0;
+    window_get_framebuffer_size(window, &surfaceWidth, &surfaceHeight);
+    surface.width = static_cast<std::uint32_t>(surfaceWidth);
+    surface.height = static_cast<std::uint32_t>(surfaceHeight);
+    if (type == prisma::DriverType::OpenGL)
+    {
+#ifdef PRISMA_GLES
+        const bool es = true;
+#else
+        const bool es = false;
+#endif
+        if (!headless::openContext(&context, es, kDebug) ||
+                !headless::openSurface(&context, surface.width, surface.height, &surface))
+        {
+            log_error("driver: could not create a headless OpenGL context");
+            return nullptr;
+        }
+    }
+    gl = headless::glPlatform(&surface);
+    vulkan = headless::vulkanPlatform(&surface);
+#else
     gl.user = window;
     gl.makeCurrent = makeCurrent;
     gl.swapBuffers = swapBuffers;
     gl.framebufferSize = framebufferSize;
     gl.getProcAddress = gl_proc_address;
 
-    prisma::VulkanPlatform vulkan;
     vulkan.user = window;
     vulkan.instanceExtensions = instanceExtensions;
     vulkan.createSurface = createSurface;
     vulkan.framebufferSize = framebufferSize;
+#endif
 
     prisma::DriverDesc desc;
     desc.type = type;

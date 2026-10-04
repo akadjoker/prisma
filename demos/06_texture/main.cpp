@@ -196,7 +196,7 @@ int main(int argc, char** argv)
         driver->bindTexture(0, texture, sampler);
         driver->drawIndexed(36, 0);
         driver->endRenderPass();
-        driver->endFrame();
+        zenapp::endFrame(driver);
         driver->present();
 
         if (maxFrames > 0 && ++frames >= maxFrames) window_set_should_close(window, true);

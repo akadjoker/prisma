@@ -277,7 +277,7 @@ int main(int argc, char** argv)
         driver->draw(4, 0);
         driver->endRenderPass();
 
-        driver->endFrame();
+        zenapp::endFrame(driver);
         driver->present();
 
         if (maxFrames > 0 && ++frames >= maxFrames) window_set_should_close(window, true);

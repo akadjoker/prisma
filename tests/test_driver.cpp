@@ -1,4 +1,5 @@
 #include "Check.h"
+#include "Headless.h"
 #include "platform.h"
 #include "prisma/rhi/Driver.h"
 #include "prisma/rhi/ShaderBlob.h"
@@ -60,6 +61,18 @@ bool makeCurrent(void* user)
 }
 
 void swapBuffers(void* user) { window_swap(static_cast<PlatformWindow*>(user)); }
+
+void pump(PlatformWindow* window)
+{
+    if (window) window_begin_frame(window);
+}
+
+bool hasArgument(int argc, char** argv, const char* name)
+{
+    for (int i = 1; i < argc; ++i)
+        if (strcmp(argv[i], name) == 0) return true;
+    return false;
+}
 
 const char* const* instanceExtensions(void*, std::uint32_t* count)
 {
@@ -212,13 +225,8 @@ int main(int argc, char** argv)
 
     static unsigned char paramBytes[kMaxParamStride * kParamCount];
 
-    const bool useVulkan = argc > 1 && strcmp(argv[1], "vulkan") == 0;
-
-    if (!platform_init())
-    {
-        printf("platform: %s\n", platform_get_error());
-        return 1;
-    }
+    const bool useVulkan = hasArgument(argc, argv, "vulkan");
+    const bool headlessMode = hasArgument(argc, argv, "headless");
 
     WindowConfig config = {};
     config.title = "prisma test";
@@ -229,55 +237,90 @@ int main(int argc, char** argv)
     config.monitor = MONITOR_CURRENT;
 
     PlatformWindow* window = nullptr;
-    if (useVulkan)
+    headless::Context headlessContext;
+    headless::Surface headlessMain;
+    GLPlatform gl;
+    VulkanPlatform vulkan;
+    if (headlessMode)
     {
-        if (!vulkan_supported())
+        headlessMain.width = 320;
+        headlessMain.height = 240;
+        if (!useVulkan)
         {
-            printf("vulkan is not supported\n");
-            platform_shutdown();
-            return 1;
+#ifdef PRISMA_GLES
+            const bool es = true;
+#else
+            const bool es = false;
+#endif
+            if (!headless::openContext(&headlessContext, es, true) ||
+                    !headless::openSurface(&headlessContext, 320, 240, &headlessMain))
+            {
+                printf("headless OpenGL context could not be created\n");
+                return 1;
+            }
         }
-        config.render = RENDER_VULKAN;
-        window = window_create(&config);
+#ifdef PRISMA_TEST_VULKAN
+        gl = headless::glPlatform(&headlessMain);
+        vulkan = headless::vulkanPlatform(&headlessMain);
+#else
+        gl = headless::glPlatform(&headlessMain);
+#endif
     }
     else
     {
-        config.render = RENDER_GL;
-        config.gl.debug = true;
-#ifdef PRISMA_GLES
-        config.gl.profile = GL_PROFILE_ES;
-        config.gl.major = 3;
-        for (int minor = 2; minor >= 0 && !window; --minor)
+        if (!platform_init())
         {
-            config.gl.minor = minor;
+            printf("platform: %s\n", platform_get_error());
+            return 1;
+        }
+        if (useVulkan)
+        {
+            if (!vulkan_supported())
+            {
+                printf("vulkan is not supported\n");
+                platform_shutdown();
+                return 1;
+            }
+            config.render = RENDER_VULKAN;
             window = window_create(&config);
         }
+        else
+        {
+            config.render = RENDER_GL;
+            config.gl.debug = true;
+#ifdef PRISMA_GLES
+            config.gl.profile = GL_PROFILE_ES;
+            config.gl.major = 3;
+            for (int minor = 2; minor >= 0 && !window; --minor)
+            {
+                config.gl.minor = minor;
+                window = window_create(&config);
+            }
 #else
-        config.gl.profile = GL_PROFILE_CORE;
-        config.gl.major = 4;
-        config.gl.minor = 6;
-        window = window_create(&config);
+            config.gl.profile = GL_PROFILE_CORE;
+            config.gl.major = 4;
+            config.gl.minor = 6;
+            window = window_create(&config);
 #endif
-    }
-    if (!window)
-    {
-        printf("window: %s\n", platform_get_error());
-        platform_shutdown();
-        return 1;
-    }
+        }
+        if (!window)
+        {
+            printf("window: %s\n", platform_get_error());
+            platform_shutdown();
+            return 1;
+        }
 
-    GLPlatform gl;
-    gl.user = window;
-    gl.makeCurrent = makeCurrent;
-    gl.swapBuffers = swapBuffers;
-    gl.framebufferSize = framebufferSize;
-    gl.getProcAddress = gl_proc_address;
+        gl.user = window;
+        gl.makeCurrent = makeCurrent;
+        gl.swapBuffers = swapBuffers;
+        gl.framebufferSize = framebufferSize;
+        gl.getProcAddress = gl_proc_address;
 
-    VulkanPlatform vulkan;
-    vulkan.user = window;
-    vulkan.instanceExtensions = instanceExtensions;
-    vulkan.createSurface = createSurface;
-    vulkan.framebufferSize = framebufferSize;
+        vulkan.user = window;
+        vulkan.instanceExtensions = instanceExtensions;
+        vulkan.createSurface = createSurface;
+        vulkan.framebufferSize = framebufferSize;
+    }
 
     DriverDesc desc;
     desc.type = useVulkan ? DriverType::Vulkan : DriverType::OpenGL;
@@ -354,7 +397,7 @@ int main(int argc, char** argv)
         pass.clearColor[2] = 0.45f;
 
         messages = 0;
-        window_begin_frame(window);
+        pump(window);
         driver->beginFrame();
         driver->beginRenderPass(pass);
         driver->endRenderPass();
@@ -484,7 +527,7 @@ int main(int argc, char** argv)
 
         RenderPassDesc black;
         messages = 0;
-        window_begin_frame(window);
+        pump(window);
         driver->beginFrame();
         driver->beginRenderPass(black);
         driver->bindUniformBuffer(2, params, kParamGreen * stride, sizeof(Params));
@@ -539,7 +582,7 @@ int main(int argc, char** argv)
         if (messages) printf("unexpected: %s\n", lastMessage);
 
         messages = 0;
-        window_begin_frame(window);
+        pump(window);
         driver->beginFrame();
         driver->beginRenderPass(black);
         driver->bindUniformBuffer(2, params, kParamRed * stride, sizeof(Params));
@@ -621,7 +664,7 @@ int main(int argc, char** argv)
         CHECK(messages == 1);
 
         messages = 0;
-        window_begin_frame(window);
+        pump(window);
         driver->beginFrame();
         driver->beginRenderPass(black);
         driver->bindPipeline(instanced);
@@ -665,7 +708,7 @@ int main(int argc, char** argv)
         CHECK(noBuffer.valid());
 
         messages = 0;
-        window_begin_frame(window);
+        pump(window);
         driver->beginFrame();
         driver->beginRenderPass(black);
         driver->draw(3, 0);
@@ -741,7 +784,7 @@ int main(int argc, char** argv)
         CHECK(textured.valid());
 
         messages = 0;
-        window_begin_frame(window);
+        pump(window);
         driver->beginFrame();
         driver->beginRenderPass(black);
         driver->bindPipeline(textured);
@@ -794,7 +837,7 @@ int main(int argc, char** argv)
             offscreen.depthStore = StoreOp::Discard;
 
             messages = 0;
-            window_begin_frame(window);
+            pump(window);
             driver->beginFrame();
             driver->beginRenderPass(offscreen);
             driver->bindUniformBuffer(2, params, kParamNearBright * stride, sizeof(Params));
@@ -855,7 +898,7 @@ int main(int argc, char** argv)
         tenBitPass.colorCount = 1;
 
         messages = 0;
-        window_begin_frame(window);
+        pump(window);
         driver->beginFrame();
         driver->beginRenderPass(srgbPass);
         driver->bindUniformBuffer(2, params, kParamHalf * stride, sizeof(Params));
@@ -930,7 +973,7 @@ int main(int argc, char** argv)
         twoTargetsPass.colorCount = 2;
 
         messages = 0;
-        window_begin_frame(window);
+        pump(window);
         driver->beginFrame();
         driver->beginRenderPass(twoTargetsPass);
         driver->bindPipeline(twoTargets);
@@ -1113,7 +1156,7 @@ int main(int argc, char** argv)
         mipPass.clearColor[0] = 1.0f;
 
         messages = 0;
-        window_begin_frame(window);
+        pump(window);
         driver->beginFrame();
         driver->beginRenderPass(black);
         driver->bindPipeline(arrayPipeline);
@@ -1207,7 +1250,7 @@ int main(int argc, char** argv)
 
         messages = 0;
         driver->updateTexture(explicitMips, 1, 0, kBlueTexels);
-        window_begin_frame(window);
+        pump(window);
         driver->beginFrame();
         driver->beginRenderPass(black);
         driver->bindPipeline(lodPipeline);
@@ -1254,7 +1297,7 @@ int main(int argc, char** argv)
         if (messages) printf("unexpected: %s\n", lastMessage);
 
         messages = 0;
-        window_begin_frame(window);
+        pump(window);
         driver->beginFrame();
         driver->beginRenderPass(layerZeroPass);
         driver->endRenderPass();
@@ -1337,7 +1380,7 @@ int main(int argc, char** argv)
         keepStencil.stencilLoad = LoadOp::Load;
 
         messages = 0;
-        window_begin_frame(window);
+        pump(window);
         driver->beginFrame();
         driver->beginRenderPass(black);
         driver->bindUniformBuffer(2, params, kParamRed * stride, sizeof(Params));
@@ -1373,7 +1416,7 @@ int main(int argc, char** argv)
         CHECK(masked.valid());
 
         messages = 0;
-        window_begin_frame(window);
+        pump(window);
         driver->beginFrame();
         driver->beginRenderPass(black);
         driver->bindUniformBuffer(2, params, kParamWhite * stride, sizeof(Params));
@@ -1404,7 +1447,7 @@ int main(int argc, char** argv)
         CHECK(blendReverse.valid());
 
         messages = 0;
-        window_begin_frame(window);
+        pump(window);
         driver->beginFrame();
         driver->beginRenderPass(black);
         driver->bindUniformBuffer(2, params, kParamHalf * stride, sizeof(Params));
@@ -1440,7 +1483,7 @@ int main(int argc, char** argv)
         CHECK(biased.valid());
 
         messages = 0;
-        window_begin_frame(window);
+        pump(window);
         driver->beginFrame();
         driver->beginRenderPass(black);
         driver->bindPipeline(unbiased);
@@ -1493,7 +1536,7 @@ int main(int argc, char** argv)
         shadowPass.clearDepth = 0.5f;
 
         messages = 0;
-        window_begin_frame(window);
+        pump(window);
         driver->beginFrame();
         driver->beginRenderPass(shadowPass);
         driver->endRenderPass();
@@ -1526,7 +1569,7 @@ int main(int argc, char** argv)
         CHECK(wire.valid());
 
         messages = 0;
-        window_begin_frame(window);
+        pump(window);
         driver->beginFrame();
         driver->beginRenderPass(black);
         driver->bindUniformBuffer(2, params, kParamRed * stride, sizeof(Params));
@@ -1577,7 +1620,7 @@ int main(int argc, char** argv)
         stencilOffscreen.depth.texture = stencilDepth;
 
         messages = 0;
-        window_begin_frame(window);
+        pump(window);
         driver->beginFrame();
         driver->beginRenderPass(stencilOffscreen);
         driver->bindUniformBuffer(2, params, kParamRed * stride, sizeof(Params));
@@ -1669,7 +1712,7 @@ int main(int argc, char** argv)
         mixedSamples.depthResolve = RenderTarget();
 
         messages = 0;
-        window_begin_frame(window);
+        pump(window);
         driver->beginFrame();
         driver->beginRenderPass(badResolve);
         CHECK(messages == 1);
@@ -1838,7 +1881,7 @@ int main(int argc, char** argv)
             CHECK(messages == 1);
 
             messages = 0;
-            window_begin_frame(window);
+            pump(window);
             driver->beginFrame();
             driver->beginRenderPass(black);
             driver->bindPipeline(textured);
@@ -2075,7 +2118,7 @@ int main(int argc, char** argv)
             }
 
             messages = 0;
-            window_begin_frame(window);
+            pump(window);
             driver->beginFrame();
             driver->beginRenderPass(depthFill);
             driver->copyTexture(depthCopy);
@@ -2296,7 +2339,7 @@ int main(int argc, char** argv)
             }
 
             messages = 0;
-            window_begin_frame(window);
+            pump(window);
             driver->beginFrame();
             driver->dispatch(1, 1, 1);
             CHECK(messages == 1);
@@ -2421,7 +2464,7 @@ int main(int argc, char** argv)
             bool asyncReady = false;
             for (int i = 0; i < 30 && !asyncReady; ++i)
             {
-                window_begin_frame(window);
+                pump(window);
                 driver->beginFrame();
                 driver->beginRenderPass(black);
                 driver->endRenderPass();
@@ -2459,7 +2502,7 @@ int main(int argc, char** argv)
             CHECK(reflected.valid());
 
             messages = 0;
-            window_begin_frame(window);
+            pump(window);
             driver->beginFrame();
             driver->beginRenderPass(black);
             driver->bindPipeline(reflected);
@@ -2504,7 +2547,7 @@ int main(int argc, char** argv)
             rightPixel.x = 240;
 
             messages = 0;
-            window_begin_frame(window);
+            pump(window);
             driver->beginFrame();
             driver->beginRenderPass(black);
             driver->bindUniformBuffer(2, params, kParamGreen * stride, sizeof(Params));
@@ -2536,7 +2579,7 @@ int main(int argc, char** argv)
             bool allRead = false;
             for (; readbackFrames < 30 && !allRead; ++readbackFrames)
             {
-                window_begin_frame(window);
+                pump(window);
                 driver->beginFrame();
                 driver->beginRenderPass(black);
                 driver->endRenderPass();
@@ -2596,7 +2639,7 @@ int main(int argc, char** argv)
                     manyBuffers[i] = driver->createBuffer(manyBufferDesc);
                     if (!manyTextures[i].valid() || !manyBuffers[i].valid()) ++failures;
                 }
-                window_begin_frame(window);
+                pump(window);
                 driver->beginFrame();
                 driver->beginRenderPass(black);
                 driver->bindPipeline(textured);
@@ -2626,25 +2669,49 @@ int main(int argc, char** argv)
 
         {
             CHECK(driver->caps().multipleWindows);
-            WindowConfig secondConfig = config;
-            secondConfig.title = "prisma test, second window";
-            secondConfig.width = 160;
-            secondConfig.height = 120;
-            PlatformWindow* secondWindow = window_create(&secondConfig);
-            CHECK(secondWindow != nullptr);
-            if (secondWindow)
+            PlatformWindow* secondWindow = nullptr;
+            headless::Surface headlessSecond;
+            bool haveSecond = false;
+            if (headlessMode)
             {
-                for (int i = 0; i < 5; ++i) window_begin_frame(secondWindow);
+                headlessSecond.width = 160;
+                headlessSecond.height = 120;
+                haveSecond = useVulkan ||
+                             headless::openSurface(&headlessContext, 160, 120, &headlessSecond);
+            }
+            else
+            {
+                WindowConfig secondConfig = config;
+                secondConfig.title = "prisma test, second window";
+                secondConfig.width = 160;
+                secondConfig.height = 120;
+                secondWindow = window_create(&secondConfig);
+                haveSecond = secondWindow != nullptr;
+            }
+            CHECK(haveSecond);
+            if (haveSecond)
+            {
+                for (int i = 0; i < 5; ++i) pump(secondWindow);
                 contextWindow = window;
                 SwapchainDesc secondDesc;
-                secondDesc.gl.user = secondWindow;
-                secondDesc.gl.makeCurrent = makeCurrentOn;
-                secondDesc.gl.swapBuffers = swapBuffers;
-                secondDesc.gl.framebufferSize = framebufferSize;
-                secondDesc.vulkan.user = secondWindow;
-                secondDesc.vulkan.instanceExtensions = instanceExtensions;
-                secondDesc.vulkan.createSurface = createSurface;
-                secondDesc.vulkan.framebufferSize = framebufferSize;
+                if (headlessMode)
+                {
+                    secondDesc.gl = headless::glPlatform(&headlessSecond);
+#ifdef PRISMA_TEST_VULKAN
+                    secondDesc.vulkan = headless::vulkanPlatform(&headlessSecond);
+#endif
+                }
+                else
+                {
+                    secondDesc.gl.user = secondWindow;
+                    secondDesc.gl.makeCurrent = makeCurrentOn;
+                    secondDesc.gl.swapBuffers = swapBuffers;
+                    secondDesc.gl.framebufferSize = framebufferSize;
+                    secondDesc.vulkan.user = secondWindow;
+                    secondDesc.vulkan.instanceExtensions = instanceExtensions;
+                    secondDesc.vulkan.createSurface = createSurface;
+                    secondDesc.vulkan.framebufferSize = framebufferSize;
+                }
                 messages = 0;
                 const SwapchainHandle second = driver->createSwapchain(secondDesc);
                 CHECK(second.valid());
@@ -2657,7 +2724,13 @@ int main(int argc, char** argv)
                 secondTarget.swapchain = second;
                 std::uint32_t secondWidth = 0;
                 std::uint32_t secondHeight = 0;
-                framebufferSize(secondWindow, &secondWidth, &secondHeight);
+                if (headlessMode)
+                {
+                    secondWidth = headlessSecond.width;
+                    secondHeight = headlessSecond.height;
+                }
+                else
+                    framebufferSize(secondWindow, &secondWidth, &secondHeight);
                 Rect leftSide;
                 leftSide.x = static_cast<std::int32_t>(secondWidth / 4);
                 leftSide.y = static_cast<std::int32_t>(secondHeight / 2);
@@ -2669,8 +2742,8 @@ int main(int argc, char** argv)
                 messages = 0;
                 for (int frame = 0; frame < 4; ++frame)
                 {
-                    window_begin_frame(window);
-                    window_begin_frame(secondWindow);
+                    pump(window);
+                    pump(secondWindow);
                     driver->beginFrame();
                     driver->beginRenderPass(black);
                     driver->bindUniformBuffer(2, params, kParamGreen * stride, sizeof(Params));
@@ -2705,7 +2778,7 @@ int main(int argc, char** argv)
 
                 driver->destroy(second);
                 messages = 0;
-                window_begin_frame(window);
+                pump(window);
                 driver->beginFrame();
                 driver->beginRenderPass(secondPass);
                 CHECK(messages == 1);
@@ -2716,7 +2789,9 @@ int main(int argc, char** argv)
                 driver->endFrame();
                 driver->present();
                 CHECK(messages == 1);
-                window_destroy(secondWindow);
+                if (secondWindow) window_destroy(secondWindow);
+                else
+                    headless::closeSurface(&headlessSecond);
             }
         }
 
@@ -2768,7 +2843,7 @@ int main(int argc, char** argv)
             CHECK(messages == 2);
 
             messages = 0;
-            window_begin_frame(window);
+            pump(window);
             driver->beginFrame();
             driver->beginRenderPass(black);
             driver->bindUniformBuffer(2, params, kParamQuad * stride, sizeof(Params));
@@ -2868,7 +2943,7 @@ int main(int argc, char** argv)
             CHECK(messages == 5);
 
             messages = 0;
-            window_begin_frame(window);
+            pump(window);
             driver->beginFrame();
             driver->beginRenderPass(black);
             driver->bindUniformBuffer(2, params, kParamLevelOne * stride, sizeof(Params));
@@ -2937,7 +3012,7 @@ int main(int argc, char** argv)
             };
 
             messages = 0;
-            window_begin_frame(window);
+            pump(window);
             driver->beginFrame();
             for (int i = 0; i < 5; ++i)
             {
@@ -3066,7 +3141,7 @@ int main(int argc, char** argv)
             coveragePixel.height = 1;
 
             messages = 0;
-            window_begin_frame(window);
+            pump(window);
             driver->beginFrame();
             unsigned char plainResult[4] = { 0, 0, 0, 0 };
             unsigned char alphaResult[4] = { 0, 0, 0, 0 };
@@ -3152,7 +3227,7 @@ int main(int argc, char** argv)
             const PipelineHandle order[3] = { sharedBlend, separateBlend, sharedBlend };
             const int expectedSecond[3][3] = { { 64, 255, 64 }, { 64, 64, 64 }, { 64, 255, 64 } };
             messages = 0;
-            window_begin_frame(window);
+            pump(window);
             driver->beginFrame();
             for (int i = 0; i < 3; ++i)
             {
@@ -3195,7 +3270,7 @@ int main(int argc, char** argv)
         CHECK(!driver->queryResult(QueryHandle(), &visibleResult));
 
         messages = 0;
-        window_begin_frame(window);
+        pump(window);
         driver->beginFrame();
         driver->beginQuery(visibleQuery);
         CHECK(messages == 1);
@@ -3221,7 +3296,7 @@ int main(int argc, char** argv)
         for (; queryFrames < 60 && !(visibleReady && hiddenReady && timeReady && queryFrames >= 6);
                 ++queryFrames)
         {
-            window_begin_frame(window);
+            pump(window);
             driver->beginFrame();
             if (timeQuery.valid()) driver->beginQuery(timeQuery);
             driver->beginRenderPass(black);
@@ -3329,8 +3404,16 @@ int main(int argc, char** argv)
         destroyDriver(driver);
     }
 
-    window_destroy(window);
-    platform_shutdown();
+    if (headlessMode)
+    {
+        headless::closeSurface(&headlessMain);
+        headless::closeContext(&headlessContext);
+    }
+    else
+    {
+        window_destroy(window);
+        platform_shutdown();
+    }
 
     if (failures)
     {

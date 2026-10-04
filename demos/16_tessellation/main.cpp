@@ -154,7 +154,7 @@ int main(int argc, char** argv)
     pass.clearColor[2] = 0.10f;
 
     int level = 8;
-    bool wire = false;
+    bool wire = wireSupported;
     const Math::Vec3 light = Math::Vec3(0.4f, 0.8f, 0.5f).Normalized();
 
     int frames = 0;
@@ -212,7 +212,7 @@ int main(int argc, char** argv)
             driver->draw(kPointCount, 0);
         }
         driver->endRenderPass();
-        driver->endFrame();
+        zenapp::endFrame(driver);
         driver->present();
 
         if (maxFrames > 0 && ++frames >= maxFrames) window_set_should_close(window, true);

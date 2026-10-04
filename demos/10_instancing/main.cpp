@@ -235,7 +235,7 @@ int main(int argc, char** argv)
         driver->bindUniformBuffer(0, uniformBuffer, 0, sizeof(Math::Mat4));
         driver->drawIndexed(36, 0, kInstanceCount);
         driver->endRenderPass();
-        driver->endFrame();
+        zenapp::endFrame(driver);
         driver->present();
 
         if (maxFrames > 0 && ++frames >= maxFrames) window_set_should_close(window, true);

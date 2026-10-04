@@ -34,7 +34,7 @@ A rendering backend library in C++14. It gives one interface over OpenGL 4.6, Op
 
 Only core features of each API are required. Extensions are optional and reported through `Caps`.
 
-The same test, with checks made by reading pixels back, runs on OpenGL 4.6, OpenGL ES 3 and Vulkan.
+The same test, with checks made by reading pixels back, runs on OpenGL 4.6, OpenGL ES 3 and Vulkan. It runs without a window: OpenGL uses an EGL pixel buffer and Vulkan a headless surface, so `ctest` never opens anything on screen (`-DPRISMA_WINDOW_TESTS=ON` adds the same tests in a real window).
 
 ## Build
 
@@ -99,7 +99,7 @@ Numbered, one concept each. Run any of them on Vulkan with the `vulkan` argument
 | `16_tessellation` | a Bezier surface on the tessellator |
 | `17_point_sprites` | a geometry shader turns points into quads |
 
-The demos that load meshes and textures read them from a media folder: set `PRISMA_MEDIA` or the CMake option `PRISMA_MEDIA_DIR`. A demo whose feature is missing on the GPU prints a line and exits.
+See [demos/README.md](demos/README.md) for pictures of each demo. The demos that load meshes and textures read them from a media folder: set `PRISMA_MEDIA` or the CMake option `PRISMA_MEDIA_DIR`. A demo whose feature is missing on the GPU prints a line and exits.
 
 ```sh
 ./build/demos/cube

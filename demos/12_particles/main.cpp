@@ -38,17 +38,13 @@ void fillParticles(ct::Vector<Particle>* particles)
     particles->resize(kParticleCount);
     for (std::uint32_t i = 0; i < kParticleCount; ++i)
     {
-        Math::Vec3 position(0.0f, 0.0f, 0.0f);
-        do
-        {
-            position = Math::Vec3(randomUnit() * 2.0f - 1.0f, randomUnit() * 2.0f - 1.0f,
-                    randomUnit() * 2.0f - 1.0f);
-        } while (position.LengthSquared() > 1.0f);
-
-        Math::Vec3 tangent = Math::Vec3(0.0f, 1.0f, 0.0f).Cross(position);
-        const float length = tangent.Length();
-        tangent = length > 0.0001f ? tangent / length : Math::Vec3(0.0f, 0.0f, 0.0f);
-        const Math::Vec3 velocity = tangent * (0.2f + 0.3f * randomUnit());
+        const float radius = 0.25f + 1.6f * sqrtf(randomUnit());
+        const float angle = randomUnit() * 6.2831853f;
+        const Math::Vec3 position(radius * cosf(angle), (randomUnit() - 0.5f) * 0.15f,
+                radius * sinf(angle));
+        const float speed = 1.2247449f * radius / powf(radius * radius + 0.04f, 0.75f);
+        const Math::Vec3 tangent(sinf(angle), 0.0f, -cosf(angle));
+        const Math::Vec3 velocity = tangent * (speed * (0.9f + 0.2f * randomUnit()));
 
         Particle& particle = (*particles)[i];
         particle.position[0] = position.x;
@@ -217,7 +213,7 @@ int main(int argc, char** argv)
         driver->bindStorageBuffer(0, particleBuffer, 0, kParticleCount * sizeof(Particle));
         driver->draw(4, 0, kParticleCount);
         driver->endRenderPass();
-        driver->endFrame();
+        zenapp::endFrame(driver);
         driver->present();
 
         if (maxFrames > 0 && ++frames >= maxFrames) window_set_should_close(window, true);

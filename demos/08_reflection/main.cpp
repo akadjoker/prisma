@@ -195,7 +195,7 @@ int main(int argc, char** argv)
             mesh.drawSubset(driver, 0, i);
         }
         driver->endRenderPass();
-        driver->endFrame();
+        zenapp::endFrame(driver);
         driver->present();
 
         if (maxFrames > 0 && ++frames >= maxFrames) window_set_should_close(window, true);

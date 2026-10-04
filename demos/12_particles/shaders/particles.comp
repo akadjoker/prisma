@@ -32,7 +32,9 @@ void main()
 
     vec3 tangent = cross(vec3(0.0, 1.0, 0.0), position);
     tangent /= max(length(tangent), 0.0001);
-    vec3 swirl = tangent * ((1.0 - dot(velocity, tangent)) * 0.8);
+    float planar = length(position.xz);
+    float circular = 1.2247449 * planar / pow(planar * planar + 0.04, 0.75);
+    vec3 swirl = tangent * ((circular - dot(velocity, tangent)) * 0.8);
 
     velocity += (gravity + swirl) * dt;
     velocity *= 1.0 - 0.02 * dt;

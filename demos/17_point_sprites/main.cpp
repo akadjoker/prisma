@@ -202,7 +202,7 @@ int main(int argc, char** argv)
         driver->bindUniformBuffer(0, uniformBuffer, 0, sizeof(FrameUniforms));
         driver->draw(kStarCount, 0);
         driver->endRenderPass();
-        driver->endFrame();
+        zenapp::endFrame(driver);
         driver->present();
 
         if (maxFrames > 0 && ++frames >= maxFrames) window_set_should_close(window, true);

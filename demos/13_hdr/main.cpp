@@ -422,7 +422,7 @@ int main(int argc, char** argv)
         driver->bindTexture(1, targets.bloomA, sampler);
         driver->draw(3, 0);
         driver->endRenderPass();
-        driver->endFrame();
+        zenapp::endFrame(driver);
         driver->present();
 
         if (maxFrames > 0 && ++frames >= maxFrames) window_set_should_close(window, true);

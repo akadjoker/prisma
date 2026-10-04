@@ -20,7 +20,7 @@ namespace
 
 const unsigned kMaxBones = 128;
 const unsigned kSoldiers = 5;
-const float kSpacing = 2.2f;
+const float kSpacing = 1.8f;
 const float kHeight = 2.0f;
 const float kGroundSize = 12.0f;
 
@@ -208,8 +208,7 @@ int main(int argc, char** argv)
     const float extent = high.y - low.y;
     const float scale = extent > 0.0f ? kHeight / extent : 1.0f;
     const Math::Vec3 center = (low + high) * 0.5f;
-    const Math::Mat4 fit = Math::Mat4::RotationY(3.14159265f) *
-                           Math::Mat4::Scale(Math::Vec3(scale, scale, scale)) *
+    const Math::Mat4 fit = Math::Mat4::Scale(Math::Vec3(scale, scale, scale)) *
                            Math::Mat4::Translation(Math::Vec3(-center.x, -low.y, -center.z));
     const float duration = ready ? animation.duration() : 1.0f;
     const Math::Vec3 light = Math::Vec3(0.4f, 0.8f, 0.5f).Normalized();
@@ -233,7 +232,7 @@ int main(int argc, char** argv)
         const float time = still ? 0.0f : static_cast<float>(time_seconds());
 
         const Math::Mat4 projection = zenapp::perspectiveZeroToOne(1.0f, aspect, 0.1f, 100.0f);
-        const Math::Mat4 view = Math::Mat4::Translation(Math::Vec3(0.0f, 0.0f, -9.5f)) *
+        const Math::Mat4 view = Math::Mat4::Translation(Math::Vec3(0.0f, 0.0f, -6.5f)) *
                                 Math::Mat4::RotationX(0.25f) *
                                 Math::Mat4::RotationY(sinf(time * 0.25f) * 0.5f) *
                                 Math::Mat4::Translation(Math::Vec3(0.0f, -1.0f, 0.0f));
@@ -298,7 +297,7 @@ int main(int argc, char** argv)
             }
         }
         driver->endRenderPass();
-        driver->endFrame();
+        zenapp::endFrame(driver);
         driver->present();
 
         if (maxFrames > 0 && ++frames >= maxFrames) window_set_should_close(window, true);

@@ -282,7 +282,7 @@ int main(int argc, char** argv)
         drawMesh(driver, scene, white, sampler, true);
         if (havePoles) drawMesh(driver, poles, white, sampler, true);
         driver->endRenderPass();
-        driver->endFrame();
+        zenapp::endFrame(driver);
         driver->present();
 
         if (maxFrames > 0 && ++frames >= maxFrames) window_set_should_close(window, true);
