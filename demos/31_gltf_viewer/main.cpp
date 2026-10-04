@@ -13,6 +13,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "depth.frag.h"
+#include "depth.vert.h"
+#include "depth_opaque.frag.h"
 #include "gltf.frag.h"
 #include "gltf.vert.h"
 #include "sky.frag.h"
@@ -43,6 +46,7 @@ struct Draw
     float distance;
     bool blend;
     bool doubleSided;
+    bool mask;
 };
 
 Math::Mat4 nodeMatrix(const float* world)
@@ -137,6 +141,7 @@ int main(int argc, char** argv)
     const char* skipArgument = zenapp::argumentValue(argc, argv, "skipmips");
     const unsigned skipMips = skipArgument ? static_cast<unsigned>(atoi(skipArgument)) : 0;
     const bool useFileCamera = zenapp::hasArgument(argc, argv, "camera");
+    const bool usePrepass = !zenapp::hasArgument(argc, argv, "noprepass");
     const bool autoWalk = zenapp::hasArgument(argc, argv, "autowalk");
 
     zenapp::GltfModel model;
@@ -248,6 +253,8 @@ int main(int argc, char** argv)
     opaqueDesc.attributes[3].format = prisma::VertexFormat::Float2;
     opaqueDesc.attributes[3].offset = offsetof(zenapp::GltfVertex, uv);
     opaqueDesc.depthTest = true;
+    opaqueDesc.depthWrite = !usePrepass;
+    opaqueDesc.depthCompare = usePrepass ? prisma::CompareOp::Equal : prisma::CompareOp::Less;
     opaqueDesc.cullMode = prisma::CullMode::Back;
     opaqueDesc.debugName = "gltf opaque";
     const prisma::PipelineHandle opaquePipeline = driver->createPipeline(opaqueDesc);
@@ -259,6 +266,7 @@ int main(int argc, char** argv)
 
     prisma::PipelineDesc blendDesc = doubleDesc;
     blendDesc.depthWrite = false;
+    blendDesc.depthCompare = prisma::CompareOp::Less;
     blendDesc.blend = true;
     blendDesc.srcColor = prisma::BlendFactor::SrcAlpha;
     blendDesc.dstColor = prisma::BlendFactor::OneMinusSrcAlpha;
@@ -275,6 +283,33 @@ int main(int argc, char** argv)
     skyDesc.debugName = "sky pipeline";
     const prisma::PipelineHandle skyPipeline = driver->createPipeline(skyDesc);
 
+    const prisma::ShaderHandle depthVertex = zenapp::createShader(driver, depth_vert);
+    const prisma::ShaderHandle depthMaskFragment = zenapp::createShader(driver, depth_frag);
+    const prisma::ShaderHandle depthOpaqueFragment = zenapp::createShader(driver, depth_opaque_frag);
+    prisma::PipelineHandle depthPipelines[4];
+    for (int variant = 0; variant < 4; ++variant)
+    {
+        prisma::PipelineDesc depthDesc;
+        depthDesc.vertexShader = depthVertex;
+        depthDesc.fragmentShader = (variant & 1) ? depthMaskFragment : depthOpaqueFragment;
+        depthDesc.vertexBuffers[0].stride = sizeof(zenapp::GltfVertex);
+        depthDesc.vertexBufferCount = 1;
+        depthDesc.attributeCount = 2;
+        depthDesc.attributes[0].location = 0;
+        depthDesc.attributes[0].format = prisma::VertexFormat::Float3;
+        depthDesc.attributes[0].offset = offsetof(zenapp::GltfVertex, position);
+        depthDesc.attributes[1].location = 3;
+        depthDesc.attributes[1].format = prisma::VertexFormat::Float2;
+        depthDesc.attributes[1].offset = offsetof(zenapp::GltfVertex, uv);
+        depthDesc.depthTest = true;
+        depthDesc.cullMode = (variant & 2) ? prisma::CullMode::None : prisma::CullMode::Back;
+        depthDesc.colorMask = 0;
+        depthDesc.debugName = "gltf depth";
+        depthPipelines[variant] = driver->createPipeline(depthDesc);
+    }
+    driver->destroy(depthVertex);
+    driver->destroy(depthMaskFragment);
+    driver->destroy(depthOpaqueFragment);
     driver->destroy(gltfVertex);
     driver->destroy(gltfFragment);
     driver->destroy(skyVertex);
@@ -282,6 +317,8 @@ int main(int argc, char** argv)
 
     const bool ready = iblReady && gpuReady && frameBuffer.valid() && objectBuffer.valid() &&
                        clusteredBuffer.valid() && opaquePipeline.valid() && doublePipeline.valid() &&
+                       depthPipelines[0].valid() && depthPipelines[1].valid() &&
+                       depthPipelines[2].valid() && depthPipelines[3].valid() &&
                        blendPipeline.valid() && skyPipeline.valid();
     if (!ready) log_error("gltf viewer: resource creation failed");
 
@@ -307,6 +344,8 @@ int main(int argc, char** argv)
 
     ct::Vector<Draw> draws;
     draws.reserve(maxDraws);
+    ct::Vector<unsigned> depthOrder;
+    depthOrder.reserve(maxDraws);
 
     Math::Vec3 flyEye(0.0f, 0.0f, 0.0f);
     float flyYaw = 0.0f;
@@ -428,6 +467,7 @@ int main(int argc, char** argv)
                 const zenapp::GltfMaterial* material =
                         primitive.material >= 0 ? &model.materials[primitive.material] : nullptr;
                 draw.blend = material && material->alpha == zenapp::GltfMaterial::Alpha::Blend;
+                draw.mask = material && material->alpha == zenapp::GltfMaterial::Alpha::Mask;
                 draw.doubleSided = material && material->doubleSided;
                 draws.push_back(draw);
             }
@@ -461,6 +501,20 @@ int main(int argc, char** argv)
             object.normalMatrix = object.model.Inverse().Transposed();
             memcpy(objectBytes.data() + i * objectStride, &object, sizeof(object));
         }
+
+        depthOrder.clear();
+        for (unsigned i = 0; i < draws.size(); ++i)
+            if (!draws[i].blend) depthOrder.push_back(i);
+        if (depthOrder.size() > 1)
+            ct::sort(depthOrder.data(), depthOrder.data() + depthOrder.size(),
+                    [&draws](unsigned a, unsigned b) {
+                        const Draw& da = draws[a];
+                        const Draw& db = draws[b];
+                        const int ka = (da.mask ? 1 : 0) + (da.doubleSided ? 2 : 0);
+                        const int kb = (db.mask ? 1 : 0) + (db.doubleSided ? 2 : 0);
+                        if (ka != kb) return ka < kb;
+                        return da.distance < db.distance;
+                    });
 
         froxelizer.prepare(static_cast<unsigned>(width), static_cast<unsigned>(height),
                 projection.Data(), nearPlane, farPlane);
@@ -511,6 +565,26 @@ int main(int argc, char** argv)
         driver->bindUniformBuffer(0, frameBuffer, 0, sizeof(FrameUniforms));
         zenapp::bindGltfGeometry(driver, gpu);
 
+        if (usePrepass)
+        {
+            int depthKind = -1;
+            for (size_t k = 0; k < depthOrder.size(); ++k)
+            {
+                const unsigned i = depthOrder[k];
+                const Draw& draw = draws[i];
+                const int kind = (draw.mask ? 1 : 0) + (draw.doubleSided ? 2 : 0);
+                if (kind != depthKind)
+                {
+                    driver->bindPipeline(depthPipelines[kind]);
+                    depthKind = kind;
+                }
+                if (draw.mask) zenapp::bindGltfMaterial(driver, gpu, model, draw.material);
+                driver->bindUniformBuffer(2, objectBuffer, static_cast<std::uint32_t>(i * objectStride),
+                        sizeof(ObjectUniforms));
+                zenapp::drawGltfPrimitive(driver, gpu, model.primitives[draw.primitive]);
+            }
+        }
+
         int boundMaterial = -2;
         int boundPipeline = -1;
         for (size_t i = 0; i < draws.size(); ++i)
@@ -559,6 +633,7 @@ int main(int argc, char** argv)
 
     overlay.destroy(driver);
     for (int i = 0; i < 3; ++i) driver->destroy(gpuQueries[i]);
+    for (int i = 0; i < 4; ++i) driver->destroy(depthPipelines[i]);
     driver->destroy(skyPipeline);
     driver->destroy(blendPipeline);
     driver->destroy(doublePipeline);
