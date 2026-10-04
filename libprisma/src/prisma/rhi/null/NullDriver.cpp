@@ -67,6 +67,7 @@ public:
     void endRenderPass() override {}
     void endFrame() override {}
     void present() override {}
+    bool readPixels(const RenderTarget&, const Rect&, void*) override { return false; }
 
 private:
     using Slot = ct::Handle32<std::uint32_t>;

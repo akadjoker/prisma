@@ -48,6 +48,8 @@ public:
     virtual void endRenderPass() = 0;
     virtual void endFrame() = 0;
     virtual void present() = 0;
+
+    virtual bool readPixels(const RenderTarget& source, const Rect& rect, void* rgba) = 0;
 };
 
 bool isDriverSupported(DriverType type);

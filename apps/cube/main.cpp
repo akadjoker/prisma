@@ -5,6 +5,8 @@
 #include <string.h>
 
 #ifdef PRISMA_APP_SPIRV
+#include "copy.frag.h"
+#include "copy.vert.h"
 #include "cube.frag.h"
 #include "cube.vert.h"
 #endif
@@ -323,9 +325,17 @@ int main(int argc, char** argv)
 
         prisma::ShaderDesc copyShaderDesc;
         copyShaderDesc.source = kCopyVertexSource;
+#ifdef PRISMA_APP_SPIRV
+        copyShaderDesc.spirv = copy_vert;
+        copyShaderDesc.spirvSize = sizeof(copy_vert);
+#endif
         const prisma::ShaderHandle copyVertex = driver->createShader(copyShaderDesc);
         copyShaderDesc.stage = prisma::ShaderStage::Fragment;
         copyShaderDesc.source = kCopyFragmentSource;
+#ifdef PRISMA_APP_SPIRV
+        copyShaderDesc.spirv = copy_frag;
+        copyShaderDesc.spirvSize = sizeof(copy_frag);
+#endif
         const prisma::ShaderHandle copyFragment = driver->createShader(copyShaderDesc);
 
         prisma::PipelineDesc copyDesc;

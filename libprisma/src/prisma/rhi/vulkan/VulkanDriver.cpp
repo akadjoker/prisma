@@ -69,6 +69,7 @@ struct VulkanPipeline
     VkPipelineLayout layout = VK_NULL_HANDLE;
     VkDescriptorSetLayout setLayout = VK_NULL_HANDLE;
     TargetFormats targets;
+    VkFrontFace frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
     std::uint32_t vertexBufferCount = 0;
     VertexBufferLayout vertexBuffers[PipelineDesc::kMaxVertexBuffers];
     std::uint32_t uniformCount = 0;
@@ -85,16 +86,41 @@ struct UniformBinding
     std::uint32_t size = 0;
 };
 
+struct AttachmentView
+{
+    std::uint32_t mip = 0;
+    std::uint32_t layer = 0;
+    VkImageView view = VK_NULL_HANDLE;
+};
+
 struct VulkanTexture
 {
+    enum : std::uint32_t
+    {
+        kMaxAttachmentViews = 16
+    };
+
     VkImage image = VK_NULL_HANDLE;
     VkDeviceMemory memory = VK_NULL_HANDLE;
     VkImageView view = VK_NULL_HANDLE;
+    TextureType type = TextureType::Texture2D;
     std::uint32_t width = 0;
     std::uint32_t height = 0;
+    std::uint32_t depth = 1;
     std::uint32_t mipLevels = 1;
     TextureFormat format = TextureFormat::RGBA8;
     std::uint32_t usage = 0;
+    AttachmentView attachmentViews[kMaxAttachmentViews];
+    std::uint32_t attachmentViewCount = 0;
+};
+
+struct PassTarget
+{
+    VkImage image = VK_NULL_HANDLE;
+    VkImageAspectFlags aspect = 0;
+    std::uint32_t mip = 0;
+    std::uint32_t layer = 0;
+    VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
 };
 
 struct VulkanSampler
@@ -120,7 +146,74 @@ struct Garbage
     VkImage image = VK_NULL_HANDLE;
     VkImageView view = VK_NULL_HANDLE;
     VkSampler sampler = VK_NULL_HANDLE;
+    VkCommandBuffer commands = VK_NULL_HANDLE;
 };
+
+std::uint32_t mipSize(std::uint32_t size, std::uint32_t mip)
+{
+    const std::uint32_t reduced = size >> mip;
+    return reduced > 0 ? reduced : 1;
+}
+
+std::uint32_t imageLayers(const VulkanTexture& texture)
+{
+    if (texture.type == TextureType::TextureCube) return 6;
+    if (texture.type == TextureType::Texture2DArray) return texture.depth;
+    return 1;
+}
+
+std::uint32_t layerCount(const VulkanTexture& texture, std::uint32_t mip)
+{
+    if (texture.type == TextureType::Texture3D) return mipSize(texture.depth, mip);
+    return imageLayers(texture);
+}
+
+VkImageAspectFlags aspectOf(TextureFormat format)
+{
+    if (format == TextureFormat::Depth32F) return VK_IMAGE_ASPECT_DEPTH_BIT;
+    if (format == TextureFormat::Depth24Stencil8)
+        return VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+    return VK_IMAGE_ASPECT_COLOR_BIT;
+}
+
+VkPipelineStageFlags2 layoutStage(VkImageLayout layout)
+{
+    switch (layout)
+    {
+        case VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL:
+            return VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+        case VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL:
+        case VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL:
+            return VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
+        case VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL:
+            return VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+        case VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL:
+            return VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
+                   VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+        default:
+            return VK_PIPELINE_STAGE_2_NONE;
+    }
+}
+
+VkAccessFlags2 layoutAccess(VkImageLayout layout)
+{
+    switch (layout)
+    {
+        case VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL:
+            return VK_ACCESS_2_SHADER_READ_BIT;
+        case VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL:
+            return VK_ACCESS_2_TRANSFER_READ_BIT;
+        case VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL:
+            return VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        case VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL:
+            return VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+        case VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL:
+            return VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+                   VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        default:
+            return 0;
+    }
+}
 
 bool isDepthFormat(TextureFormat format)
 {
@@ -337,6 +430,8 @@ public:
             }
             for (VulkanTexture& texture: textures_)
             {
+                for (std::uint32_t i = 0; i < texture.attachmentViewCount; ++i)
+                    vkDestroyImageView(device_, texture.attachmentViews[i].view, nullptr);
                 vkDestroyImageView(device_, texture.view, nullptr);
                 vkDestroyImage(device_, texture.image, nullptr);
                 vkFreeMemory(device_, texture.memory, nullptr);
@@ -592,11 +687,11 @@ public:
         blend.attachmentCount = colorCount;
         blend.pAttachments = blends;
 
-        const VkDynamicState dynamicStates[2] = { VK_DYNAMIC_STATE_VIEWPORT,
-            VK_DYNAMIC_STATE_SCISSOR };
+        const VkDynamicState dynamicStates[3] = { VK_DYNAMIC_STATE_VIEWPORT,
+            VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_FRONT_FACE };
         VkPipelineDynamicStateCreateInfo dynamic = {};
         dynamic.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-        dynamic.dynamicStateCount = 2;
+        dynamic.dynamicStateCount = 3;
         dynamic.pDynamicStates = dynamicStates;
 
         VkPipelineRenderingCreateInfo rendering = {};
@@ -605,9 +700,12 @@ public:
         rendering.pColorAttachmentFormats = colorFormats;
         rendering.depthAttachmentFormat =
                 desc.targets.window ? depthFormat_ : textureFormat(desc.targets.depth);
+        if (!desc.targets.window && desc.targets.depth == TextureFormat::Depth24Stencil8)
+            rendering.stencilAttachmentFormat = depthStencilFormat_;
 
         VulkanPipeline pipeline;
         pipeline.targets = desc.targets;
+        pipeline.frontFace = raster.frontFace;
         pipeline.vertexBufferCount = desc.vertexBufferCount;
         for (std::uint32_t i = 0; i < desc.vertexBufferCount; ++i)
             pipeline.vertexBuffers[i] = desc.vertexBuffers[i];
@@ -719,43 +817,48 @@ public:
 
     TextureHandle createTexture(const TextureDesc& desc) override
     {
+        const std::uint32_t largest = desc.width > desc.height ? desc.width : desc.height;
         if (desc.format == TextureFormat::None || desc.width == 0 || desc.height == 0 ||
-                desc.width > caps_.maxTextureSize || desc.height > caps_.maxTextureSize)
+                desc.depth == 0 || largest > caps_.maxTextureSize ||
+                (desc.type == TextureType::TextureCube && desc.width != desc.height))
         {
-            log("createTexture: invalid size");
-            return TextureHandle();
-        }
-        if (desc.type != TextureType::Texture2D)
-        {
-            log("Vulkan: only 2D textures are implemented yet");
+            log("createTexture: invalid format or size");
             return TextureHandle();
         }
 
         const bool depth = isDepthFormat(desc.format);
-        const std::uint32_t fullChain = fullMipCount(desc.width, desc.height);
+        const bool volume = desc.type == TextureType::Texture3D;
+        const bool target = (desc.usage & kTextureRenderTarget) != 0;
         VulkanTexture texture;
+        texture.type = desc.type;
         texture.width = desc.width;
         texture.height = desc.height;
+        texture.depth = volume || desc.type == TextureType::Texture2DArray ? desc.depth : 1;
         texture.format = desc.format;
         texture.usage = desc.usage;
+        const std::uint32_t deepest = volume ? texture.depth : 1;
+        const std::uint32_t fullChain = fullMipCount(largest > deepest ? largest : deepest, 1);
         texture.mipLevels = desc.mipLevels == 0 ? fullChain : desc.mipLevels;
         if (texture.mipLevels > fullChain) texture.mipLevels = fullChain;
+        const std::uint32_t layers = imageLayers(texture);
 
         VkImageCreateInfo image = {};
         image.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-        image.imageType = VK_IMAGE_TYPE_2D;
+        if (desc.type == TextureType::TextureCube)
+            image.flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
+        if (volume && target) image.flags = VK_IMAGE_CREATE_2D_ARRAY_COMPATIBLE_BIT;
+        image.imageType = volume ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D;
         image.format = textureFormat(desc.format);
         image.extent.width = desc.width;
         image.extent.height = desc.height;
-        image.extent.depth = 1;
+        image.extent.depth = volume ? texture.depth : 1;
         image.mipLevels = texture.mipLevels;
-        image.arrayLayers = 1;
+        image.arrayLayers = layers;
         image.samples = VK_SAMPLE_COUNT_1_BIT;
         image.tiling = VK_IMAGE_TILING_OPTIMAL;
-        image.usage = VK_IMAGE_USAGE_SAMPLED_BIT;
-        if (!depth)
-            image.usage |= VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
-        if (desc.usage & kTextureRenderTarget)
+        image.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+        if (!depth) image.usage |= VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+        if (target)
             image.usage |= depth ? VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT
                                  : VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
         image.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
@@ -778,11 +881,14 @@ public:
         view.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
         view.image = texture.image;
         view.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        if (desc.type == TextureType::Texture2DArray) view.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+        if (desc.type == TextureType::TextureCube) view.viewType = VK_IMAGE_VIEW_TYPE_CUBE;
+        if (volume) view.viewType = VK_IMAGE_VIEW_TYPE_3D;
         view.format = image.format;
         view.subresourceRange.aspectMask =
                 depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
         view.subresourceRange.levelCount = texture.mipLevels;
-        view.subresourceRange.layerCount = 1;
+        view.subresourceRange.layerCount = layers;
 
         if (allocate.memoryTypeIndex == UINT32_MAX ||
                 vkAllocateMemory(device_, &allocate, nullptr, &texture.memory) != VK_SUCCESS ||
@@ -796,12 +902,17 @@ public:
         }
         setName(VK_OBJECT_TYPE_IMAGE, (std::uint64_t) texture.image, desc.debugName);
 
-        if (!depth && !uploadTexture(texture, desc.data, desc.generateMipmaps))
+        imageBarrier(transferCommands(), texture.image, aspectOf(texture.format), 0,
+                texture.mipLevels, 0, layers, VK_IMAGE_LAYOUT_UNDEFINED,
+                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        if (desc.data && !depth)
         {
-            vkDestroyImageView(device_, texture.view, nullptr);
-            vkDestroyImage(device_, texture.image, nullptr);
-            vkFreeMemory(device_, texture.memory, nullptr);
-            return TextureHandle();
+            const std::uint32_t images = volume ? 1 : layers;
+            const std::size_t imageBytes =
+                    static_cast<std::size_t>(desc.width) * desc.height * bytesPerPixel(desc.format);
+            for (std::uint32_t i = 0; i < images; ++i)
+                recordUpload(texture, 0, i, static_cast<const char*>(desc.data) + i * imageBytes);
+            if (desc.generateMipmaps) recordMipmaps(texture);
         }
         return handleCast<TextureHandle>(textures_.insert(texture));
     }
@@ -836,14 +947,29 @@ public:
         return handleCast<SamplerHandle>(samplers_.insert(sampler));
     }
 
-    void updateTexture(TextureHandle, std::uint32_t, std::uint32_t, const void*) override
+    void updateTexture(TextureHandle handle, std::uint32_t mip, std::uint32_t layer,
+            const void* data) override
     {
-        log("Vulkan: updateTexture is not implemented yet");
+        const VulkanTexture* texture = textures_.get(handleCast<TextureSlotHandle>(handle));
+        if (passActive_ || !texture || !data || isDepthFormat(texture->format) ||
+                mip >= texture->mipLevels ||
+                (texture->type != TextureType::Texture3D && layer >= layerCount(*texture, mip)))
+        {
+            log("updateTexture: invalid handle, mip or layer, or called inside a render pass");
+            return;
+        }
+        recordUpload(*texture, mip, layer, data);
     }
 
-    void generateMipmaps(TextureHandle) override
+    void generateMipmaps(TextureHandle handle) override
     {
-        log("Vulkan: generateMipmaps is not implemented yet");
+        const VulkanTexture* texture = textures_.get(handleCast<TextureSlotHandle>(handle));
+        if (passActive_ || !texture || isDepthFormat(texture->format))
+        {
+            log("generateMipmaps: invalid handle, or called inside a render pass");
+            return;
+        }
+        recordMipmaps(*texture);
     }
 
     void destroy(BufferHandle handle) override
@@ -891,6 +1017,13 @@ public:
         const TextureSlotHandle slot = handleCast<TextureSlotHandle>(handle);
         const VulkanTexture* texture = textures_.get(slot);
         if (!texture) return;
+        for (std::uint32_t i = 0; i < texture->attachmentViewCount; ++i)
+        {
+            Garbage view;
+            view.frame = frameNumber_;
+            view.view = texture->attachmentViews[i].view;
+            garbage_.push_back(view);
+        }
         Garbage item;
         item.frame = frameNumber_;
         item.image = texture->image;
@@ -915,6 +1048,7 @@ public:
     void beginFrame() override
     {
         frameReady_ = false;
+        frameSubmitted_ = false;
 
         std::uint32_t width = 0;
         std::uint32_t height = 0;
@@ -960,52 +1094,146 @@ public:
     void beginRenderPass(const RenderPassDesc& desc) override
     {
         passActive_ = false;
-        if (!frameReady_) return;
-        if (desc.colorCount > 0 || desc.depth.texture.valid())
+        passOffscreen_ = desc.colorCount > 0 || desc.depth.texture.valid();
+        passTargetCount_ = 0;
+        if (!frameReady_ && !passOffscreen_) return;
+        if (!frameReady_)
         {
-            log("Vulkan: offscreen render targets are not implemented yet");
+            log("beginRenderPass: no frame in progress");
             return;
         }
 
         VkCommandBuffer commands = frames_[frameIndex_].commands;
-        SwapchainImage& target = images_[imageIndex_];
-        if (target.layout != VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL)
-            transition(commands, target,
-                    desc.colorLoad == LoadOp::Load ? target.layout : VK_IMAGE_LAYOUT_UNDEFINED,
-                    VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-        transitionDepth(commands);
-
-        VkRenderingAttachmentInfo color = {};
-        color.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-        color.imageView = target.view;
-        color.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-        color.loadOp = toLoadOp(desc.colorLoad);
-        color.storeOp = desc.colorStore == StoreOp::Store ? VK_ATTACHMENT_STORE_OP_STORE
-                                                          : VK_ATTACHMENT_STORE_OP_DONT_CARE;
-        for (int i = 0; i < 4; ++i) color.clearValue.color.float32[i] = desc.clearColor[i];
-
+        VkRenderingAttachmentInfo colors[RenderPassDesc::kMaxColorTargets] = {};
         VkRenderingAttachmentInfo depth = {};
-        depth.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-        depth.imageView = depthView_;
-        depth.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-        depth.loadOp = toLoadOp(desc.depthLoad);
-        depth.storeOp = desc.depthStore == StoreOp::Store ? VK_ATTACHMENT_STORE_OP_STORE
-                                                          : VK_ATTACHMENT_STORE_OP_DONT_CARE;
-        depth.clearValue.depthStencil.depth = desc.clearDepth;
-
         VkRenderingInfo rendering = {};
         rendering.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
-        rendering.renderArea.extent = extent_;
         rendering.layerCount = 1;
-        rendering.colorAttachmentCount = 1;
-        rendering.pColorAttachments = &color;
-        rendering.pDepthAttachment = &depth;
+        TargetFormats formats;
+
+        if (passOffscreen_)
+        {
+            if (desc.colorCount > RenderPassDesc::kMaxColorTargets)
+            {
+                log("beginRenderPass: invalid or unsupported render targets");
+                return;
+            }
+            VkImageView views[RenderPassDesc::kMaxColorTargets + 1] = {};
+            formats.window = false;
+            formats.colorCount = desc.colorCount;
+            std::uint32_t width = 0;
+            std::uint32_t height = 0;
+            for (std::uint32_t i = 0; i <= desc.colorCount; ++i)
+            {
+                const bool isDepth = i == desc.colorCount;
+                const RenderTarget& target = isDepth ? desc.depth : desc.colors[i];
+                if (isDepth && !target.texture.valid()) continue;
+
+                VulkanTexture* texture =
+                        textures_.get(handleCast<TextureSlotHandle>(target.texture));
+                if (!texture || !(texture->usage & kTextureRenderTarget) ||
+                        isDepthFormat(texture->format) != isDepth ||
+                        target.mip >= texture->mipLevels ||
+                        target.layer >= layerCount(*texture, target.mip))
+                {
+                    log("beginRenderPass: invalid or unsupported render targets");
+                    passTargetCount_ = 0;
+                    return;
+                }
+                views[i] = attachmentView(*texture, target.mip, target.layer);
+                if (!views[i])
+                {
+                    log("beginRenderPass: could not create a view of the render target");
+                    passTargetCount_ = 0;
+                    return;
+                }
+                width = mipSize(texture->width, target.mip);
+                height = mipSize(texture->height, target.mip);
+                if (isDepth) formats.depth = texture->format;
+                else
+                    formats.colors[i] = texture->format;
+
+                PassTarget& pass = passTargets_[passTargetCount_++];
+                pass.image = texture->image;
+                pass.aspect = aspectOf(texture->format);
+                pass.mip = target.mip;
+                pass.layer = texture->type == TextureType::Texture3D ? 0 : target.layer;
+                pass.layout = isDepth ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
+                                      : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            }
+            for (std::uint32_t i = 0; i < passTargetCount_; ++i)
+                imageBarrier(commands, passTargets_[i].image, passTargets_[i].aspect,
+                        passTargets_[i].mip, 1, passTargets_[i].layer, 1,
+                        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, passTargets_[i].layout);
+
+            for (std::uint32_t i = 0; i < desc.colorCount; ++i)
+            {
+                colors[i].sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+                colors[i].imageView = views[i];
+                colors[i].imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+                colors[i].loadOp = toLoadOp(desc.colorLoad);
+                colors[i].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+                for (int c = 0; c < 4; ++c)
+                    colors[i].clearValue.color.float32[c] = desc.clearColor[c];
+            }
+            rendering.colorAttachmentCount = desc.colorCount;
+            rendering.pColorAttachments = colors;
+            if (desc.depth.texture.valid())
+            {
+                depth.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+                depth.imageView = views[desc.colorCount];
+                depth.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+                depth.loadOp = toLoadOp(desc.depthLoad);
+                depth.storeOp = desc.depthStore == StoreOp::Store
+                                        ? VK_ATTACHMENT_STORE_OP_STORE
+                                        : VK_ATTACHMENT_STORE_OP_DONT_CARE;
+                depth.clearValue.depthStencil.depth = desc.clearDepth;
+                rendering.pDepthAttachment = &depth;
+                if (formats.depth == TextureFormat::Depth24Stencil8)
+                    rendering.pStencilAttachment = &depth;
+            }
+            passWidth_ = width;
+            passHeight_ = height;
+        }
+        else
+        {
+            SwapchainImage& target = images_[imageIndex_];
+            if (target.layout != VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL)
+                transition(commands, target,
+                        desc.colorLoad == LoadOp::Load ? target.layout : VK_IMAGE_LAYOUT_UNDEFINED,
+                        VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+            transitionDepth(commands);
+
+            colors[0].sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+            colors[0].imageView = target.view;
+            colors[0].imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            colors[0].loadOp = toLoadOp(desc.colorLoad);
+            colors[0].storeOp = desc.colorStore == StoreOp::Store
+                                        ? VK_ATTACHMENT_STORE_OP_STORE
+                                        : VK_ATTACHMENT_STORE_OP_DONT_CARE;
+            for (int c = 0; c < 4; ++c) colors[0].clearValue.color.float32[c] = desc.clearColor[c];
+
+            depth.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+            depth.imageView = depthView_;
+            depth.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+            depth.loadOp = toLoadOp(desc.depthLoad);
+            depth.storeOp = desc.depthStore == StoreOp::Store ? VK_ATTACHMENT_STORE_OP_STORE
+                                                              : VK_ATTACHMENT_STORE_OP_DONT_CARE;
+            depth.clearValue.depthStencil.depth = desc.clearDepth;
+
+            rendering.colorAttachmentCount = 1;
+            rendering.pColorAttachments = colors;
+            rendering.pDepthAttachment = &depth;
+            passWidth_ = extent_.width;
+            passHeight_ = extent_.height;
+        }
+
+        rendering.renderArea.extent.width = passWidth_;
+        rendering.renderArea.extent.height = passHeight_;
         vkCmdBeginRendering(commands, &rendering);
 
         passActive_ = true;
-        passFormats_ = TargetFormats();
-        passWidth_ = extent_.width;
-        passHeight_ = extent_.height;
+        passFormats_ = formats;
         pipeline_ = PipelineHandle();
         boundPipeline_ = VK_NULL_HANDLE;
         indexBuffer_ = BufferHandle();
@@ -1015,9 +1243,9 @@ public:
             vertexOffsets_[i] = 0;
         }
         for (std::uint32_t i = 0; i < kMaxUniformSlots; ++i) uniformBindings_[i] = UniformBinding();
+        for (std::uint32_t i = 0; i < kMaxTextureSlots; ++i) textureBindings_[i] = TextureSlot();
         vertexDirty_ = true;
         indexDirty_ = true;
-        for (std::uint32_t i = 0; i < kMaxTextureSlots; ++i) textureBindings_[i] = TextureSlot();
         uniformDirty_ = true;
         textureDirty_ = true;
 
@@ -1034,14 +1262,22 @@ public:
     void setViewport(const Viewport& viewport) override
     {
         if (!passActive_) return;
-        VkViewport flipped;
-        flipped.x = viewport.x;
-        flipped.y = viewport.y + viewport.height;
-        flipped.width = viewport.width;
-        flipped.height = -viewport.height;
-        flipped.minDepth = viewport.minDepth;
-        flipped.maxDepth = viewport.maxDepth;
-        vkCmdSetViewport(frames_[frameIndex_].commands, 0, 1, &flipped);
+        VkViewport converted;
+        converted.x = viewport.x;
+        converted.width = viewport.width;
+        converted.minDepth = viewport.minDepth;
+        converted.maxDepth = viewport.maxDepth;
+        if (passOffscreen_)
+        {
+            converted.y = static_cast<float>(passHeight_) - (viewport.y + viewport.height);
+            converted.height = viewport.height;
+        }
+        else
+        {
+            converted.y = viewport.y + viewport.height;
+            converted.height = -viewport.height;
+        }
+        vkCmdSetViewport(frames_[frameIndex_].commands, 0, 1, &converted);
     }
 
     void setScissor(const Rect& rect) override
@@ -1058,7 +1294,7 @@ public:
 
         VkRect2D scissor;
         scissor.offset.x = static_cast<std::int32_t>(left);
-        scissor.offset.y = static_cast<std::int32_t>(top);
+        scissor.offset.y = static_cast<std::int32_t>(passOffscreen_ ? passHeight_ - bottom : top);
         scissor.extent.width = static_cast<std::uint32_t>(right - left);
         scissor.extent.height = static_cast<std::uint32_t>(bottom - top);
         vkCmdSetScissor(frames_[frameIndex_].commands, 0, 1, &scissor);
@@ -1161,7 +1397,13 @@ public:
     {
         if (!passActive_) return;
         passActive_ = false;
-        vkCmdEndRendering(frames_[frameIndex_].commands);
+        VkCommandBuffer commands = frames_[frameIndex_].commands;
+        vkCmdEndRendering(commands);
+        for (std::uint32_t i = 0; i < passTargetCount_; ++i)
+            imageBarrier(commands, passTargets_[i].image, passTargets_[i].aspect,
+                    passTargets_[i].mip, 1, passTargets_[i].layer, 1, passTargets_[i].layout,
+                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        passTargetCount_ = 0;
     }
 
     void endFrame() override
@@ -1173,18 +1415,39 @@ public:
         transition(frame.commands, target, target.layout, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
         vkEndCommandBuffer(frame.commands);
 
+        VkCommandBuffer buffers[2];
+        std::uint32_t count = 0;
+        if (pendingTransfer_)
+        {
+            vkEndCommandBuffer(pendingTransfer_);
+            buffers[count++] = pendingTransfer_;
+        }
+        buffers[count++] = frame.commands;
+
         const VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
         VkSubmitInfo submit = {};
         submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-        submit.waitSemaphoreCount = 1;
-        submit.pWaitSemaphores = &frame.imageAvailable;
-        submit.pWaitDstStageMask = &waitStage;
-        submit.commandBufferCount = 1;
-        submit.pCommandBuffers = &frame.commands;
+        if (!frameSubmitted_)
+        {
+            submit.waitSemaphoreCount = 1;
+            submit.pWaitSemaphores = &frame.imageAvailable;
+            submit.pWaitDstStageMask = &waitStage;
+        }
+        submit.commandBufferCount = count;
+        submit.pCommandBuffers = buffers;
         submit.signalSemaphoreCount = 1;
         submit.pSignalSemaphores = &target.renderFinished;
         if (vkQueueSubmit(queue_, 1, &submit, frame.inFlight) != VK_SUCCESS)
             log("Vulkan: could not submit the frame");
+
+        if (pendingTransfer_)
+        {
+            Garbage item;
+            item.frame = frameNumber_;
+            item.commands = pendingTransfer_;
+            garbage_.push_back(item);
+            pendingTransfer_ = VK_NULL_HANDLE;
+        }
     }
 
     void present() override
@@ -1203,6 +1466,121 @@ public:
         frameIndex_ = (frameIndex_ + 1) % kFramesInFlight;
         ++frameNumber_;
         if (presented == VK_ERROR_OUT_OF_DATE_KHR) createSwapchain();
+    }
+
+    bool readPixels(const RenderTarget& source, const Rect& rect, void* rgba) override
+    {
+        if (passActive_ || !rgba || rect.width == 0 || rect.height == 0 || rect.x < 0 || rect.y < 0)
+        {
+            log("readPixels: invalid rectangle, or called inside a render pass");
+            return false;
+        }
+
+        VkImage image = VK_NULL_HANDLE;
+        VkImageLayout layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        std::uint32_t width = 0;
+        std::uint32_t height = 0;
+        std::uint32_t mip = 0;
+        std::uint32_t layer = 0;
+        std::int32_t slice = 0;
+        bool fromTexture = false;
+        if (!source.texture.valid())
+        {
+            if (!frameReady_ || !canReadWindow_ ||
+                    images_[imageIndex_].layout == VK_IMAGE_LAYOUT_UNDEFINED)
+            {
+                log("readPixels: the window can only be read during a frame, after drawing to it");
+                return false;
+            }
+            image = images_[imageIndex_].image;
+            layout = images_[imageIndex_].layout;
+            width = extent_.width;
+            height = extent_.height;
+        }
+        else
+        {
+            const VulkanTexture* texture =
+                    textures_.get(handleCast<TextureSlotHandle>(source.texture));
+            if (!texture ||
+                    (texture->format != TextureFormat::RGBA8 &&
+                            texture->format != TextureFormat::RGBA8Srgb) ||
+                    source.mip >= texture->mipLevels ||
+                    source.layer >= layerCount(*texture, source.mip))
+            {
+                log("readPixels: the texture must be RGBA8 and the mip and layer must exist");
+                return false;
+            }
+            fromTexture = true;
+            image = texture->image;
+            mip = source.mip;
+            width = mipSize(texture->width, mip);
+            height = mipSize(texture->height, mip);
+            if (texture->type == TextureType::Texture3D)
+                slice = static_cast<std::int32_t>(source.layer);
+            else
+                layer = source.layer;
+        }
+        if (static_cast<std::uint64_t>(rect.x) + rect.width > width ||
+                static_cast<std::uint64_t>(rect.y) + rect.height > height)
+        {
+            log("readPixels: the rectangle is outside the source");
+            return false;
+        }
+
+        flush();
+
+        VulkanBuffer staging;
+        staging.size = rect.width * rect.height * 4;
+        staging.vkUsage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        if (!createVersion(staging, nullptr) || !beginImmediate()) return false;
+
+        VkCommandBuffer commands = immediateCommands_;
+        imageBarrier(commands, image, VK_IMAGE_ASPECT_COLOR_BIT, mip, 1, layer, 1, layout,
+                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+        VkBufferImageCopy copy = {};
+        copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        copy.imageSubresource.mipLevel = mip;
+        copy.imageSubresource.baseArrayLayer = layer;
+        copy.imageSubresource.layerCount = 1;
+        copy.imageOffset.x = rect.x;
+        copy.imageOffset.y = fromTexture ? static_cast<std::int32_t>(height) -
+                                                   (rect.y + static_cast<std::int32_t>(rect.height))
+                                         : rect.y;
+        copy.imageOffset.z = slice;
+        copy.imageExtent.width = rect.width;
+        copy.imageExtent.height = rect.height;
+        copy.imageExtent.depth = 1;
+        vkCmdCopyImageToBuffer(commands, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                staging.versions[0].buffer, 1, &copy);
+        imageBarrier(commands, image, VK_IMAGE_ASPECT_COLOR_BIT, mip, 1, layer, 1,
+                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, layout);
+        const bool done = endImmediate();
+
+        if (done)
+        {
+            const unsigned char* pixels =
+                    static_cast<const unsigned char*>(staging.versions[0].mapped);
+            unsigned char* out = static_cast<unsigned char*>(rgba);
+            const bool swapRedBlue = !fromTexture && (format_ == VK_FORMAT_B8G8R8A8_UNORM ||
+                                                             format_ == VK_FORMAT_B8G8R8A8_SRGB);
+            const std::size_t rowBytes = static_cast<std::size_t>(rect.width) * 4;
+            for (std::uint32_t row = 0; row < rect.height; ++row)
+            {
+                const unsigned char* from =
+                        pixels + (fromTexture ? rect.height - 1 - row : row) * rowBytes;
+                unsigned char* to = out + row * rowBytes;
+                for (std::uint32_t x = 0; x < rect.width; ++x)
+                {
+                    to[x * 4 + 0] = from[x * 4 + (swapRedBlue ? 2 : 0)];
+                    to[x * 4 + 1] = from[x * 4 + 1];
+                    to[x * 4 + 2] = from[x * 4 + (swapRedBlue ? 0 : 2)];
+                    to[x * 4 + 3] = from[x * 4 + 3];
+                }
+            }
+        }
+        vkDestroyBuffer(device_, staging.versions[0].buffer, nullptr);
+        vkFreeMemory(device_, staging.versions[0].memory, nullptr);
+        return done;
     }
 
 private:
@@ -1297,6 +1675,7 @@ private:
             if (item.image) vkDestroyImage(device_, item.image, nullptr);
             if (item.sampler) vkDestroySampler(device_, item.sampler, nullptr);
             if (item.memory) vkFreeMemory(device_, item.memory, nullptr);
+            if (item.commands) vkFreeCommandBuffers(device_, commandPool_, 1, &item.commands);
         }
         garbage_.resize(kept);
     }
@@ -1306,33 +1685,26 @@ private:
         return format == TextureFormat::Depth24Stencil8 ? depthStencilFormat_ : toVkFormat(format);
     }
 
-    static void imageBarrier(VkCommandBuffer commands, VkImage image, std::uint32_t firstMip,
-            std::uint32_t mipCount, VkImageLayout from, VkImageLayout to)
+    static void imageBarrier(VkCommandBuffer commands, VkImage image, VkImageAspectFlags aspect,
+            std::uint32_t firstMip, std::uint32_t mipCount, std::uint32_t firstLayer,
+            std::uint32_t layers, VkImageLayout from, VkImageLayout to)
     {
         VkImageMemoryBarrier2 barrier = {};
         barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-        barrier.srcStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
-        barrier.srcAccessMask =
-                from == VK_IMAGE_LAYOUT_UNDEFINED
-                        ? 0
-                        : (VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_TRANSFER_READ_BIT);
-        barrier.dstStageMask = to == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-                                       ? VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
-                                                 VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT
-                                       : VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
-        barrier.dstAccessMask =
-                to == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-                        ? VK_ACCESS_2_SHADER_READ_BIT
-                        : (VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_TRANSFER_READ_BIT);
+        barrier.srcStageMask = layoutStage(from);
+        barrier.srcAccessMask = layoutAccess(from);
+        barrier.dstStageMask = layoutStage(to);
+        barrier.dstAccessMask = layoutAccess(to);
         barrier.oldLayout = from;
         barrier.newLayout = to;
         barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         barrier.image = image;
-        barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        barrier.subresourceRange.aspectMask = aspect;
         barrier.subresourceRange.baseMipLevel = firstMip;
         barrier.subresourceRange.levelCount = mipCount;
-        barrier.subresourceRange.layerCount = 1;
+        barrier.subresourceRange.baseArrayLayer = firstLayer;
+        barrier.subresourceRange.layerCount = layers;
 
         VkDependencyInfo dependency = {};
         dependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
@@ -1341,115 +1713,207 @@ private:
         vkCmdPipelineBarrier2(commands, &dependency);
     }
 
-    bool uploadTexture(const VulkanTexture& texture, const void* data, bool generateMipmaps)
+    VkCommandBuffer allocateCommands()
     {
-        if (!uploadCommands_)
-        {
-            VkCommandBufferAllocateInfo allocate = {};
-            allocate.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-            allocate.commandPool = commandPool_;
-            allocate.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-            allocate.commandBufferCount = 1;
-            if (vkAllocateCommandBuffers(device_, &allocate, &uploadCommands_) != VK_SUCCESS)
-                return false;
-        }
+        VkCommandBuffer commands = VK_NULL_HANDLE;
+        VkCommandBufferAllocateInfo allocate = {};
+        allocate.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        allocate.commandPool = commandPool_;
+        allocate.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        allocate.commandBufferCount = 1;
+        vkAllocateCommandBuffers(device_, &allocate, &commands);
+        return commands;
+    }
 
-        VulkanBuffer staging;
-        if (data)
-        {
-            staging.size = texture.width * texture.height * bytesPerPixel(texture.format);
-            staging.vkUsage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-            if (!createVersion(staging, nullptr))
-            {
-                log("createTexture: could not create the upload buffer");
-                return false;
-            }
-            memcpy(staging.versions[0].mapped, data, staging.size);
-        }
-
-        VkCommandBuffer commands = uploadCommands_;
-        vkResetCommandBuffer(commands, 0);
+    static void beginCommands(VkCommandBuffer commands)
+    {
         VkCommandBufferBeginInfo begin = {};
         begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
         begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
         vkBeginCommandBuffer(commands, &begin);
+    }
 
-        if (!data)
+    VkCommandBuffer transferCommands()
+    {
+        if (frameReady_ && !passActive_) return frames_[frameIndex_].commands;
+        if (!pendingTransfer_)
         {
-            imageBarrier(commands, texture.image, 0, texture.mipLevels, VK_IMAGE_LAYOUT_UNDEFINED,
-                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            pendingTransfer_ = allocateCommands();
+            beginCommands(pendingTransfer_);
         }
-        else
-        {
-            imageBarrier(commands, texture.image, 0, texture.mipLevels, VK_IMAGE_LAYOUT_UNDEFINED,
-                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+        return pendingTransfer_;
+    }
 
-            VkBufferImageCopy copy = {};
-            copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-            copy.imageSubresource.layerCount = 1;
-            copy.imageExtent.width = texture.width;
-            copy.imageExtent.height = texture.height;
-            copy.imageExtent.depth = 1;
-            vkCmdCopyBufferToImage(commands, staging.versions[0].buffer, texture.image,
-                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+    bool beginImmediate()
+    {
+        if (!immediateCommands_) immediateCommands_ = allocateCommands();
+        if (!immediateCommands_) return false;
+        vkResetCommandBuffer(immediateCommands_, 0);
+        beginCommands(immediateCommands_);
+        return true;
+    }
 
-            std::uint32_t filled = 1;
-            if (generateMipmaps)
-            {
-                std::int32_t width = static_cast<std::int32_t>(texture.width);
-                std::int32_t height = static_cast<std::int32_t>(texture.height);
-                for (std::uint32_t mip = 1; mip < texture.mipLevels; ++mip)
-                {
-                    imageBarrier(commands, texture.image, mip - 1, 1,
-                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-                    const std::int32_t nextWidth = width > 1 ? width / 2 : 1;
-                    const std::int32_t nextHeight = height > 1 ? height / 2 : 1;
-
-                    VkImageBlit blit = {};
-                    blit.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-                    blit.srcSubresource.mipLevel = mip - 1;
-                    blit.srcSubresource.layerCount = 1;
-                    blit.srcOffsets[1].x = width;
-                    blit.srcOffsets[1].y = height;
-                    blit.srcOffsets[1].z = 1;
-                    blit.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-                    blit.dstSubresource.mipLevel = mip;
-                    blit.dstSubresource.layerCount = 1;
-                    blit.dstOffsets[1].x = nextWidth;
-                    blit.dstOffsets[1].y = nextHeight;
-                    blit.dstOffsets[1].z = 1;
-                    vkCmdBlitImage(commands, texture.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                            texture.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit,
-                            VK_FILTER_LINEAR);
-                    imageBarrier(commands, texture.image, mip - 1, 1,
-                            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-                    width = nextWidth;
-                    height = nextHeight;
-                }
-                filled = texture.mipLevels;
-            }
-            const std::uint32_t firstPending = generateMipmaps ? filled - 1 : 0;
-            imageBarrier(commands, texture.image, firstPending, texture.mipLevels - firstPending,
-                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-        }
-
-        vkEndCommandBuffer(commands);
+    bool endImmediate()
+    {
+        vkEndCommandBuffer(immediateCommands_);
         VkSubmitInfo submit = {};
         submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
         submit.commandBufferCount = 1;
-        submit.pCommandBuffers = &commands;
+        submit.pCommandBuffers = &immediateCommands_;
         const bool submitted = vkQueueSubmit(queue_, 1, &submit, VK_NULL_HANDLE) == VK_SUCCESS;
         vkQueueWaitIdle(queue_);
-
-        if (data)
-        {
-            vkDestroyBuffer(device_, staging.versions[0].buffer, nullptr);
-            vkFreeMemory(device_, staging.versions[0].memory, nullptr);
-        }
-        if (!submitted) log("createTexture: could not submit the upload");
         return submitted;
+    }
+
+    void flush()
+    {
+        VkCommandBuffer buffers[2];
+        std::uint32_t count = 0;
+        if (pendingTransfer_)
+        {
+            vkEndCommandBuffer(pendingTransfer_);
+            buffers[count++] = pendingTransfer_;
+        }
+        if (frameReady_)
+        {
+            vkEndCommandBuffer(frames_[frameIndex_].commands);
+            buffers[count++] = frames_[frameIndex_].commands;
+        }
+        if (count == 0) return;
+
+        const VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        VkSubmitInfo submit = {};
+        submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        if (frameReady_ && !frameSubmitted_)
+        {
+            submit.waitSemaphoreCount = 1;
+            submit.pWaitSemaphores = &frames_[frameIndex_].imageAvailable;
+            submit.pWaitDstStageMask = &waitStage;
+        }
+        submit.commandBufferCount = count;
+        submit.pCommandBuffers = buffers;
+        if (vkQueueSubmit(queue_, 1, &submit, VK_NULL_HANDLE) != VK_SUCCESS)
+            log("Vulkan: could not submit the pending commands");
+        vkQueueWaitIdle(queue_);
+
+        if (pendingTransfer_)
+        {
+            vkFreeCommandBuffers(device_, commandPool_, 1, &pendingTransfer_);
+            pendingTransfer_ = VK_NULL_HANDLE;
+        }
+        if (frameReady_)
+        {
+            frameSubmitted_ = true;
+            vkResetCommandBuffer(frames_[frameIndex_].commands, 0);
+            beginCommands(frames_[frameIndex_].commands);
+        }
+    }
+
+    VkImageView attachmentView(VulkanTexture& texture, std::uint32_t mip, std::uint32_t layer)
+    {
+        for (std::uint32_t i = 0; i < texture.attachmentViewCount; ++i)
+            if (texture.attachmentViews[i].mip == mip && texture.attachmentViews[i].layer == layer)
+                return texture.attachmentViews[i].view;
+        if (texture.attachmentViewCount >= VulkanTexture::kMaxAttachmentViews)
+            return VK_NULL_HANDLE;
+
+        VkImageViewCreateInfo info = {};
+        info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        info.image = texture.image;
+        info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        info.format = textureFormat(texture.format);
+        info.subresourceRange.aspectMask = aspectOf(texture.format);
+        info.subresourceRange.baseMipLevel = mip;
+        info.subresourceRange.levelCount = 1;
+        info.subresourceRange.baseArrayLayer = layer;
+        info.subresourceRange.layerCount = 1;
+
+        AttachmentView& entry = texture.attachmentViews[texture.attachmentViewCount];
+        if (vkCreateImageView(device_, &info, nullptr, &entry.view) != VK_SUCCESS)
+            return VK_NULL_HANDLE;
+        entry.mip = mip;
+        entry.layer = layer;
+        ++texture.attachmentViewCount;
+        return entry.view;
+    }
+
+    void recordUpload(const VulkanTexture& texture, std::uint32_t mip, std::uint32_t layer,
+            const void* data)
+    {
+        const bool volume = texture.type == TextureType::Texture3D;
+        const std::uint32_t width = mipSize(texture.width, mip);
+        const std::uint32_t height = mipSize(texture.height, mip);
+        const std::uint32_t depth = volume ? mipSize(texture.depth, mip) : 1;
+        const std::uint32_t firstLayer = volume ? 0 : layer;
+
+        VulkanBuffer staging;
+        staging.size = width * height * depth * bytesPerPixel(texture.format);
+        staging.vkUsage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+        if (!createVersion(staging, nullptr))
+        {
+            log("Vulkan: could not create the upload buffer of a texture");
+            return;
+        }
+        memcpy(staging.versions[0].mapped, data, staging.size);
+        Garbage item;
+        item.frame = frameNumber_;
+        item.buffer = staging.versions[0].buffer;
+        item.memory = staging.versions[0].memory;
+        garbage_.push_back(item);
+
+        VkCommandBuffer commands = transferCommands();
+        imageBarrier(commands, texture.image, VK_IMAGE_ASPECT_COLOR_BIT, mip, 1, firstLayer, 1,
+                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+        VkBufferImageCopy copy = {};
+        copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        copy.imageSubresource.mipLevel = mip;
+        copy.imageSubresource.baseArrayLayer = firstLayer;
+        copy.imageSubresource.layerCount = 1;
+        copy.imageExtent.width = width;
+        copy.imageExtent.height = height;
+        copy.imageExtent.depth = depth;
+        vkCmdCopyBufferToImage(commands, staging.versions[0].buffer, texture.image,
+                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+        imageBarrier(commands, texture.image, VK_IMAGE_ASPECT_COLOR_BIT, mip, 1, firstLayer, 1,
+                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    }
+
+    void recordMipmaps(const VulkanTexture& texture)
+    {
+        const bool volume = texture.type == TextureType::Texture3D;
+        const std::uint32_t layers = imageLayers(texture);
+        VkCommandBuffer commands = transferCommands();
+        for (std::uint32_t mip = 1; mip < texture.mipLevels; ++mip)
+        {
+            imageBarrier(commands, texture.image, VK_IMAGE_ASPECT_COLOR_BIT, mip - 1, 1, 0, layers,
+                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+            imageBarrier(commands, texture.image, VK_IMAGE_ASPECT_COLOR_BIT, mip, 1, 0, layers,
+                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+
+            VkImageBlit blit = {};
+            blit.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            blit.srcSubresource.mipLevel = mip - 1;
+            blit.srcSubresource.layerCount = layers;
+            blit.srcOffsets[1].x = static_cast<std::int32_t>(mipSize(texture.width, mip - 1));
+            blit.srcOffsets[1].y = static_cast<std::int32_t>(mipSize(texture.height, mip - 1));
+            blit.srcOffsets[1].z =
+                    volume ? static_cast<std::int32_t>(mipSize(texture.depth, mip - 1)) : 1;
+            blit.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            blit.dstSubresource.mipLevel = mip;
+            blit.dstSubresource.layerCount = layers;
+            blit.dstOffsets[1].x = static_cast<std::int32_t>(mipSize(texture.width, mip));
+            blit.dstOffsets[1].y = static_cast<std::int32_t>(mipSize(texture.height, mip));
+            blit.dstOffsets[1].z =
+                    volume ? static_cast<std::int32_t>(mipSize(texture.depth, mip)) : 1;
+            vkCmdBlitImage(commands, texture.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                    texture.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit,
+                    VK_FILTER_LINEAR);
+
+            imageBarrier(commands, texture.image, VK_IMAGE_ASPECT_COLOR_BIT, mip - 1, 1, 0, layers,
+                    VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            imageBarrier(commands, texture.image, VK_IMAGE_ASPECT_COLOR_BIT, mip, 1, 0, layers,
+                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        }
     }
 
     bool bindTextures(const VulkanPipeline& pipeline, VkCommandBuffer commands)
@@ -1622,6 +2086,12 @@ private:
             boundPipeline_ = pipeline->pipeline;
             uniformDirty_ = true;
             textureDirty_ = true;
+
+            VkFrontFace frontFace = pipeline->frontFace;
+            if (passOffscreen_)
+                frontFace = frontFace == VK_FRONT_FACE_CLOCKWISE ? VK_FRONT_FACE_COUNTER_CLOCKWISE
+                                                                 : VK_FRONT_FACE_CLOCKWISE;
+            vkCmdSetFrontFace(commands, frontFace);
         }
         if (vertexDirty_ && pipeline->vertexBufferCount > 0)
         {
@@ -2064,6 +2534,8 @@ private:
         info.imageExtent = extent;
         info.imageArrayLayers = 1;
         info.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+        canReadWindow_ = (capabilities.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) != 0;
+        if (canReadWindow_) info.imageUsage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
         info.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
         info.preTransform = capabilities.currentTransform;
         info.compositeAlpha = alpha;
@@ -2218,7 +2690,13 @@ private:
     VkDescriptorSetLayout lastTextureSetLayout_ = VK_NULL_HANDLE;
     VkImageView lastViews_[PipelineDesc::kMaxTextures] = {};
     VkSampler lastSamplers_[PipelineDesc::kMaxTextures] = {};
-    VkCommandBuffer uploadCommands_ = VK_NULL_HANDLE;
+    VkCommandBuffer immediateCommands_ = VK_NULL_HANDLE;
+    VkCommandBuffer pendingTransfer_ = VK_NULL_HANDLE;
+    bool frameSubmitted_ = false;
+    bool canReadWindow_ = false;
+    bool passOffscreen_ = false;
+    PassTarget passTargets_[RenderPassDesc::kMaxColorTargets + 1];
+    std::uint32_t passTargetCount_ = 0;
     VkFormat depthStencilFormat_ = VK_FORMAT_D24_UNORM_S8_UINT;
 
     VkFormat depthFormat_ = VK_FORMAT_D32_SFLOAT;

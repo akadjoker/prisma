@@ -991,6 +991,72 @@ public:
 
     void present() override { platform_.swapBuffers(platform_.user); }
 
+    bool readPixels(const RenderTarget& source, const Rect& rect, void* rgba) override
+    {
+        if (passActive_ || !rgba || rect.width == 0 || rect.height == 0 || rect.x < 0 || rect.y < 0)
+        {
+            log("readPixels: invalid rectangle, or called inside a render pass");
+            return false;
+        }
+
+        std::uint32_t width = 0;
+        std::uint32_t height = 0;
+        GLuint temporary = 0;
+        if (!source.texture.valid())
+        {
+            platform_.framebufferSize(platform_.user, &width, &height);
+            state_.bindFramebuffer(0);
+        }
+        else
+        {
+            const GLTexture* texture = textures_.get(handleCast<TextureSlot>(source.texture));
+            if (!texture ||
+                    (texture->format != TextureFormat::RGBA8 &&
+                            texture->format != TextureFormat::RGBA8Srgb) ||
+                    source.mip >= texture->mipLevels ||
+                    source.layer >= layerCount(*texture, source.mip))
+            {
+                log("readPixels: the texture must be RGBA8 and the mip and layer must exist");
+                return false;
+            }
+            width = mipSize(texture->width, source.mip);
+            height = mipSize(texture->height, source.mip);
+            glGenFramebuffers(1, &temporary);
+            state_.bindFramebuffer(temporary);
+            attach(GL_COLOR_ATTACHMENT0, *texture, source);
+        }
+
+        const bool inside = static_cast<std::uint64_t>(rect.x) + rect.width <= width &&
+                            static_cast<std::uint64_t>(rect.y) + rect.height <= height;
+        if (inside)
+        {
+            unsigned char* pixels = static_cast<unsigned char*>(rgba);
+            const std::size_t rowBytes = static_cast<std::size_t>(rect.width) * 4;
+            glPixelStorei(GL_PACK_ALIGNMENT, 1);
+            glReadPixels(rect.x,
+                    static_cast<GLint>(height) - (rect.y + static_cast<GLint>(rect.height)),
+                    static_cast<GLsizei>(rect.width), static_cast<GLsizei>(rect.height), GL_RGBA,
+                    GL_UNSIGNED_BYTE, pixels);
+            for (std::uint32_t top = 0, bottom = rect.height - 1; top < bottom; ++top, --bottom)
+                for (std::size_t i = 0; i < rowBytes; ++i)
+                {
+                    const unsigned char swapped = pixels[top * rowBytes + i];
+                    pixels[top * rowBytes + i] = pixels[bottom * rowBytes + i];
+                    pixels[bottom * rowBytes + i] = swapped;
+                }
+        }
+        else
+            log("readPixels: the rectangle is outside the source");
+
+        if (temporary)
+        {
+            state_.bindFramebuffer(0);
+            glDeleteFramebuffers(1, &temporary);
+            state_.framebufferDeleted(temporary);
+        }
+        return inside;
+    }
+
 private:
     using BufferSlot = ct::Handle32<GLBuffer>;
     using ShaderSlot = ct::Handle32<GLShader>;
