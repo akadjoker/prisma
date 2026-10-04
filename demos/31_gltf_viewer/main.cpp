@@ -145,7 +145,7 @@ int main(int argc, char** argv)
         log_error("gltf viewer: cannot read %s: %s", modelPath, model.error.c_str());
         return 1;
     }
-    log_error("gltf viewer: %u vertices, %u triangles, %u nodes, %u materials, %u textures, %u lights",
+    log_info("gltf viewer: %u vertices, %u triangles, %u nodes, %u materials, %u textures, %u lights",
             static_cast<unsigned>(model.vertices.size()), static_cast<unsigned>(model.indices.size() / 3),
             static_cast<unsigned>(model.nodes.size()), static_cast<unsigned>(model.materials.size()),
             static_cast<unsigned>(model.textures.size()), static_cast<unsigned>(model.lights.size()));
@@ -199,7 +199,7 @@ int main(int argc, char** argv)
     gpuOptions.skipMips = skipMips;
     zenapp::GltfGpu gpu;
     const bool gpuReady = zenapp::createGltfGpu(driver, model, gpuOptions, &gpu);
-    log_error("gltf viewer: %u textures loaded, %u failed", gpu.texturesLoaded, gpu.texturesFailed);
+    log_info("gltf viewer: %u textures loaded, %u failed", gpu.texturesLoaded, gpu.texturesFailed);
 
     const unsigned alignment = driver->caps().uniformBufferOffsetAlignment;
     const unsigned frameStride = (sizeof(FrameUniforms) + alignment - 1) / alignment * alignment;
