@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Bcn.h"
 #include "Media.h"
 #include "prisma/rhi/Driver.h"
 #include "third_party/dds.h"
@@ -170,6 +171,35 @@ inline prisma::TextureHandle createTextureFromDds(prisma::Driver* driver, const 
         return prisma::TextureHandle();
 
     const dds::Header header = dds::read_header(data, size);
+
+    const bool isBc1 = format == prisma::TextureFormat::BC1 || format == prisma::TextureFormat::BC1Srgb;
+    const bool isBc2 = format == prisma::TextureFormat::BC2 || format == prisma::TextureFormat::BC2Srgb;
+    const bool isBc3 = format == prisma::TextureFormat::BC3 || format == prisma::TextureFormat::BC3Srgb;
+    if (generateMips && info.mipLevels == 1 && info.layers == 1 &&
+            info.type == prisma::TextureType::Texture2D && (isBc1 || isBc2 || isBc3))
+    {
+        const bool srgbFormat = format == prisma::TextureFormat::BC1Srgb ||
+                                format == prisma::TextureFormat::BC2Srgb ||
+                                format == prisma::TextureFormat::BC3Srgb;
+        ct::Vector<unsigned char> pixels;
+        pixels.resize(static_cast<size_t>(info.width) * info.height * 4);
+        if (decodeBcn(isBc1 ? BcnKind::BC1 : isBc2 ? BcnKind::BC2 : BcnKind::BC3,
+                    data + header.mip_offset(0, 0), static_cast<size_t>(header.mip_size(0)),
+                    info.width, info.height, pixels.data()))
+        {
+            prisma::TextureDesc decoded;
+            decoded.format = srgbFormat ? prisma::TextureFormat::RGBA8Srgb
+                                        : prisma::TextureFormat::RGBA8;
+            decoded.width = info.width;
+            decoded.height = info.height;
+            decoded.mipLevels = 0;
+            decoded.generateMipmaps = true;
+            decoded.data = pixels.data();
+            decoded.debugName = name;
+            return driver->createTexture(decoded);
+        }
+    }
+
     prisma::TextureDesc desc;
     desc.type = info.type;
     desc.format = format;
