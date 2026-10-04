@@ -328,6 +328,8 @@ bool appendPrimitive(const cgltf_data* data, const cgltf_primitive& source, Gltf
         for (size_t i = 0; i < indices.size(); ++i) indices[i] = static_cast<uint32_t>(i);
     }
     indices.resize(indices.size() - indices.size() % 3);
+    for (size_t i = 0; i < indices.size(); ++i)
+        if (indices[i] >= count) return false;
 
     if (!normals)
     {
