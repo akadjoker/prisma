@@ -43,7 +43,11 @@ public:
     virtual void destroy(SwapchainHandle handle) = 0;
 
     virtual ReadbackHandle requestReadback(const RenderTarget& source, const Rect& rect) = 0;
-    virtual bool readbackResult(ReadbackHandle handle, void* rgba) = 0;
+    virtual bool readbackResult(ReadbackHandle handle, void* data) = 0;
+    virtual ReadbackHandle requestBufferReadback(BufferHandle source, std::uint32_t offset,
+            std::uint32_t size) = 0;
+    virtual bool readBuffer(BufferHandle source, std::uint32_t offset, std::uint32_t size,
+            void* data) = 0;
     virtual void destroy(ReadbackHandle handle) = 0;
     virtual void beginQuery(QueryHandle handle) = 0;
     virtual void endQuery(QueryHandle handle) = 0;

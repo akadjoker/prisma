@@ -305,6 +305,7 @@ struct GLReadback
     GLsync sync = nullptr;
     std::uint32_t width = 0;
     std::uint32_t height = 0;
+    std::uint32_t bytes = 0;
 };
 
 struct GLQuery
@@ -1885,6 +1886,7 @@ public:
         GLReadback readback;
         readback.width = rect.width;
         readback.height = rect.height;
+        readback.bytes = rect.width * rect.height * 4;
         glGenBuffers(1, &readback.buffer);
         glBindBuffer(GL_PIXEL_PACK_BUFFER, readback.buffer);
         glBufferData(GL_PIXEL_PACK_BUFFER,
@@ -1901,6 +1903,52 @@ public:
         return handleCast<ReadbackHandle>(readbacks_.insert(readback));
     }
 
+    ReadbackHandle requestBufferReadback(BufferHandle sourceHandle, std::uint32_t offset,
+            std::uint32_t size) override
+    {
+        const GLBuffer* source = buffers_.get(handleCast<BufferSlot>(sourceHandle));
+        if (passActive_ || !source || size == 0 ||
+                static_cast<std::uint64_t>(offset) + size > source->size)
+        {
+            log("requestBufferReadback: invalid buffer or range, or called inside a render pass");
+            return ReadbackHandle();
+        }
+        GLReadback readback;
+        readback.bytes = size;
+        glGenBuffers(1, &readback.buffer);
+        glBindBuffer(GL_COPY_WRITE_BUFFER, readback.buffer);
+        glBufferData(GL_COPY_WRITE_BUFFER, size, nullptr, GL_STREAM_READ);
+        copyFrom(*source, offset, size);
+        readback.sync = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+        glFlush();
+        return handleCast<ReadbackHandle>(readbacks_.insert(readback));
+    }
+
+    bool readBuffer(BufferHandle sourceHandle, std::uint32_t offset, std::uint32_t size,
+            void* data) override
+    {
+        const GLBuffer* source = buffers_.get(handleCast<BufferSlot>(sourceHandle));
+        if (passActive_ || !source || !data || size == 0 ||
+                static_cast<std::uint64_t>(offset) + size > source->size)
+        {
+            log("readBuffer: invalid buffer or range, or called inside a render pass");
+            return false;
+        }
+        if (caps_.compute) glMemoryBarrier(GL_ALL_BARRIER_BITS);
+        glBindBuffer(GL_COPY_READ_BUFFER, source->id);
+        const void* mapped = glMapBufferRange(GL_COPY_READ_BUFFER, offset, size, GL_MAP_READ_BIT);
+        if (mapped) memcpy(data, mapped, size);
+        glUnmapBuffer(GL_COPY_READ_BUFFER);
+        return mapped != nullptr;
+    }
+
+    void copyFrom(const GLBuffer& source, std::uint32_t offset, std::uint32_t size)
+    {
+        if (caps_.compute) glMemoryBarrier(GL_ALL_BARRIER_BITS);
+        glBindBuffer(GL_COPY_READ_BUFFER, source.id);
+        glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, offset, 0, size);
+    }
+
     bool readbackResult(ReadbackHandle handle, void* rgba) override
     {
         GLReadback* readback = readbacks_.get(handleCast<ReadbackSlot>(handle));
@@ -1912,8 +1960,7 @@ public:
             glDeleteSync(readback->sync);
             readback->sync = nullptr;
         }
-        const GLsizeiptr bytes = static_cast<GLsizeiptr>(readback->width) *
-                                 static_cast<GLsizeiptr>(readback->height) * 4;
+        const GLsizeiptr bytes = readback->bytes;
         glBindBuffer(GL_PIXEL_PACK_BUFFER, readback->buffer);
 #ifdef __EMSCRIPTEN__
         glGetBufferSubData(GL_PIXEL_PACK_BUFFER, 0, bytes, rgba);
@@ -1923,7 +1970,8 @@ public:
         glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
 #endif
         glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
-        flipRows(static_cast<unsigned char*>(rgba), readback->width, readback->height);
+        if (readback->height > 0)
+            flipRows(static_cast<unsigned char*>(rgba), readback->width, readback->height);
         return true;
     }
 

@@ -2325,6 +2325,30 @@ int main(int argc, char** argv)
             CHECK(pixelIs(160, 120, 0, 255, 0));
             CHECK(pixelIs(10, 10, 0, 255, 0));
 
+            float generated[12] = {};
+            CHECK(driver->readBuffer(gpuVertices, 0, sizeof(generated), generated));
+            CHECK(generated[0] == -1.0f && generated[1] == -1.0f && generated[3] == 1.0f);
+            CHECK(generated[4] == 3.0f && generated[5] == -1.0f);
+            CHECK(generated[8] == -1.0f && generated[9] == 3.0f);
+            DrawIndirectCommand generatedArguments;
+            memset(&generatedArguments, 0xFF, sizeof(generatedArguments));
+            CHECK(driver->readBuffer(gpuArguments, 0, sizeof(generatedArguments),
+                    &generatedArguments));
+            CHECK(generatedArguments.vertexCount == 3 && generatedArguments.instanceCount == 1);
+            float secondColor[4] = { 0, 0, 0, 0 };
+            CHECK(driver->readBuffer(colors, 16, sizeof(secondColor), secondColor));
+            CHECK(secondColor[0] == 0.0f && secondColor[2] == 1.0f && secondColor[3] == 1.0f);
+            messages = 0;
+            CHECK(!driver->readBuffer(colors, 16, 32, secondColor));
+            CHECK(!driver->readBuffer(BufferHandle(), 0, 4, secondColor));
+            CHECK(messages == 2);
+            messages = 0;
+            const ReadbackHandle asyncVertices = driver->requestBufferReadback(gpuVertices, 16, 16);
+            CHECK(asyncVertices.valid());
+            CHECK(!driver->requestBufferReadback(gpuVertices, 40, 16).valid());
+            CHECK(messages == 1);
+            messages = 0;
+
             driver->beginComputePass();
             driver->bindPipeline(fillPipeline);
             driver->bindUniformBuffer(2, params, kParamBlueMid * stride, sizeof(Params));
@@ -2390,6 +2414,21 @@ int main(int argc, char** argv)
             CHECK(messages == 0);
             if (messages) printf("unexpected: %s\n", lastMessage);
 
+            float asyncResult[4] = { 9, 9, 9, 9 };
+            bool asyncReady = false;
+            for (int i = 0; i < 30 && !asyncReady; ++i)
+            {
+                window_begin_frame(window);
+                driver->beginFrame();
+                driver->beginRenderPass(black);
+                driver->endRenderPass();
+                driver->endFrame();
+                driver->present();
+                asyncReady = driver->readbackResult(asyncVertices, asyncResult);
+            }
+            CHECK(asyncReady);
+            CHECK(asyncResult[0] == 3.0f && asyncResult[1] == -1.0f && asyncResult[3] == 1.0f);
+            driver->destroy(asyncVertices);
             driver->destroy(storagePipeline);
             driver->destroy(storageFragment);
             driver->destroy(storageVertex);

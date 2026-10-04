@@ -112,6 +112,7 @@ struct VulkanReadback
     std::uint64_t frame = 0;
     std::uint32_t width = 0;
     std::uint32_t height = 0;
+    std::uint32_t bytes = 0;
     bool flip = false;
     bool swapRedBlue = false;
 };
@@ -2704,9 +2705,73 @@ public:
             ready = vkGetFenceStatus(device_,
                             frames_[readback->frame % kFramesInFlight].inFlight) == VK_SUCCESS;
         if (!ready) return false;
-        copyRows(static_cast<const unsigned char*>(readback->mapped), readback->width,
-                readback->height, readback->flip, readback->swapRedBlue, rgba);
+        if (readback->bytes) memcpy(rgba, readback->mapped, readback->bytes);
+        else
+            copyRows(static_cast<const unsigned char*>(readback->mapped), readback->width,
+                    readback->height, readback->flip, readback->swapRedBlue, rgba);
         return true;
+    }
+
+    ReadbackHandle requestBufferReadback(BufferHandle sourceHandle, std::uint32_t offset,
+            std::uint32_t size) override
+    {
+        VulkanBuffer* source = buffers_.get(handleCast<BufferSlot>(sourceHandle));
+        if (passActive_ || !source || size == 0 ||
+                static_cast<std::uint64_t>(offset) + size > source->size)
+        {
+            log("requestBufferReadback: invalid buffer or range, or called inside a render pass");
+            return ReadbackHandle();
+        }
+        VulkanBuffer staging;
+        staging.size = size;
+        staging.vkUsage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        if (!createVersion(staging, nullptr))
+        {
+            log("requestBufferReadback: could not create the buffer");
+            return ReadbackHandle();
+        }
+        BufferVersion& version = source->versions[source->current];
+        version.lastUsedFrame = frameNumber_;
+        VkBufferCopy region = {};
+        region.srcOffset = offset;
+        region.size = size;
+        vkCmdCopyBuffer(transferCommands(), version.buffer, staging.versions[0].buffer, 1, &region);
+
+        VulkanReadback readback;
+        readback.buffer = staging.versions[0].buffer;
+        readback.allocation = staging.versions[0].allocation;
+        readback.mapped = staging.versions[0].mapped;
+        readback.frame = frameNumber_;
+        readback.bytes = size;
+        return handleCast<ReadbackHandle>(readbacks_.insert(readback));
+    }
+
+    bool readBuffer(BufferHandle sourceHandle, std::uint32_t offset, std::uint32_t size,
+            void* data) override
+    {
+        VulkanBuffer* source = buffers_.get(handleCast<BufferSlot>(sourceHandle));
+        if (passActive_ || !source || !data || size == 0 ||
+                static_cast<std::uint64_t>(offset) + size > source->size)
+        {
+            log("readBuffer: invalid buffer or range, or called inside a render pass");
+            return false;
+        }
+        flush();
+
+        VulkanBuffer staging;
+        staging.size = size;
+        staging.vkUsage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        if (!createVersion(staging, nullptr) || !beginImmediate()) return false;
+        VkBufferCopy region = {};
+        region.srcOffset = offset;
+        region.size = size;
+        vkCmdCopyBuffer(immediateCommands_, source->versions[source->current].buffer,
+                staging.versions[0].buffer, 1, &region);
+        const bool done = endImmediate();
+        if (done) memcpy(data, staging.versions[0].mapped, size);
+        vkDestroyBuffer(device_, staging.versions[0].buffer, nullptr);
+        memory_.free(staging.versions[0].allocation);
+        return done;
     }
 
     void destroy(ReadbackHandle handle) override

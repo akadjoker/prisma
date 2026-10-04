@@ -80,6 +80,11 @@ public:
         return handleCast<ReadbackHandle>(readbacks_.insert(0));
     }
     bool readbackResult(ReadbackHandle, void*) override { return false; }
+    ReadbackHandle requestBufferReadback(BufferHandle, std::uint32_t, std::uint32_t) override
+    {
+        return handleCast<ReadbackHandle>(readbacks_.insert(0));
+    }
+    bool readBuffer(BufferHandle, std::uint32_t, std::uint32_t, void*) override { return false; }
     void destroy(ReadbackHandle handle) override { readbacks_.erase(handleCast<Slot>(handle)); }
     void beginQuery(QueryHandle) override {}
     void endQuery(QueryHandle) override {}
