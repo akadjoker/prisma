@@ -50,5 +50,6 @@ done <<LIST
 28_shadow_volume shadow_volume 10
 29_hdr_tonemap_compute hdr_tonemap_compute 10
 30_pbr_ibl pbr_ibl 10
+31_gltf_viewer gltf_viewer 10
 LIST
 exit $status

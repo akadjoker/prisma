@@ -30,6 +30,14 @@ inline bool hasArgument(int argc, char** argv, const char* name)
     return false;
 }
 
+inline const char* argumentValue(int argc, char** argv, const char* name)
+{
+    const size_t length = strlen(name);
+    for (int i = 1; i < argc; ++i)
+        if (strncmp(argv[i], name, length) == 0 && argv[i][length] == '=') return argv[i] + length + 1;
+    return nullptr;
+}
+
 inline int frameLimit(int argc, char** argv)
 {
     for (int i = 1; i < argc; ++i)

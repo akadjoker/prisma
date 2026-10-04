@@ -48,7 +48,7 @@ if(TARGET demo_ibl)
   target_include_directories(test_gltf PRIVATE ${PROJECT_SOURCE_DIR}/demos/common)
   target_link_libraries(test_gltf PRIVATE demo_ibl ct)
   target_compile_definitions(test_gltf PRIVATE
-    PRISMA_MODELS_DIR="${PROJECT_SOURCE_DIR}/tmp/filament/third_party/models")
+    PRISMA_MODELS_DIR="${PRISMA_MODELS_DIR}")
   add_test(NAME gltf COMMAND test_gltf)
 endif()
 

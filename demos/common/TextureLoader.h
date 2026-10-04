@@ -160,7 +160,8 @@ inline bool parseDds(const unsigned char* data, size_t size, bool srgb, DdsInfo*
 }
 
 inline prisma::TextureHandle createTextureFromDds(prisma::Driver* driver, const unsigned char* data,
-        size_t size, bool srgb, bool generateMips, const char* name = nullptr)
+        size_t size, bool srgb, bool generateMips, const char* name = nullptr,
+        unsigned skipMips = 0)
 {
     DdsInfo info;
     if (!parseDds(data, size, srgb, &info)) return prisma::TextureHandle();
@@ -201,14 +202,17 @@ inline prisma::TextureHandle createTextureFromDds(prisma::Driver* driver, const 
     }
 
     prisma::TextureDesc desc;
+    const unsigned skip = info.type == prisma::TextureType::Texture2D && info.mipLevels > 1
+                                  ? (skipMips < info.mipLevels - 1 ? skipMips : info.mipLevels - 1)
+                                  : 0;
     desc.type = info.type;
     desc.format = format;
-    desc.width = info.width;
-    desc.height = info.height;
+    desc.width = info.width >> skip > 0 ? info.width >> skip : 1;
+    desc.height = info.height >> skip > 0 ? info.height >> skip : 1;
     desc.depth = info.type == prisma::TextureType::Texture3D          ? info.depth
                  : info.type == prisma::TextureType::TextureCubeArray ? info.layers / 6
                                                                       : info.layers;
-    desc.mipLevels = info.mipLevels;
+    desc.mipLevels = info.mipLevels - skip;
     desc.debugName = name;
 
     const bool autoMips = generateMips && info.mipLevels == 1 && !isBlockCompressed(format) &&
@@ -243,12 +247,12 @@ inline prisma::TextureHandle createTextureFromDds(prisma::Driver* driver, const 
     ct::Vector<unsigned char> converted;
     for (unsigned layer = 0; layer < info.layers; ++layer)
     {
-        for (unsigned mip = 0; mip < info.mipLevels; ++mip)
+        for (unsigned mip = 0; mip < info.mipLevels - skip; ++mip)
         {
-            const unsigned char* source = data + header.mip_offset(mip, layer);
+            const unsigned char* source = data + header.mip_offset(mip + skip, layer);
             if (info.swapRedBlue)
             {
-                const size_t bytes = static_cast<size_t>(header.mip_size(mip));
+                const size_t bytes = static_cast<size_t>(header.mip_size(mip + skip));
                 converted.resize(bytes);
                 for (size_t i = 0; i + 3 < bytes; i += 4)
                 {
@@ -318,12 +322,13 @@ inline prisma::TextureHandle createTextureFromImage(prisma::Driver* driver,
 }
 
 inline prisma::TextureHandle loadTexture(prisma::Driver* driver, const char* path, bool srgb,
-        bool generateMips)
+        bool generateMips, unsigned skipMips = 0)
 {
     ct::Vector<unsigned char> bytes;
     if (!readFile(path, &bytes)) return prisma::TextureHandle();
     if (endsWith(path, ".dds"))
-        return createTextureFromDds(driver, bytes.data(), bytes.size(), srgb, generateMips, path);
+        return createTextureFromDds(driver, bytes.data(), bytes.size(), srgb, generateMips, path,
+                skipMips);
     return createTextureFromImage(driver, bytes.data(), bytes.size(), srgb, generateMips,
             endsWith(path, ".hdr"), path);
 }

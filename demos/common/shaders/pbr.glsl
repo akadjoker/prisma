@@ -9,6 +9,15 @@ layout(set = 0, binding = 1, std140) uniform Ibl
 layout(set = 1, binding = 0) uniform samplerCube uIblSpecular;
 layout(set = 1, binding = 1) uniform sampler2D uIblDfg;
 
+PbrSurface finishSurface(PbrSurface surface, vec3 n, vec3 v)
+{
+    surface.noV = max(dot(n, v), kMinNoV);
+    vec2 dfg = textureLod(uIblDfg, vec2(surface.noV, surface.perceptualRoughness), 0.0).xy;
+    surface.dfg = vec3(dfg, 0.0);
+    surface.energyCompensation = 1.0 + surface.f0 * (1.0 / dfg.y - 1.0);
+    return surface;
+}
+
 PbrSurface makeSurface(vec3 baseColor, float metallic, float perceptualRoughness, vec3 n, vec3 v)
 {
     PbrSurface surface;
@@ -16,11 +25,19 @@ PbrSurface makeSurface(vec3 baseColor, float metallic, float perceptualRoughness
     surface.f0 = baseColor * metallic + vec3(0.04 * (1.0 - metallic));
     surface.perceptualRoughness = clamp(perceptualRoughness, kMinPerceptualRoughness, 1.0);
     surface.roughness = surface.perceptualRoughness * surface.perceptualRoughness;
-    surface.noV = max(dot(n, v), kMinNoV);
-    vec2 dfg = textureLod(uIblDfg, vec2(surface.noV, surface.perceptualRoughness), 0.0).xy;
-    surface.dfg = vec3(dfg, 0.0);
-    surface.energyCompensation = 1.0 + surface.f0 * (1.0 / dfg.y - 1.0);
-    return surface;
+    return finishSurface(surface, n, v);
+}
+
+PbrSurface makeSpecularGlossinessSurface(vec3 diffuse, vec3 specular, float glossiness, vec3 n,
+        vec3 v)
+{
+    PbrSurface surface;
+    float metallic = max(specular.r, max(specular.g, specular.b));
+    surface.diffuseColor = diffuse * (1.0 - metallic);
+    surface.f0 = specular;
+    surface.perceptualRoughness = clamp(1.0 - glossiness, kMinPerceptualRoughness, 1.0);
+    surface.roughness = surface.perceptualRoughness * surface.perceptualRoughness;
+    return finishSurface(surface, n, v);
 }
 
 vec3 irradianceSh(vec3 n)
