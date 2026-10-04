@@ -40,5 +40,7 @@ done <<LIST
 21_pn_triangles pn_triangles 10
 22_displacement displacement 10
 23_fluid fluid 400
+24_nbody nbody 200
+25_oit oit 10
 LIST
 exit $status
