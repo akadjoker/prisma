@@ -1,4 +1,5 @@
 #include "common/Ibl.h"
+#include "common/Lights.h"
 #include "common/Projection.h"
 #include "common/ZenApp.h"
 #include "mathc.h"
@@ -40,6 +41,7 @@ const unsigned kRows = 3;
 const unsigned kSegments = 64;
 const unsigned kRings = 32;
 const float kSpacing = 1.1f;
+const unsigned kMarkers = 4;
 
 const float kRowColors[kRows][4] = { { 0.80f, 0.08f, 0.06f, 1.0f }, { 1.00f, 0.71f, 0.29f, 1.0f },
     { 0.95f, 0.95f, 0.96f, 1.0f } };
@@ -152,9 +154,12 @@ int main(int argc, char** argv)
     const unsigned alignment = driver->caps().uniformBufferOffsetAlignment;
     const unsigned frameStride = (sizeof(FrameUniforms) + alignment - 1) / alignment * alignment;
     const unsigned objectStride = (sizeof(ObjectUniforms) + alignment - 1) / alignment * alignment;
-    const unsigned objectCount = kColumns * kRows;
+    const unsigned sphereCount = kColumns * kRows;
+    const unsigned objectCount = sphereCount + kMarkers;
+    const unsigned lightsStride =
+            (sizeof(zenapp::LightUniforms) + alignment - 1) / alignment * alignment;
     ct::Vector<unsigned char> uniformBytes;
-    uniformBytes.resize(static_cast<size_t>(frameStride) + objectStride * objectCount);
+    uniformBytes.resize(static_cast<size_t>(frameStride) + objectStride * objectCount + lightsStride);
     bufferDesc.usage = prisma::BufferUsage::Uniform;
     bufferDesc.size = static_cast<std::uint32_t>(uniformBytes.size());
     bufferDesc.data = nullptr;
@@ -162,6 +167,7 @@ int main(int argc, char** argv)
     bufferDesc.debugName = "uniforms";
     const prisma::BufferHandle uniformBuffer = driver->createBuffer(bufferDesc);
 
+    const unsigned lightsOffset = frameStride + objectStride * objectCount;
     const prisma::ShaderHandle pbrVertex = zenapp::createShader(driver, pbr_vert);
     const prisma::ShaderHandle pbrFragment = zenapp::createShader(driver, pbr_frag);
     const prisma::ShaderHandle skyVertex = zenapp::createShader(driver, sky_vert);
@@ -206,11 +212,13 @@ int main(int argc, char** argv)
     pass.clearColor[1] = 0.0f;
     pass.clearColor[2] = 0.0f;
 
+    bool lightsOn = !zenapp::hasArgument(argc, argv, "nolights");
     int frames = 0;
     while (ready && !window_should_close(window))
     {
         window_begin_frame(window);
         if (key_pressed(window, KEY_ESCAPE)) window_set_should_close(window, true);
+        if (key_pressed(window, KEY_L)) lightsOn = !lightsOn;
 
         int width = 1;
         int height = 1;
@@ -238,8 +246,39 @@ int main(int argc, char** argv)
         frame.camera[3] = 1.0f;
         frame.exposure[0] = 1.0f;
         frame.exposure[1] = 0.0f;
-        frame.exposure[2] = frame.exposure[3] = 0.0f;
+        frame.exposure[2] = lightsOn ? 0.45f : 1.0f;
+        frame.exposure[3] = 0.0f;
         memcpy(uniformBytes.data(), &frame, sizeof(frame));
+
+        zenapp::LightUniforms lights;
+        zenapp::clearLights(&lights);
+        float markerPosition[kMarkers][3];
+        float markerColor[kMarkers][3];
+        if (lightsOn)
+        {
+            const float sunDirection[3] = { 0.5f, 0.8f, 0.6f };
+            const float sunColor[3] = { 1.0f, 0.95f, 0.85f };
+            zenapp::setSunLight(&lights, sunDirection, sunColor, 3.0f);
+            const float colors[3][3] = { { 1.0f, 0.25f, 0.2f }, { 0.2f, 1.0f, 0.35f },
+                { 0.25f, 0.4f, 1.0f } };
+            for (unsigned i = 0; i < 3; ++i)
+            {
+                const float angle = time * (0.5f + 0.2f * static_cast<float>(i)) +
+                                    static_cast<float>(i) * 2.0944f;
+                const float position[3] = { 3.4f * sinf(angle), 1.4f * cosf(angle * 1.3f), 1.6f };
+                zenapp::addPointLight(&lights, position, colors[i], 14.0f, 6.0f);
+                memcpy(markerPosition[i], position, sizeof(position));
+                memcpy(markerColor[i], colors[i], sizeof(colors[i]));
+            }
+            const float spotPosition[3] = { -3.0f, 3.2f, 3.2f };
+            const float spotDirection[3] = { 1.9f, -2.1f, -3.2f };
+            const float spotColor[3] = { 1.0f, 0.9f, 0.7f };
+            zenapp::addSpotLight(&lights, spotPosition, spotDirection, spotColor, 45.0f, 10.0f,
+                    0.22f, 0.4f);
+            memcpy(markerPosition[3], spotPosition, sizeof(spotPosition));
+            memcpy(markerColor[3], spotColor, sizeof(spotColor));
+        }
+        memcpy(uniformBytes.data() + lightsOffset, &lights, sizeof(lights));
 
         for (unsigned row = 0; row < kRows; ++row)
         {
@@ -260,6 +299,26 @@ int main(int argc, char** argv)
             }
         }
 
+        for (unsigned i = 0; i < kMarkers; ++i)
+        {
+            ObjectUniforms object;
+            memset(&object, 0, sizeof(object));
+            if (lightsOn)
+            {
+                object.model = Math::Mat4::Translation(Math::Vec3(markerPosition[i][0],
+                                       markerPosition[i][1], markerPosition[i][2])) *
+                               Math::Mat4::Scale(Math::Vec3(0.09f, 0.09f, 0.09f));
+                memcpy(object.baseColor, markerColor[i], sizeof(markerColor[i]));
+                object.baseColor[3] = 1.0f;
+                object.material[2] = 1.6f;
+            }
+            else
+                object.model = Math::Mat4::Scale(Math::Vec3(0.0f, 0.0f, 0.0f));
+            memcpy(uniformBytes.data() + frameStride +
+                            static_cast<size_t>(sphereCount + i) * objectStride,
+                    &object, sizeof(object));
+        }
+
         driver->beginFrame();
         driver->updateBuffer(uniformBuffer, 0, uniformBytes.data(),
                 static_cast<std::uint32_t>(uniformBytes.size()));
@@ -275,6 +334,7 @@ int main(int argc, char** argv)
         driver->bindIndexBuffer(indexBuffer);
         driver->bindUniformBuffer(0, uniformBuffer, 0, sizeof(FrameUniforms));
         zenapp::bindIbl(driver, ibl);
+        driver->bindUniformBuffer(3, uniformBuffer, lightsOffset, sizeof(zenapp::LightUniforms));
         for (unsigned i = 0; i < objectCount; ++i)
         {
             driver->bindUniformBuffer(2, uniformBuffer, frameStride + i * objectStride,

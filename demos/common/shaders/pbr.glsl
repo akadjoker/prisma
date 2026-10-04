@@ -1,3 +1,5 @@
+#include "pbr_surface.glsl"
+
 layout(set = 0, binding = 1, std140) uniform Ibl
 {
     vec4 uIblSh[9];
@@ -7,24 +9,17 @@ layout(set = 0, binding = 1, std140) uniform Ibl
 layout(set = 1, binding = 0) uniform samplerCube uIblSpecular;
 layout(set = 1, binding = 1) uniform sampler2D uIblDfg;
 
-const float kMinPerceptualRoughness = 0.045;
-const float kMinNoV = 1e-4;
-
-struct PbrSurface
-{
-    vec3 diffuseColor;
-    vec3 f0;
-    float perceptualRoughness;
-    float roughness;
-};
-
-PbrSurface makeSurface(vec3 baseColor, float metallic, float perceptualRoughness)
+PbrSurface makeSurface(vec3 baseColor, float metallic, float perceptualRoughness, vec3 n, vec3 v)
 {
     PbrSurface surface;
     surface.diffuseColor = baseColor * (1.0 - metallic);
     surface.f0 = baseColor * metallic + vec3(0.04 * (1.0 - metallic));
     surface.perceptualRoughness = clamp(perceptualRoughness, kMinPerceptualRoughness, 1.0);
     surface.roughness = surface.perceptualRoughness * surface.perceptualRoughness;
+    surface.noV = max(dot(n, v), kMinNoV);
+    vec2 dfg = textureLod(uIblDfg, vec2(surface.noV, surface.perceptualRoughness), 0.0).xy;
+    surface.dfg = vec3(dfg, 0.0);
+    surface.energyCompensation = 1.0 + surface.f0 * (1.0 / dfg.y - 1.0);
     return surface;
 }
 
@@ -45,16 +40,12 @@ float perceptualRoughnessToLod(float perceptualRoughness)
 
 vec3 evaluateIbl(PbrSurface surface, vec3 n, vec3 v)
 {
-    float noV = max(dot(n, v), kMinNoV);
     vec3 r = reflect(-v, n);
-
-    vec2 dfg = textureLod(uIblDfg, vec2(noV, surface.perceptualRoughness), 0.0).xy;
-    vec3 e = mix(dfg.xxx, dfg.yyy, surface.f0);
-    vec3 energyCompensation = 1.0 + surface.f0 * (1.0 / dfg.y - 1.0);
+    vec3 e = mix(surface.dfg.xxx, surface.dfg.yyy, surface.f0);
 
     vec3 dominant = mix(r, n, surface.roughness * surface.roughness);
     float lod = perceptualRoughnessToLod(surface.perceptualRoughness);
-    vec3 specular = e * textureLod(uIblSpecular, dominant, lod).rgb * energyCompensation;
+    vec3 specular = e * textureLod(uIblSpecular, dominant, lod).rgb * surface.energyCompensation;
     vec3 diffuse = surface.diffuseColor * irradianceSh(n) * (1.0 - e);
     return (specular + diffuse) * uIblParams.y;
 }

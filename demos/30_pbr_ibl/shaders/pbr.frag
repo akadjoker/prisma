@@ -20,6 +20,7 @@ layout(set = 0, binding = 2, std140) uniform Object
 };
 
 #include "../../common/shaders/pbr.glsl"
+#include "../../common/shaders/lighting.glsl"
 #include "../../common/shaders/tonemap.glsl"
 
 layout(location = 0) out vec4 oColor;
@@ -28,8 +29,10 @@ void main()
 {
     vec3 n = normalize(vNormal);
     vec3 v = normalize(uCamera.xyz - vWorld);
-    PbrSurface surface = makeSurface(uBaseColor.rgb, uMaterial.x, uMaterial.y);
-    vec3 color = evaluateIbl(surface, n, v) * uExposure.x;
-    color = tonemapFilmic(color);
+    PbrSurface surface = makeSurface(uBaseColor.rgb, uMaterial.x, uMaterial.y, n, v);
+    vec3 color = evaluateIbl(surface, n, v) * uExposure.z + evaluateLights(surface, n, v, vWorld);
+    if (uMaterial.z > 0.0)
+        color = uBaseColor.rgb * uMaterial.z;
+    color = tonemapFilmic(color * uExposure.x);
     oColor = vec4(pow(color, vec3(1.0 / 2.2)), 1.0);
 }
