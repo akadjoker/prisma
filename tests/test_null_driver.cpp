@@ -6,14 +6,14 @@ int main()
     using namespace prisma;
 
     CHECK(isDriverSupported(DriverType::Null));
-    CHECK(!isDriverSupported(DriverType::Vulkan));
 
     DriverDesc desc;
     DriverError error = DriverError::None;
 
     desc.type = DriverType::Vulkan;
     CHECK(createDriver(desc, &error) == nullptr);
-    CHECK(error == DriverError::NotCompiled);
+    CHECK(error == (isDriverSupported(DriverType::Vulkan) ? DriverError::MissingPlatform
+                                                          : DriverError::NotCompiled));
 
     if (isDriverSupported(DriverType::OpenGL))
     {

@@ -4,21 +4,43 @@
 #include "prisma/rhi/Driver.h"
 
 #include <stdio.h>
-
-namespace zengl
-{
+#include <stdlib.h>
+#include <string.h>
 
 #ifdef PRISMA_GLES
-#define ZENGL_SHADER_HEADER "#version 300 es\nprecision mediump float;\n"
+#define ZENAPP_SHADER_HEADER "#version 300 es\nprecision mediump float;\n"
 #else
-#define ZENGL_SHADER_HEADER "#version 460 core\n"
+#define ZENAPP_SHADER_HEADER "#version 460 core\n"
 #endif
+
+namespace zenapp
+{
 
 #ifdef NDEBUG
 const bool kDebug = false;
 #else
 const bool kDebug = true;
 #endif
+
+inline bool hasArgument(int argc, char** argv, const char* name)
+{
+    for (int i = 1; i < argc; ++i)
+        if (strcmp(argv[i], name) == 0) return true;
+    return false;
+}
+
+inline int frameLimit(int argc, char** argv)
+{
+    for (int i = 1; i < argc; ++i)
+        if (argv[i][0] >= '0' && argv[i][0] <= '9') return atoi(argv[i]);
+    return 0;
+}
+
+inline prisma::DriverType driverType(int argc, char** argv)
+{
+    return hasArgument(argc, argv, "vulkan") ? prisma::DriverType::Vulkan
+                                             : prisma::DriverType::OpenGL;
+}
 
 inline bool makeCurrent(void* user)
 {
@@ -37,9 +59,19 @@ inline void framebufferSize(void* user, std::uint32_t* width, std::uint32_t* hei
     *height = h > 0 ? static_cast<std::uint32_t>(h) : 0;
 }
 
+inline const char* const* instanceExtensions(void*, std::uint32_t* count)
+{
+    return vulkan_instance_extensions(count);
+}
+
+inline bool createSurface(void* user, void* instance, std::uint64_t* surface)
+{
+    return vulkan_create_surface(static_cast<PlatformWindow*>(user), instance, nullptr, surface);
+}
+
 inline void log(const char* message) { printf("prisma: %s\n", message); }
 
-inline PlatformWindow* openWindow(const char* title)
+inline PlatformWindow* openWindow(const char* title, prisma::DriverType type)
 {
     WindowConfig config = {};
     config.title = title;
@@ -48,10 +80,18 @@ inline PlatformWindow* openWindow(const char* title)
     config.x = WINDOW_POS_CENTERED;
     config.y = WINDOW_POS_CENTERED;
     config.monitor = MONITOR_CURRENT;
-    config.render = RENDER_GL;
-    config.gl.debug = kDebug;
     config.resizable = true;
     config.vsync = true;
+
+    if (type == prisma::DriverType::Vulkan)
+    {
+        if (!vulkan_supported()) return nullptr;
+        config.render = RENDER_VULKAN;
+        return window_create(&config);
+    }
+
+    config.render = RENDER_GL;
+    config.gl.debug = kDebug;
 #ifdef PRISMA_GLES
     config.gl.profile = GL_PROFILE_ES;
     config.gl.major = 3;
@@ -70,7 +110,7 @@ inline PlatformWindow* openWindow(const char* title)
 #endif
 }
 
-inline prisma::Driver* createDriver(PlatformWindow* window)
+inline prisma::Driver* createDriver(PlatformWindow* window, prisma::DriverType type)
 {
     prisma::GLPlatform gl;
     gl.user = window;
@@ -79,9 +119,16 @@ inline prisma::Driver* createDriver(PlatformWindow* window)
     gl.framebufferSize = framebufferSize;
     gl.getProcAddress = gl_proc_address;
 
+    prisma::VulkanPlatform vulkan;
+    vulkan.user = window;
+    vulkan.instanceExtensions = instanceExtensions;
+    vulkan.createSurface = createSurface;
+    vulkan.framebufferSize = framebufferSize;
+
     prisma::DriverDesc desc;
-    desc.type = prisma::DriverType::OpenGL;
+    desc.type = type;
     desc.gl = &gl;
+    desc.vulkan = &vulkan;
     desc.log = log;
     desc.debug = kDebug;
 
@@ -91,4 +138,4 @@ inline prisma::Driver* createDriver(PlatformWindow* window)
     return driver;
 }
 
-} // namespace zengl
+} // namespace zenapp

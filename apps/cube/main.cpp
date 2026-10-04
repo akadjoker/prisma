@@ -1,4 +1,4 @@
-#include "common/ZenGL.h"
+#include "common/ZenApp.h"
 #include "mathc.h"
 
 #include <stdlib.h>
@@ -8,48 +8,49 @@ namespace
 {
 
 const char* kVertexSource =
-        ZENGL_SHADER_HEADER "layout(location = 0) in vec3 aPosition;\n"
-                            "layout(location = 1) in vec3 aColor;\n"
-                            "layout(location = 2) in vec2 aUv;\n"
-                            "layout(std140) uniform Frame\n"
-                            "{\n"
-                            "    mat4 uModelViewProjection;\n"
-                            "};\n"
-                            "out vec3 vColor;\n"
-                            "out vec2 vUv;\n"
-                            "void main()\n"
-                            "{\n"
-                            "    vColor = aColor;\n"
-                            "    vUv = aUv;\n"
-                            "    gl_Position = uModelViewProjection * vec4(aPosition, 1.0);\n"
-                            "}\n";
+        ZENAPP_SHADER_HEADER "layout(location = 0) in vec3 aPosition;\n"
+                             "layout(location = 1) in vec3 aColor;\n"
+                             "layout(location = 2) in vec2 aUv;\n"
+                             "layout(std140) uniform Frame\n"
+                             "{\n"
+                             "    mat4 uModelViewProjection;\n"
+                             "};\n"
+                             "out vec3 vColor;\n"
+                             "out vec2 vUv;\n"
+                             "void main()\n"
+                             "{\n"
+                             "    vColor = aColor;\n"
+                             "    vUv = aUv;\n"
+                             "    gl_Position = uModelViewProjection * vec4(aPosition, 1.0);\n"
+                             "}\n";
 
 const char* kFragmentSource =
-        ZENGL_SHADER_HEADER "in vec3 vColor;\n"
-                            "in vec2 vUv;\n"
-                            "uniform sampler2D uTexture;\n"
-                            "out vec4 oColor;\n"
-                            "void main()\n"
-                            "{\n"
-                            "    oColor = vec4(vColor * texture(uTexture, vUv).rgb, 1.0);\n"
-                            "}\n";
+        ZENAPP_SHADER_HEADER "in vec3 vColor;\n"
+                             "in vec2 vUv;\n"
+                             "uniform sampler2D uTexture;\n"
+                             "out vec4 oColor;\n"
+                             "void main()\n"
+                             "{\n"
+                             "    oColor = vec4(vColor * texture(uTexture, vUv).rgb, 1.0);\n"
+                             "}\n";
 
-const char* kCopyVertexSource = ZENGL_SHADER_HEADER "layout(location = 0) in vec2 aPosition;\n"
-                                                    "out vec2 vUv;\n"
-                                                    "void main()\n"
-                                                    "{\n"
-                                                    "    vUv = aPosition * 0.5 + 0.5;\n"
-                                                    "    gl_Position = vec4(aPosition, 0.0, 1.0);\n"
-                                                    "}\n";
+const char* kCopyVertexSource =
+        ZENAPP_SHADER_HEADER "layout(location = 0) in vec2 aPosition;\n"
+                             "out vec2 vUv;\n"
+                             "void main()\n"
+                             "{\n"
+                             "    vUv = aPosition * 0.5 + 0.5;\n"
+                             "    gl_Position = vec4(aPosition, 0.0, 1.0);\n"
+                             "}\n";
 
 const char* kCopyFragmentSource =
-        ZENGL_SHADER_HEADER "in vec2 vUv;\n"
-                            "uniform sampler2D uTexture;\n"
-                            "out vec4 oColor;\n"
-                            "void main()\n"
-                            "{\n"
-                            "    oColor = vec4(texture(uTexture, vUv).rgb, 1.0);\n"
-                            "}\n";
+        ZENAPP_SHADER_HEADER "in vec2 vUv;\n"
+                             "uniform sampler2D uTexture;\n"
+                             "out vec4 oColor;\n"
+                             "void main()\n"
+                             "{\n"
+                             "    oColor = vec4(texture(uTexture, vUv).rgb, 1.0);\n"
+                             "}\n";
 
 const float kCoveringTriangle[6] = { -1.0f, -1.0f, 3.0f, -1.0f, -1.0f, 3.0f };
 
@@ -138,8 +139,9 @@ const std::uint16_t kIndices[36] = {
 
 int main(int argc, char** argv)
 {
-    const int maxFrames = argc > 1 ? atoi(argv[1]) : 0;
-    const bool offscreen = argc > 2 && strcmp(argv[2], "offscreen") == 0;
+    const int maxFrames = zenapp::frameLimit(argc, argv);
+    const prisma::DriverType driverType = zenapp::driverType(argc, argv);
+    const bool offscreen = zenapp::hasArgument(argc, argv, "offscreen");
 
     if (!platform_init())
     {
@@ -147,7 +149,7 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    PlatformWindow* window = zengl::openWindow("prisma cube");
+    PlatformWindow* window = zenapp::openWindow("prisma cube", driverType);
     if (!window)
     {
         printf("window: %s\n", platform_get_error());
@@ -155,7 +157,7 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    prisma::Driver* driver = zengl::createDriver(window);
+    prisma::Driver* driver = zenapp::createDriver(window, driverType);
     if (!driver)
     {
         window_destroy(window);

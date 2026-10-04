@@ -1,10 +1,11 @@
-#include "common/ZenGL.h"
+#include "common/ZenApp.h"
 
 #include <stdlib.h>
 
 int main(int argc, char** argv)
 {
-    const int maxFrames = argc > 1 ? atoi(argv[1]) : 0;
+    const int maxFrames = zenapp::frameLimit(argc, argv);
+    const prisma::DriverType driverType = zenapp::driverType(argc, argv);
 
     if (!platform_init())
     {
@@ -12,7 +13,7 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    PlatformWindow* window = zengl::openWindow("prisma clear");
+    PlatformWindow* window = zenapp::openWindow("prisma clear", driverType);
     if (!window)
     {
         printf("window: %s\n", platform_get_error());
@@ -20,7 +21,7 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    prisma::Driver* driver = zengl::createDriver(window);
+    prisma::Driver* driver = zenapp::createDriver(window, driverType);
     if (!driver)
     {
         window_destroy(window);
@@ -30,8 +31,11 @@ int main(int argc, char** argv)
 
     const prisma::Caps& caps = driver->caps();
     printf("%s %u.%u: max texture %u, max color targets %u, compute %d, debug %d\n",
-            caps.gles ? "OpenGL ES" : "OpenGL", caps.versionMajor, caps.versionMinor,
-            caps.maxTextureSize, caps.maxColorTargets, caps.compute, caps.debugOutput);
+            driver->type() == prisma::DriverType::Vulkan ? "Vulkan"
+            : caps.gles                                  ? "OpenGL ES"
+                                                         : "OpenGL",
+            caps.versionMajor, caps.versionMinor, caps.maxTextureSize, caps.maxColorTargets,
+            caps.compute, caps.debugOutput);
 
     prisma::RenderPassDesc pass;
     pass.clearColor[0] = 0.10f;

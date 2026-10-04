@@ -6,6 +6,9 @@ elseif(PRISMA_GLES)
 else()
   list(FILTER PRISMA_SOURCES EXCLUDE REGEX "/rhi/gl/loader/OpenGLES3\\.cpp$")
 endif()
+if(NOT PRISMA_VULKAN)
+  list(FILTER PRISMA_SOURCES EXCLUDE REGEX "/rhi/vulkan/")
+endif()
 
 add_library(prisma STATIC ${PRISMA_SOURCES})
 target_include_directories(prisma
@@ -29,4 +32,10 @@ if(PRISMA_OPENGL)
       src/prisma/rhi/gl/loader/OpenGLES3.cpp
       PROPERTIES COMPILE_OPTIONS "-w")
   endif()
+endif()
+
+if(PRISMA_VULKAN)
+  find_package(Vulkan REQUIRED)
+  target_compile_definitions(prisma PRIVATE PRISMA_HAS_VULKAN)
+  target_link_libraries(prisma PRIVATE Vulkan::Vulkan)
 endif()

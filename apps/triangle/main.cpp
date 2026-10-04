@@ -1,25 +1,25 @@
-#include "common/ZenGL.h"
+#include "common/ZenApp.h"
 
 #include <stdlib.h>
 
 namespace
 {
 
-const char* kVertexSource = ZENGL_SHADER_HEADER "layout(location = 0) in vec2 aPosition;\n"
-                                                "layout(location = 1) in vec3 aColor;\n"
-                                                "out vec3 vColor;\n"
-                                                "void main()\n"
-                                                "{\n"
-                                                "    vColor = aColor;\n"
-                                                "    gl_Position = vec4(aPosition, 0.0, 1.0);\n"
-                                                "}\n";
+const char* kVertexSource = ZENAPP_SHADER_HEADER "layout(location = 0) in vec2 aPosition;\n"
+                                                 "layout(location = 1) in vec3 aColor;\n"
+                                                 "out vec3 vColor;\n"
+                                                 "void main()\n"
+                                                 "{\n"
+                                                 "    vColor = aColor;\n"
+                                                 "    gl_Position = vec4(aPosition, 0.0, 1.0);\n"
+                                                 "}\n";
 
-const char* kFragmentSource = ZENGL_SHADER_HEADER "in vec3 vColor;\n"
-                                                  "out vec4 oColor;\n"
-                                                  "void main()\n"
-                                                  "{\n"
-                                                  "    oColor = vec4(vColor, 1.0);\n"
-                                                  "}\n";
+const char* kFragmentSource = ZENAPP_SHADER_HEADER "in vec3 vColor;\n"
+                                                   "out vec4 oColor;\n"
+                                                   "void main()\n"
+                                                   "{\n"
+                                                   "    oColor = vec4(vColor, 1.0);\n"
+                                                   "}\n";
 
 struct Vertex
 {
@@ -37,7 +37,8 @@ const Vertex kVertices[3] = {
 
 int main(int argc, char** argv)
 {
-    const int maxFrames = argc > 1 ? atoi(argv[1]) : 0;
+    const int maxFrames = zenapp::frameLimit(argc, argv);
+    const prisma::DriverType driverType = zenapp::driverType(argc, argv);
 
     if (!platform_init())
     {
@@ -45,7 +46,7 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    PlatformWindow* window = zengl::openWindow("prisma triangle");
+    PlatformWindow* window = zenapp::openWindow("prisma triangle", driverType);
     if (!window)
     {
         printf("window: %s\n", platform_get_error());
@@ -53,7 +54,7 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    prisma::Driver* driver = zengl::createDriver(window);
+    prisma::Driver* driver = zenapp::createDriver(window, driverType);
     if (!driver)
     {
         window_destroy(window);

@@ -10,6 +10,8 @@ endif()
 
 option(PRISMA_OPENGL "Build the OpenGL backend" ON)
 option(PRISMA_GLES "Use OpenGL ES 3 instead of OpenGL 4.6 in the OpenGL backend" OFF)
+find_package(Vulkan QUIET)
+option(PRISMA_VULKAN "Build the Vulkan backend" ${Vulkan_FOUND})
 option(PRISMA_BUILD_APPS "Build the prisma sample apps" ON)
 option(PRISMA_BUILD_TESTS "Build the prisma tests" ON)
 

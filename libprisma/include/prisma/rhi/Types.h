@@ -33,10 +33,19 @@ struct GLPlatform
     void* (*getProcAddress)(const char* name) = nullptr;
 };
 
+struct VulkanPlatform
+{
+    void* user = nullptr;
+    const char* const* (*instanceExtensions)(void* user, std::uint32_t* count) = nullptr;
+    bool (*createSurface)(void* user, void* instance, std::uint64_t* surface) = nullptr;
+    void (*framebufferSize)(void* user, std::uint32_t* width, std::uint32_t* height) = nullptr;
+};
+
 struct DriverDesc
 {
     DriverType type = DriverType::Null;
     const GLPlatform* gl = nullptr;
+    const VulkanPlatform* vulkan = nullptr;
     void (*log)(const char* message) = nullptr;
     bool debug = false;
 };

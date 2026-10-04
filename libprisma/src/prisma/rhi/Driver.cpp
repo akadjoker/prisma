@@ -7,6 +7,9 @@ Driver* createNullDriver(const DriverDesc& desc);
 #ifdef PRISMA_HAS_OPENGL
 Driver* createGLDriver(const DriverDesc& desc, DriverError* error);
 #endif
+#ifdef PRISMA_HAS_VULKAN
+Driver* createVulkanDriver(const DriverDesc& desc, DriverError* error);
+#endif
 
 bool isDriverSupported(DriverType type)
 {
@@ -21,7 +24,11 @@ bool isDriverSupported(DriverType type)
             return false;
 #endif
         case DriverType::Vulkan:
+#ifdef PRISMA_HAS_VULKAN
+            return true;
+#else
             return false;
+#endif
     }
     return false;
 }
@@ -42,6 +49,9 @@ Driver* createDriver(const DriverDesc& desc, DriverError* error)
 #endif
             break;
         case DriverType::Vulkan:
+#ifdef PRISMA_HAS_VULKAN
+            driver = createVulkanDriver(desc, &result);
+#endif
             break;
     }
     if (error) *error = result;
