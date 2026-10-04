@@ -2,6 +2,12 @@ add_executable(test_null_driver test_null_driver.cpp)
 target_link_libraries(test_null_driver PRIVATE prisma)
 add_test(NAME null_driver COMMAND test_null_driver)
 
+add_executable(test_texture_loader test_texture_loader.cpp)
+target_include_directories(test_texture_loader PRIVATE ${PROJECT_SOURCE_DIR}/demos/common)
+target_link_libraries(test_texture_loader PRIVATE prisma)
+target_compile_definitions(test_texture_loader PRIVATE PRISMA_MEDIA_DIR="${PRISMA_MEDIA_DIR}")
+add_test(NAME texture_loader COMMAND test_texture_loader)
+
 add_executable(test_free_ranges test_free_ranges.cpp)
 target_include_directories(test_free_ranges PRIVATE ${PROJECT_SOURCE_DIR}/libprisma/src)
 target_link_libraries(test_free_ranges PRIVATE ct)

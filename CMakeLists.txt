@@ -14,6 +14,8 @@ find_package(Vulkan QUIET)
 option(PRISMA_VULKAN "Build the Vulkan backend" ${Vulkan_FOUND})
 option(PRISMA_BUILD_DEMOS "Build the prisma demos" ON)
 option(PRISMA_BUILD_TESTS "Build the prisma tests" ON)
+set(PRISMA_MEDIA_DIR "${PROJECT_SOURCE_DIR}/tmp/DirectX-SDK-Samples-nov2024/Media" CACHE PATH
+    "Folder with the media the demos load")
 
 add_library(ct INTERFACE)
 target_include_directories(ct INTERFACE external/containers/include)
