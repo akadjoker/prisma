@@ -470,6 +470,11 @@ int main(int argc, char** argv)
     }
 
     Math::Vec3 previousEye = flyEye;
+    float clusteredView[16] = {};
+    float clusteredProjection[16] = {};
+    int clusteredWidth = 0;
+    int clusteredHeight = 0;
+    bool clusteredValid = false;
     double lastTime = time_seconds();
     if (zenapp::hasArgument(argc, argv, "novsync")) window_set_vsync(window, false);
     static const char* const phaseNames[4] = { "cull", "uniforms", "record", "present" };
@@ -628,9 +633,22 @@ int main(int argc, char** argv)
                         return da.distance < db.distance;
                     });
 
-        froxelizer.prepare(static_cast<unsigned>(width), static_cast<unsigned>(height),
-                projection.Data(), nearPlane, farPlane);
-        zenapp::buildClusteredBuffers(lights, froxelizer, view.Data(), &clustered);
+        const bool lightsMoved = !clusteredValid || width != clusteredWidth ||
+                                 height != clusteredHeight ||
+                                 memcmp(view.Data(), clusteredView, sizeof(clusteredView)) != 0 ||
+                                 memcmp(projection.Data(), clusteredProjection,
+                                         sizeof(clusteredProjection)) != 0;
+        if (lightsMoved)
+        {
+            froxelizer.prepare(static_cast<unsigned>(width), static_cast<unsigned>(height),
+                    projection.Data(), nearPlane, farPlane);
+            zenapp::buildClusteredBuffers(lights, froxelizer, view.Data(), &clustered);
+            memcpy(clusteredView, view.Data(), sizeof(clusteredView));
+            memcpy(clusteredProjection, projection.Data(), sizeof(clusteredProjection));
+            clusteredWidth = width;
+            clusteredHeight = height;
+            clusteredValid = true;
+        }
 
         stats.phase(1);
         driver->beginFrame();
@@ -638,7 +656,7 @@ int main(int argc, char** argv)
         if (draws.size() > 0)
             driver->updateBuffer(objectBuffer, 0, objectBytes.data(),
                     static_cast<std::uint32_t>(draws.size() * objectStride));
-        driver->updateBuffer(clusteredBuffer, 0, &clustered, sizeof(clustered));
+        if (lightsMoved) driver->updateBuffer(clusteredBuffer, 0, &clustered, sizeof(clustered));
         overlay.begin(static_cast<unsigned>(width), static_cast<unsigned>(height));
         if (overlayReady && showStats)
         {
@@ -735,7 +753,7 @@ int main(int argc, char** argv)
         int width = 0;
         int height = 0;
         window_get_framebuffer_size(window, &width, &height);
-        char header[512];
+        char header[1536];
         snprintf(header, sizeof(header),
                 "gltf_viewer backend=%s window=%dx%d vsync=%s prepass=%d warmup=%d camera=%d "
 #ifdef NDEBUG
