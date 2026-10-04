@@ -955,7 +955,7 @@ public:
             return handleCast<TextureHandle>(textures_.insert(texture));
         }
         glGenTextures(1, &texture.id);
-        state_.bindTexture(0, texture.target, texture.id);
+        bindForEdit(texture);
         if (desc.type != TextureType::Texture2D && desc.type != TextureType::TextureCube)
             glTexStorage3D(texture.target, static_cast<GLsizei>(texture.mipLevels), format.internal,
                     static_cast<GLsizei>(desc.width), static_cast<GLsizei>(desc.height),
@@ -1022,7 +1022,7 @@ public:
             return;
         }
         if (texture->mipLevels < 2) return;
-        state_.bindTexture(0, texture->target, texture->id);
+        bindForEdit(*texture);
         glGenerateMipmap(texture->target);
     }
 
@@ -2359,7 +2359,7 @@ private:
         const GLsizei height = static_cast<GLsizei>(regionHeight);
         const GLsizei depth = static_cast<GLsizei>(slices);
 
-        state_.bindTexture(0, texture.target, texture.id);
+        bindForEdit(texture);
         glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
         if (flat && compressed)
             glCompressedTexSubImage2D(target, level, left, bottom, width, height, format.internal,
@@ -2592,6 +2592,12 @@ private:
         buffer->current = next;
         buffer->id = buffer->versions[next];
         buffer->updatedFrame = frameNumber_;
+    }
+
+    void bindForEdit(const GLTexture& texture)
+    {
+        state_.bindTexture(0, texture.target, texture.id);
+        state_.activeTexture(0);
     }
 
     GLenum bindForEdit(const GLBuffer& buffer)

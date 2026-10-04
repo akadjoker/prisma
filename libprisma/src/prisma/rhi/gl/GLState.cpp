@@ -155,10 +155,16 @@ void GLState::bindTexture(std::uint32_t unit, std::uint32_t target, std::uint32_
     if (unit >= kMaxTextureUnits) return;
     const std::uint32_t bit = 1u << unit;
     if ((knownTextureUnits_ & bit) && textures_[unit] == texture) return;
-    if (!same(kActiveUnit, activeUnit_, unit)) glActiveTexture(GL_TEXTURE0 + unit);
+    activeTexture(unit);
     glBindTexture(target, texture);
     textures_[unit] = texture;
     knownTextureUnits_ |= bit;
+}
+
+void GLState::activeTexture(std::uint32_t unit)
+{
+    if (same(kActiveUnit, activeUnit_, unit)) return;
+    glActiveTexture(GL_TEXTURE0 + unit);
 }
 
 void GLState::bindSampler(std::uint32_t unit, std::uint32_t sampler)

@@ -45,6 +45,7 @@ public:
             std::uint32_t size);
 
     void bindTexture(std::uint32_t unit, std::uint32_t target, std::uint32_t texture);
+    void activeTexture(std::uint32_t unit);
     void bindSampler(std::uint32_t unit, std::uint32_t sampler);
 
     void depthTest(bool enabled);

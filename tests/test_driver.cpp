@@ -822,6 +822,49 @@ int main(int argc, char** argv)
         CHECK(messages == 0);
         if (messages) printf("unexpected: %s\n", lastMessage);
 
+        {
+            const TextureHandle edited = driver->createTexture(textureDesc);
+            const TextureHandle bystander = driver->createTexture(textureDesc);
+            CHECK(edited.valid());
+            CHECK(bystander.valid());
+
+            messages = 0;
+            pump(window);
+            driver->beginFrame();
+            driver->beginRenderPass(black);
+            driver->bindPipeline(textured);
+            driver->bindVertexBuffer(0, buffer, 0);
+            driver->bindTexture(0, edited, nearest);
+            driver->bindTexture(3, bystander, nearest);
+            driver->draw(3, 0);
+            driver->endRenderPass();
+
+            driver->updateTexture(edited, 0, 0, kBlueTexels);
+
+            driver->beginRenderPass(black);
+            driver->bindPipeline(textured);
+            driver->bindVertexBuffer(0, buffer, 0);
+            driver->bindTexture(3, bystander, nearest);
+            driver->draw(3, 0);
+            driver->endRenderPass();
+            CHECK(pixelIs(80, 60, 255, 0, 0));
+
+            driver->beginRenderPass(black);
+            driver->bindPipeline(textured);
+            driver->bindVertexBuffer(0, buffer, 0);
+            driver->bindTexture(3, edited, nearest);
+            driver->draw(3, 0);
+            driver->endRenderPass();
+            CHECK(pixelIs(80, 60, 0, 0, 255));
+            driver->endFrame();
+            driver->present();
+            CHECK(messages == 0);
+            if (messages) printf("unexpected: %s\n", lastMessage);
+
+            driver->destroy(bystander);
+            driver->destroy(edited);
+        }
+
         if (driver->caps().floatColorTargets)
         {
             TextureDesc hdrDesc;
