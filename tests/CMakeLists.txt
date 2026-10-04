@@ -43,6 +43,15 @@ if(TARGET demo_ibl)
   add_test(NAME froxel COMMAND test_froxel)
 endif()
 
+if(TARGET demo_ibl)
+  add_executable(test_gltf test_gltf.cpp)
+  target_include_directories(test_gltf PRIVATE ${PROJECT_SOURCE_DIR}/demos/common)
+  target_link_libraries(test_gltf PRIVATE demo_ibl ct)
+  target_compile_definitions(test_gltf PRIVATE
+    PRISMA_MODELS_DIR="${PROJECT_SOURCE_DIR}/tmp/filament/third_party/models")
+  add_test(NAME gltf COMMAND test_gltf)
+endif()
+
 add_executable(test_free_ranges test_free_ranges.cpp)
 target_include_directories(test_free_ranges PRIVATE ${PROJECT_SOURCE_DIR}/libprisma/src)
 target_link_libraries(test_free_ranges PRIVATE ct)

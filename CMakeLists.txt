@@ -39,7 +39,11 @@ if(PRISMA_BUILD_DEMOS OR PRISMA_BUILD_TESTS)
   target_include_directories(demo_common PUBLIC demos/common)
   target_compile_options(demo_common PRIVATE -w)
   if(PRISMA_SHADER_TOOLS)
-    add_library(demo_ibl STATIC demos/common/Prefilter.cpp demos/common/Froxelizer.cpp)
+    add_library(demo_ibl STATIC demos/common/Prefilter.cpp demos/common/Froxelizer.cpp
+            demos/common/GltfModel.cpp demos/common/cgltf_impl.cpp
+            demos/common/third_party/mikktspace.c)
+    set_source_files_properties(demos/common/cgltf_impl.cpp demos/common/third_party/mikktspace.c
+                                PROPERTIES COMPILE_OPTIONS -w)
     target_include_directories(demo_ibl PUBLIC demos/common)
     target_link_libraries(demo_ibl PUBLIC prisma ct)
     prisma_shaders(demo_ibl demos/common/shaders/prefilter.vert demos/common/shaders/prefilter.frag)
