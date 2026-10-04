@@ -40,7 +40,7 @@ The same test, with checks made by reading pixels back, runs on OpenGL 4.6, Open
 
 Requires CMake 3.21, a C++14 compiler and the OpenGL development files. The Vulkan backend is built when the Vulkan SDK is found.
 
-The samples and the GPU tests also need `glslangValidator` (it comes with the Vulkan SDK and with the `glslang-tools` package) to compile their shaders. `spirv-cross` is taken from the system when installed and built from the submodule otherwise. The library itself needs neither.
+The demos and the GPU tests also need `glslangValidator` (it comes with the Vulkan SDK and with the `glslang-tools` package) to compile their shaders. `spirv-cross` is taken from the system when installed and built from the submodule otherwise. The library itself needs neither.
 
 ```sh
 git clone --recursive https://github.com/akadjoker/prisma.git
@@ -55,7 +55,7 @@ ctest --test-dir build
 | `PRISMA_OPENGL` | `ON` | Build the OpenGL backend |
 | `PRISMA_GLES` | `OFF` | Build the OpenGL backend for OpenGL ES 3 instead of OpenGL 4.6 |
 | `PRISMA_VULKAN` | `ON` when Vulkan is found | Build the Vulkan backend |
-| `PRISMA_BUILD_APPS` | `ON` | Build the samples |
+| `PRISMA_BUILD_DEMOS` | `ON` | Build the demos |
 | `PRISMA_BUILD_TESTS` | `ON` | Build the tests |
 
 ## Shaders
@@ -75,24 +75,24 @@ Each file becomes a header with a `prisma::ShaderBlob` named after the file (`me
 prisma::ShaderHandle shader = driver->createShader(prisma::shaderDesc(mesh_vert, driver->caps()));
 ```
 
-## Samples
+## Demos
 
 ```sh
-./build/apps/clear             # a window cleared to one colour
-./build/apps/triangle          # one triangle
-./build/apps/cube              # a spinning textured cube
-./build/apps/cube offscreen    # the cube drawn to an HDR target, then copied to the window
-./build/apps/cube vulkan       # any sample runs on Vulkan with this argument
+./build/demos/clear            # a window cleared to one colour
+./build/demos/triangle         # one triangle
+./build/demos/cube             # a spinning textured cube
+./build/demos/cube offscreen   # the cube drawn to an HDR target, then copied to the window
+./build/demos/cube vulkan      # any demo runs on Vulkan with this argument
 ```
 
-Escape closes a sample.
+Escape closes a demo.
 
 ## Layout
 
 ```text
 libprisma/include/prisma/rhi/   public headers: Driver.h, Types.h, Caps.h
 libprisma/src/prisma/rhi/       backends: gl/, vulkan/, null/
-apps/                           samples
+demos/                          numbered demos (01_clear, 02_triangle, 03_cube)
 tests/                          tests
 external/                       submodules
 ```
@@ -129,9 +129,9 @@ The library never calls the window library. The application fills `GLPlatform` o
 | Submodule | Used by |
 |---|---|
 | `external/containers` | the library |
-| `external/zen_plataform` | samples and tests (window and input) |
-| `external/math` | samples |
-| `external/SPIRV-Cross` | the build only: turns SPIR-V into GLSL for the samples and tests (Apache-2.0) |
+| `external/zen_plataform` | demos and tests (window and input) |
+| `external/math` | demos |
+| `external/SPIRV-Cross` | the build only: turns SPIR-V into GLSL for the demos and tests (Apache-2.0) |
 
 ## License
 

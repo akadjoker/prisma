@@ -7,7 +7,7 @@ target_include_directories(test_free_ranges PRIVATE ${PROJECT_SOURCE_DIR}/libpri
 target_link_libraries(test_free_ranges PRIVATE ct)
 add_test(NAME free_ranges COMMAND test_free_ranges)
 
-if(PRISMA_OPENGL AND PRISMA_BUILD_APPS AND PRISMA_SHADER_TOOLS)
+if(PRISMA_OPENGL AND TARGET platform AND PRISMA_SHADER_TOOLS)
   add_executable(test_driver test_driver.cpp)
   target_include_directories(test_driver PRIVATE ${PROJECT_SOURCE_DIR}/libprisma/src)
   target_link_libraries(test_driver PRIVATE prisma platform)
