@@ -309,6 +309,7 @@ struct GLPipeline
     GLuint program = 0;
     GLuint vertexArray = 0;
     bool compute = false;
+    GLint patchVertices = 0;
     GLenum topology = GL_TRIANGLES;
     VertexBufferLayout vertexBuffers[PipelineDesc::kMaxVertexBuffers];
     std::uint32_t vertexBufferCount = 0;
@@ -400,6 +401,8 @@ GLenum toGLTopology(Topology topology)
             return GL_TRIANGLES_ADJACENCY;
         case Topology::TriangleStripAdjacency:
             return GL_TRIANGLE_STRIP_ADJACENCY;
+        case Topology::Patches:
+            return GL_PATCHES;
     }
     return GL_TRIANGLES;
 }
@@ -588,9 +591,16 @@ public:
         caps_.indirectDraw = caps_.compute;
 #ifdef PRISMA_GLES
         caps_.geometryShaders = major > 3 || (major == 3 && minor >= 2);
+        caps_.tessellation = caps_.geometryShaders && glPatchParameteri != nullptr;
 #else
         caps_.geometryShaders = true;
+        caps_.tessellation = true;
 #endif
+        if (caps_.tessellation)
+        {
+            glGetIntegerv(GL_MAX_PATCH_VERTICES, &value);
+            caps_.maxPatchControlPoints = static_cast<std::uint32_t>(value);
+        }
 #if !defined(__EMSCRIPTEN__) && !defined(__ANDROID__)
         caps_.multipleWindows = true;
 #endif
@@ -781,20 +791,25 @@ public:
             log("createShader: compute shaders are not supported");
             return ShaderHandle();
         }
-        if (desc.stage == ShaderStage::Geometry && !caps_.geometryShaders)
+        if ((desc.stage == ShaderStage::Geometry && !caps_.geometryShaders) ||
+                ((desc.stage == ShaderStage::TessControl || desc.stage == ShaderStage::TessEval) &&
+                        !caps_.tessellation))
         {
-            log("createShader: geometry shaders are not supported");
+            log("createShader: geometry and tessellation shaders are not supported");
             return ShaderHandle();
         }
         GLShader shader;
         shader.stage = desc.stage;
-        const GLenum type = desc.stage == ShaderStage::Vertex     ? GL_VERTEX_SHADER
-                            : desc.stage == ShaderStage::Fragment ? GL_FRAGMENT_SHADER
-                            : desc.stage == ShaderStage::Geometry ? GL_GEOMETRY_SHADER
-                                                                  : GL_COMPUTE_SHADER;
+        const GLenum type = desc.stage == ShaderStage::Vertex        ? GL_VERTEX_SHADER
+                            : desc.stage == ShaderStage::Fragment    ? GL_FRAGMENT_SHADER
+                            : desc.stage == ShaderStage::Geometry    ? GL_GEOMETRY_SHADER
+                            : desc.stage == ShaderStage::TessControl ? GL_TESS_CONTROL_SHADER
+                            : desc.stage == ShaderStage::TessEval    ? GL_TESS_EVALUATION_SHADER
+                                                                     : GL_COMPUTE_SHADER;
         shader.id = compileShader(type, desc.source, desc.debugName);
         if (!shader.id) return ShaderHandle();
-        if (desc.innerSource && desc.stage == ShaderStage::Vertex)
+        if (desc.innerSource &&
+                (desc.stage == ShaderStage::Vertex || desc.stage == ShaderStage::TessEval))
         {
             shader.innerId = compileShader(type, desc.innerSource, desc.debugName);
             if (!shader.innerId)
@@ -1072,9 +1087,27 @@ public:
                 desc.geometryShader.valid()
                         ? shaders_.get(handleCast<ShaderSlot>(desc.geometryShader))
                         : nullptr;
-        const bool badGeometry = (desc.geometryShader.valid() &&
-                                         (!geometry || geometry->stage != ShaderStage::Geometry)) ||
-                                 (isAdjacency(desc.topology) && !geometry);
+        const GLShader* control =
+                desc.tessControlShader.valid()
+                        ? shaders_.get(handleCast<ShaderSlot>(desc.tessControlShader))
+                        : nullptr;
+        const GLShader* evaluation =
+                desc.tessEvalShader.valid()
+                        ? shaders_.get(handleCast<ShaderSlot>(desc.tessEvalShader))
+                        : nullptr;
+        const bool patches = desc.topology == Topology::Patches;
+        const bool badGeometry =
+                (desc.geometryShader.valid() &&
+                        (!geometry || geometry->stage != ShaderStage::Geometry)) ||
+                (isAdjacency(desc.topology) && !geometry) ||
+                (desc.tessControlShader.valid() &&
+                        (!control || control->stage != ShaderStage::TessControl)) ||
+                (desc.tessEvalShader.valid() &&
+                        (!evaluation || evaluation->stage != ShaderStage::TessEval)) ||
+                patches != (control && evaluation) ||
+                (control != nullptr) != (evaluation != nullptr) ||
+                (patches && (desc.patchControlPoints == 0 ||
+                                    desc.patchControlPoints > caps_.maxPatchControlPoints));
         if (!vertex || !fragment || badGeometry ||
                 desc.attributeCount > PipelineDesc::kMaxAttributes ||
                 desc.uniformBlockCount > PipelineDesc::kMaxUniformBlocks ||
@@ -1089,14 +1122,23 @@ public:
 
         GLPipeline pipeline;
         pipeline.program = glCreateProgram();
-        const GLuint vertexId = geometry && vertex->innerId ? vertex->innerId : vertex->id;
+        const bool extraStages = geometry || control;
+        const GLuint vertexId = extraStages && vertex->innerId ? vertex->innerId : vertex->id;
+        const GLuint evaluationId = evaluation && geometry && evaluation->innerId
+                                            ? evaluation->innerId
+                                    : evaluation ? evaluation->id
+                                                 : 0;
         glAttachShader(pipeline.program, vertexId);
         glAttachShader(pipeline.program, fragment->id);
         if (geometry) glAttachShader(pipeline.program, geometry->id);
+        if (control) glAttachShader(pipeline.program, control->id);
+        if (evaluation) glAttachShader(pipeline.program, evaluationId);
         glLinkProgram(pipeline.program);
         glDetachShader(pipeline.program, vertexId);
         glDetachShader(pipeline.program, fragment->id);
         if (geometry) glDetachShader(pipeline.program, geometry->id);
+        if (control) glDetachShader(pipeline.program, control->id);
+        if (evaluation) glDetachShader(pipeline.program, evaluationId);
 
         GLint linked = GL_FALSE;
         glGetProgramiv(pipeline.program, GL_LINK_STATUS, &linked);
@@ -1110,6 +1152,7 @@ public:
         }
 
         pipeline.topology = toGLTopology(desc.topology);
+        pipeline.patchVertices = patches ? static_cast<GLint>(desc.patchControlPoints) : 0;
         pipeline.vertexBufferCount = desc.vertexBufferCount;
         for (std::uint32_t i = 0; i < desc.vertexBufferCount; ++i)
             pipeline.vertexBuffers[i] = desc.vertexBuffers[i];
@@ -1172,7 +1215,9 @@ public:
                     true) ||
                 !applyBindings(pipeline.program, *vertex) ||
                 !applyBindings(pipeline.program, *fragment) ||
-                (geometry && !applyBindings(pipeline.program, *geometry)))
+                (geometry && !applyBindings(pipeline.program, *geometry)) ||
+                (control && !applyBindings(pipeline.program, *control)) ||
+                (evaluation && !applyBindings(pipeline.program, *evaluation)))
         {
             state_.programDeleted(pipeline.program);
             glDeleteProgram(pipeline.program);
@@ -2490,6 +2535,11 @@ private:
             }
             vertexDirty_ = false;
         }
+        if (pipeline->patchVertices && pipeline->patchVertices != patchVertices_)
+        {
+            glPatchParameteri(GL_PATCH_VERTICES, pipeline->patchVertices);
+            patchVertices_ = pipeline->patchVertices;
+        }
         return pipeline;
     }
 
@@ -2531,6 +2581,7 @@ private:
     ct::SlotMap32<GLReadback> readbacks_;
     ct::SlotMap32<GLSwapchain> swapchains_;
     SwapchainHandle currentSurface_;
+    GLint patchVertices_ = 0;
     bool surfacesUsed_ = false;
     bool mainDrawn_ = false;
     bool mainSwapped_ = false;

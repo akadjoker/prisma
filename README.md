@@ -11,7 +11,7 @@ A rendering backend library in C++14. It gives one interface over OpenGL 4.6, Op
 - Pipelines carry depth, stencil, cull, blend, colour mask and depth bias state.
 - Render passes with load and store operations, drawing to the window or to offscreen targets: several colour targets, depth, HDR and sRGB formats, any mip level or layer of a texture.
 - Multisampled render targets resolved at the end of the pass.
-- Geometry shaders and adjacency topologies where the GPU has them (`Caps::geometryShaders`; not on WebGL or OpenGL ES before 3.2).
+- Geometry shaders, adjacency topologies and tessellation (control and evaluation shaders, patch topology) where the GPU has them (`Caps::geometryShaders`, `Caps::tessellation`; not on WebGL or OpenGL ES before 3.2).
 - Compute pipelines, storage buffers and storage textures, indirect draws and indirect dispatch.
 - Occlusion queries and GPU time queries whose results never block.
 - Shaders written once: the build turns each one into SPIR-V, GLSL 4.60 and GLSL ES, together with the list of resources it binds.

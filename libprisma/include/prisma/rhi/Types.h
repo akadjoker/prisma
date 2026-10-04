@@ -257,7 +257,9 @@ enum class ShaderStage : std::uint8_t
     Vertex,
     Fragment,
     Compute,
-    Geometry
+    Geometry,
+    TessControl,
+    TessEval
 };
 
 enum class BindingKind : std::uint8_t
@@ -341,7 +343,8 @@ enum class Topology : std::uint8_t
     LinesAdjacency,
     LineStripAdjacency,
     TrianglesAdjacency,
-    TriangleStripAdjacency
+    TriangleStripAdjacency,
+    Patches
 };
 
 enum class CullMode : std::uint8_t
@@ -509,6 +512,9 @@ struct PipelineDesc
     ShaderHandle vertexShader;
     ShaderHandle fragmentShader;
     ShaderHandle geometryShader;
+    ShaderHandle tessControlShader;
+    ShaderHandle tessEvalShader;
+    std::uint32_t patchControlPoints = 0;
     VertexAttribute attributes[kMaxAttributes];
     std::uint32_t attributeCount = 0;
     VertexBufferLayout vertexBuffers[kMaxVertexBuffers];

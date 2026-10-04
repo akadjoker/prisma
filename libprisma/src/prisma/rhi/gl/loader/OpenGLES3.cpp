@@ -953,6 +953,10 @@ bool initOpenGLExtensions()
 		glPatchParameteri = ( PFNGLPATCHPARAMETERIPROC ) platformGetProcAddress( "glPatchParameteri" );
 		glESExt::EXT_tessellation_shader = glPatchParameteri != 0x0;
 	}
+	if ( !glPatchParameteri && glESExt::majorVersion * 10 + glESExt::minorVersion >= 32 )
+	{
+		glPatchParameteri = ( PFNGLPATCHPARAMETERIPROC ) platformGetProcAddress( "glPatchParameteri" );
+	}
 
 	glESExt::EXT_color_buffer_float = checkExtensionSupported( "GL_EXT_color_buffer_float" ) || checkExtensionSupported( "GL_EXT_color_buffer_half_float" );
 	glESExt::OES_compressed_ETC1_RGB8_texture = checkExtensionSupported( "GL_OES_compressed_ETC1_RGB8_texture" );

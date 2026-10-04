@@ -497,6 +497,8 @@ VkPrimitiveTopology toVkTopology(Topology topology)
             return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST_WITH_ADJACENCY;
         case Topology::TriangleStripAdjacency:
             return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP_WITH_ADJACENCY;
+        case Topology::Patches:
+            return VK_PRIMITIVE_TOPOLOGY_PATCH_LIST;
     }
     return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 }
@@ -937,6 +939,15 @@ public:
                 desc.geometryShader.valid()
                         ? shaders_.get(handleCast<ShaderSlot>(desc.geometryShader))
                         : nullptr;
+        const VulkanShader* control =
+                desc.tessControlShader.valid()
+                        ? shaders_.get(handleCast<ShaderSlot>(desc.tessControlShader))
+                        : nullptr;
+        const VulkanShader* evaluation =
+                desc.tessEvalShader.valid()
+                        ? shaders_.get(handleCast<ShaderSlot>(desc.tessEvalShader))
+                        : nullptr;
+        const bool patches = desc.topology == Topology::Patches;
         bool valid = vertex && fragment && desc.attributeCount <= PipelineDesc::kMaxAttributes &&
                      desc.vertexBufferCount <= PipelineDesc::kMaxVertexBuffers &&
                      desc.targets.colorCount <= TargetFormats::kMaxColors &&
@@ -955,13 +966,23 @@ public:
                 (!geometry || geometry->stage != ShaderStage::Geometry || !caps_.geometryShaders))
             valid = false;
         if (isAdjacency(desc.topology) && !geometry) valid = false;
+        if ((desc.tessControlShader.valid() &&
+                    (!control || control->stage != ShaderStage::TessControl)) ||
+                (desc.tessEvalShader.valid() &&
+                        (!evaluation || evaluation->stage != ShaderStage::TessEval)) ||
+                patches != (control && evaluation) ||
+                (control != nullptr) != (evaluation != nullptr) ||
+                (patches && (desc.patchControlPoints == 0 ||
+                                    desc.patchControlPoints > caps_.maxPatchControlPoints)) ||
+                ((control || evaluation) && !caps_.tessellation))
+            valid = false;
         if (!valid)
         {
             log("createPipeline: invalid shader handle or vertex input");
             return PipelineHandle();
         }
 
-        VkPipelineShaderStageCreateInfo stages[3] = {};
+        VkPipelineShaderStageCreateInfo stages[5] = {};
         std::uint32_t stageCount = 2;
         stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
         stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
@@ -979,6 +1000,22 @@ public:
             stages[2].pName = "main";
             stageCount = 3;
         }
+        if (control)
+        {
+            stages[stageCount].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+            stages[stageCount].stage = VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT;
+            stages[stageCount].module = control->module;
+            stages[stageCount].pName = "main";
+            ++stageCount;
+            stages[stageCount].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+            stages[stageCount].stage = VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
+            stages[stageCount].module = evaluation->module;
+            stages[stageCount].pName = "main";
+            ++stageCount;
+        }
+        VkPipelineTessellationStateCreateInfo tessellation = {};
+        tessellation.sType = VK_STRUCTURE_TYPE_PIPELINE_TESSELLATION_STATE_CREATE_INFO;
+        tessellation.patchControlPoints = desc.patchControlPoints;
 
         VkVertexInputBindingDescription bindings[PipelineDesc::kMaxVertexBuffers] = {};
         for (std::uint32_t i = 0; i < desc.vertexBufferCount; ++i)
@@ -1114,6 +1151,14 @@ public:
             mergeSlots(pipeline.uniformSlots, pipeline.uniformCount,
                     PipelineDesc::kMaxUniformBlocks, kMaxUniformSlots, *geometry,
                     BindingKind::UniformBlock);
+        if (control)
+            mergeSlots(pipeline.uniformSlots, pipeline.uniformCount,
+                    PipelineDesc::kMaxUniformBlocks, kMaxUniformSlots, *control,
+                    BindingKind::UniformBlock);
+        if (evaluation)
+            mergeSlots(pipeline.uniformSlots, pipeline.uniformCount,
+                    PipelineDesc::kMaxUniformBlocks, kMaxUniformSlots, *evaluation,
+                    BindingKind::UniformBlock);
         for (std::uint32_t i = 1; i < pipeline.uniformCount; ++i)
             for (std::uint32_t j = i;
                     j > 0 && pipeline.uniformSlots[j - 1] > pipeline.uniformSlots[j]; --j)
@@ -1152,6 +1197,12 @@ public:
         if (geometry)
             mergeSlots(pipeline.textureSlots, pipeline.textureCount, PipelineDesc::kMaxTextures,
                     kMaxTextureSlots, *geometry, BindingKind::Texture);
+        if (control)
+            mergeSlots(pipeline.textureSlots, pipeline.textureCount, PipelineDesc::kMaxTextures,
+                    kMaxTextureSlots, *control, BindingKind::Texture);
+        if (evaluation)
+            mergeSlots(pipeline.textureSlots, pipeline.textureCount, PipelineDesc::kMaxTextures,
+                    kMaxTextureSlots, *evaluation, BindingKind::Texture);
         for (std::uint32_t i = 1; i < pipeline.textureCount; ++i)
             for (std::uint32_t j = i;
                     j > 0 && pipeline.textureSlots[j - 1] > pipeline.textureSlots[j]; --j)
@@ -1192,6 +1243,14 @@ public:
             mergeSlots(pipeline.storageSlots, pipeline.storageCount,
                     PipelineDesc::kMaxStorageBuffers, PipelineDesc::kMaxStorageBuffers, *geometry,
                     BindingKind::StorageBuffer);
+        if (control)
+            mergeSlots(pipeline.storageSlots, pipeline.storageCount,
+                    PipelineDesc::kMaxStorageBuffers, PipelineDesc::kMaxStorageBuffers, *control,
+                    BindingKind::StorageBuffer);
+        if (evaluation)
+            mergeSlots(pipeline.storageSlots, pipeline.storageCount,
+                    PipelineDesc::kMaxStorageBuffers, PipelineDesc::kMaxStorageBuffers, *evaluation,
+                    BindingKind::StorageBuffer);
         if (!createSlotLayout(pipeline.storageSlots, pipeline.storageCount,
                     VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, graphicsStages(),
                     &pipeline.storageSetLayout))
@@ -1224,6 +1283,7 @@ public:
         info.pStages = stages;
         info.pVertexInputState = &vertexInput;
         info.pInputAssemblyState = &assembly;
+        if (patches) info.pTessellationState = &tessellation;
         info.pViewportState = &viewport;
         info.pRasterizationState = &raster;
         info.pMultisampleState = &multisample;
@@ -3337,6 +3397,9 @@ private:
     {
         VkShaderStageFlags stages = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
         if (caps_.geometryShaders) stages |= VK_SHADER_STAGE_GEOMETRY_BIT;
+        if (caps_.tessellation)
+            stages |= VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT |
+                      VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
         return stages;
     }
 
@@ -3776,6 +3839,8 @@ private:
                 caps_.textureASTC = features.features.textureCompressionASTC_LDR;
                 caps_.cubeArrays = features.features.imageCubeArray;
                 caps_.geometryShaders = features.features.geometryShader;
+                caps_.tessellation = features.features.tessellationShader;
+                caps_.maxPatchControlPoints = properties.limits.maxTessellationPatchSize;
                 multiDrawIndirect_ = features.features.multiDrawIndirect;
                 caps_.storageBufferOffsetAlignment = static_cast<std::uint32_t>(
                         properties.limits.minStorageBufferOffsetAlignment);
@@ -3832,6 +3897,7 @@ private:
         enabled.textureCompressionASTC_LDR = caps_.textureASTC;
         enabled.imageCubeArray = caps_.cubeArrays;
         enabled.geometryShader = caps_.geometryShaders;
+        enabled.tessellationShader = caps_.tessellation;
         enabled.multiDrawIndirect = multiDrawIndirect_;
 
         const char* const extension = VK_KHR_SWAPCHAIN_EXTENSION_NAME;

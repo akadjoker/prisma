@@ -17,6 +17,8 @@
 #include "instanced.vert.h"
 #include "lod.frag.h"
 #include "no_buffer.vert.h"
+#include "notch.tesc.h"
+#include "notch.tese.h"
 #include "plain.vert.h"
 #include "points.geom.h"
 #include "red.frag.h"
@@ -149,6 +151,8 @@ enum ParamIndex
     kParamGreenMid,
     kParamCubeOneNegativeY,
     kParamQuad,
+    kParamLevelOne,
+    kParamLevelTwo,
     kParamCount
 };
 
@@ -420,6 +424,10 @@ int main(int argc, char** argv)
         setParams(paramBytes, stride, kParamCubeOneNegativeY, cubeOneNegativeY);
         const Params quadParams = { { 1.0f, 0.0f, 1.0f, 1.0f }, { 0.5f, 0.0f, 0.25f, 0.0f } };
         setParams(paramBytes, stride, kParamQuad, quadParams);
+        const Params levelOne = { { 1.0f, 1.0f, 0.0f, 1.0f }, { 1.0f, 0.0f, 0.25f, 0.0f } };
+        setParams(paramBytes, stride, kParamLevelOne, levelOne);
+        const Params levelTwo = { { 1.0f, 1.0f, 0.0f, 1.0f }, { 2.0f, 0.0f, 0.25f, 0.0f } };
+        setParams(paramBytes, stride, kParamLevelTwo, levelTwo);
         const Params cubeNegativeZ = { { 0.0f, 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, -1.0f, 0.0f } };
         setParams(paramBytes, stride, kParamCubeNegativeZ, cubeNegativeZ);
 
@@ -2764,6 +2772,104 @@ int main(int argc, char** argv)
             driver->destroy(pointBuffer);
             driver->destroy(adjacencyGeometry);
             driver->destroy(pointsGeometry);
+        }
+
+        {
+            CHECK(driver->caps().tessellation);
+            CHECK(driver->caps().maxPatchControlPoints >= 3);
+            const ShaderHandle notchControl = makeShader(driver, notch_tesc);
+            const ShaderHandle notchEvaluation = makeShader(driver, notch_tese);
+            CHECK(notchControl.valid());
+            CHECK(notchEvaluation.valid());
+
+            const float kTriangle[6] = { -1.0f, -1.0f, 1.0f, -1.0f, 0.0f, 1.0f };
+            BufferDesc triangleDesc;
+            triangleDesc.size = sizeof(kTriangle);
+            triangleDesc.data = kTriangle;
+            const BufferHandle triangleBuffer = driver->createBuffer(triangleDesc);
+            CHECK(triangleBuffer.valid());
+
+            PipelineDesc patchDesc = flatPipelineDesc;
+            patchDesc.targets = TargetFormats();
+            patchDesc.blend = false;
+            patchDesc.depthTest = false;
+            patchDesc.topology = Topology::Patches;
+            patchDesc.patchControlPoints = 3;
+            patchDesc.tessControlShader = notchControl;
+            patchDesc.tessEvalShader = notchEvaluation;
+            const PipelineHandle patchPipeline = driver->createPipeline(patchDesc);
+            patchDesc.depthTest = true;
+            const PipelineHandle patchDepthPipeline = driver->createPipeline(patchDesc);
+            CHECK(patchPipeline.valid());
+            CHECK(patchDepthPipeline.valid());
+
+            messages = 0;
+            PipelineDesc badPatch = patchDesc;
+            badPatch.patchControlPoints = 0;
+            CHECK(!driver->createPipeline(badPatch).valid());
+            CHECK(messages == 1);
+            badPatch = patchDesc;
+            badPatch.topology = Topology::Triangles;
+            CHECK(!driver->createPipeline(badPatch).valid());
+            CHECK(messages == 2);
+            badPatch = patchDesc;
+            badPatch.tessEvalShader = ShaderHandle();
+            CHECK(!driver->createPipeline(badPatch).valid());
+            CHECK(messages == 3);
+            badPatch = patchDesc;
+            badPatch.tessControlShader = notchEvaluation;
+            CHECK(!driver->createPipeline(badPatch).valid());
+            CHECK(messages == 4);
+            badPatch = patchDesc;
+            badPatch.patchControlPoints = driver->caps().maxPatchControlPoints + 1;
+            CHECK(!driver->createPipeline(badPatch).valid());
+            CHECK(messages == 5);
+
+            messages = 0;
+            window_begin_frame(window);
+            driver->beginFrame();
+            driver->beginRenderPass(black);
+            driver->bindUniformBuffer(2, params, kParamLevelOne * stride, sizeof(Params));
+            driver->bindPipeline(patchPipeline);
+            driver->bindVertexBuffer(0, triangleBuffer, 0);
+            driver->draw(3, 0);
+            driver->endRenderPass();
+            CHECK(pixelIs(160, 120, 255, 255, 0));
+            CHECK(pixelIs(160, 20, 255, 255, 0));
+            CHECK(pixelIs(300, 200, 0, 0, 0));
+
+            driver->beginRenderPass(black);
+            driver->bindUniformBuffer(2, params, kParamLevelTwo * stride, sizeof(Params));
+            driver->bindPipeline(patchPipeline);
+            driver->bindVertexBuffer(0, triangleBuffer, 0);
+            driver->draw(3, 0);
+            driver->endRenderPass();
+            CHECK(pixelIs(160, 120, 255, 255, 0));
+            CHECK(pixelIs(160, 90, 255, 255, 0));
+            CHECK(pixelIs(160, 20, 0, 0, 0));
+
+            driver->beginRenderPass(black);
+            driver->bindUniformBuffer(2, params, kParamLevelOne * stride, sizeof(Params));
+            driver->bindPipeline(patchDepthPipeline);
+            driver->bindVertexBuffer(0, triangleBuffer, 0);
+            driver->draw(3, 0);
+            driver->bindUniformBuffer(2, params, kParamGreenMid * stride, sizeof(Params));
+            driver->bindPipeline(flatDepth);
+            driver->bindVertexBuffer(0, buffer, 0);
+            driver->draw(3, 0);
+            driver->endRenderPass();
+            CHECK(pixelIs(160, 120, 255, 255, 0));
+            CHECK(pixelIs(300, 200, 0, 255, 0));
+            driver->endFrame();
+            driver->present();
+            CHECK(messages == 0);
+            if (messages) printf("unexpected: %s\n", lastMessage);
+
+            driver->destroy(patchDepthPipeline);
+            driver->destroy(patchPipeline);
+            driver->destroy(triangleBuffer);
+            driver->destroy(notchEvaluation);
+            driver->destroy(notchControl);
         }
 
         CHECK(driver->caps().occlusionQueries);

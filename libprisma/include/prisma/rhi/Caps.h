@@ -12,6 +12,7 @@ struct Caps
     std::uint32_t versionMinor = 0;
     bool compute = false;
     bool geometryShaders = false;
+    bool tessellation = false;
     bool multipleWindows = false;
     bool indirectDraw = false;
     bool storageBuffersInGraphics = false;
@@ -28,6 +29,7 @@ struct Caps
     std::uint32_t maxTextureSize = 0;
     std::uint32_t maxColorTargets = 0;
     std::uint32_t maxSamples = 1;
+    std::uint32_t maxPatchControlPoints = 0;
     std::uint32_t uniformBufferOffsetAlignment = 1;
     std::uint32_t storageBufferOffsetAlignment = 1;
     float maxAnisotropy = 1.0f;
