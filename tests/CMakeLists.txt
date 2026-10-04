@@ -36,6 +36,13 @@ target_link_libraries(test_environment PRIVATE prisma demo_common ct)
 target_compile_definitions(test_environment PRIVATE PRISMA_MEDIA_DIR="${PRISMA_MEDIA_DIR}")
 add_test(NAME environment COMMAND test_environment)
 
+if(TARGET demo_ibl)
+  add_executable(test_froxel test_froxel.cpp)
+  target_include_directories(test_froxel PRIVATE ${PROJECT_SOURCE_DIR}/demos/common)
+  target_link_libraries(test_froxel PRIVATE demo_ibl ct)
+  add_test(NAME froxel COMMAND test_froxel)
+endif()
+
 add_executable(test_free_ranges test_free_ranges.cpp)
 target_include_directories(test_free_ranges PRIVATE ${PROJECT_SOURCE_DIR}/libprisma/src)
 target_link_libraries(test_free_ranges PRIVATE ct)
