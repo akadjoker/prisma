@@ -643,6 +643,7 @@ public:
             caps_.storageBuffersInGraphics =
                     vertexBlocks >= static_cast<GLint>(PipelineDesc::kMaxStorageBuffers) &&
                     fragmentBlocks >= static_cast<GLint>(PipelineDesc::kMaxStorageBuffers);
+            caps_.storageWritesInGraphics = caps_.storageBuffersInGraphics;
             glGetIntegerv(kStorageBufferOffsetAlignment, &value);
             caps_.storageBufferOffsetAlignment = static_cast<std::uint32_t>(value);
         }
@@ -1760,6 +1761,7 @@ public:
             return;
         }
         glBindBufferRange(GL_SHADER_STORAGE_BUFFER, slot, buffer->id, offset, size);
+        if (passActive_) storageUsedInPass_ = true;
     }
 
     void bindStorageTexture(std::uint32_t slot, TextureHandle handle, std::uint32_t mip,
@@ -1814,6 +1816,8 @@ public:
         if (!passActive_) return;
         if (occlusionActive_) log("endRenderPass: an occlusion query is still open");
         passActive_ = false;
+        if (storageUsedInPass_ && caps_.compute) glMemoryBarrier(GL_ALL_BARRIER_BITS);
+        storageUsedInPass_ = false;
         if (passOffscreen_) resolvePass();
 
         GLenum attachments[RenderPassDesc::kMaxColorTargets + 1];
@@ -2729,6 +2733,7 @@ private:
     ct::SlotMap32<GLSwapchain> swapchains_;
     SwapchainHandle currentSurface_;
     GLint patchVertices_ = 0;
+    bool storageUsedInPass_ = false;
     bool independentApplied_ = false;
     bool independentKnown_ = false;
     GLBlendTarget independentCache_[TargetFormats::kMaxColors];

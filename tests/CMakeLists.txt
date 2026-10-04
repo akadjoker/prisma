@@ -37,7 +37,7 @@ if(PRISMA_OPENGL AND TARGET platform AND PRISMA_SHADER_TOOLS)
     shaders/no_buffer.vert shaders/array.frag shaders/cube.frag shaders/volume.frag
     shaders/lod.frag shaders/shadow.frag shaders/cube_array.frag
     shaders/fill.comp shaders/vertices.comp shaders/storage.frag
-    shaders/points.geom shaders/adjacency.geom shaders/notch.tesc shaders/notch.tese)
+    shaders/count.frag shaders/points.geom shaders/adjacency.geom shaders/notch.tesc shaders/notch.tese)
   find_library(PRISMA_EGL EGL)
   if(NOT PRISMA_EGL)
     message(FATAL_ERROR "prisma tests: libEGL is needed to run the GPU tests without a window")

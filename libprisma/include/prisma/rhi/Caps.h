@@ -16,6 +16,7 @@ struct Caps
     bool multipleWindows = false;
     bool indirectDraw = false;
     bool storageBuffersInGraphics = false;
+    bool storageWritesInGraphics = false;
     bool debugOutput = false;
     bool floatColorTargets = false;
     bool floatLinearFiltering = false;

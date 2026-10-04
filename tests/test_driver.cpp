@@ -6,9 +6,11 @@
 #include "prisma/rhi/gl/GL.h"
 
 #include <string.h>
+#include <time.h>
 
 #include "adjacency.geom.h"
 #include "array.frag.h"
+#include "count.frag.h"
 #include "cube.frag.h"
 #include "cube_array.frag.h"
 #include "fill.comp.h"
@@ -61,6 +63,19 @@ bool makeCurrent(void* user)
 }
 
 void swapBuffers(void* user) { window_swap(static_cast<PlatformWindow*>(user)); }
+
+double nowSeconds()
+{
+    timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return static_cast<double>(now.tv_sec) + static_cast<double>(now.tv_nsec) * 1e-9;
+}
+
+void breathe()
+{
+    timespec pause = { 0, 1000000 };
+    nanosleep(&pause, nullptr);
+}
 
 void pump(PlatformWindow* window)
 {
@@ -2462,8 +2477,10 @@ int main(int argc, char** argv)
 
             float asyncResult[4] = { 9, 9, 9, 9 };
             bool asyncReady = false;
-            for (int i = 0; i < 30 && !asyncReady; ++i)
+            const double asyncStart = nowSeconds();
+            for (int i = 0; nowSeconds() - asyncStart < 3.0 && !asyncReady; ++i)
             {
+                breathe();
                 pump(window);
                 driver->beginFrame();
                 driver->beginRenderPass(black);
@@ -2577,8 +2594,10 @@ int main(int argc, char** argv)
             memset(cornerResult, 9, sizeof(cornerResult));
             int readbackFrames = 0;
             bool allRead = false;
-            for (; readbackFrames < 30 && !allRead; ++readbackFrames)
+            const double readbackStart = nowSeconds();
+            for (; nowSeconds() - readbackStart < 3.0 && !allRead; ++readbackFrames)
             {
+                breathe();
                 pump(window);
                 driver->beginFrame();
                 driver->beginRenderPass(black);
@@ -3255,6 +3274,52 @@ int main(int argc, char** argv)
             driver->destroy(blendFirst);
         }
 
+        if (driver->caps().storageWritesInGraphics)
+        {
+            const ShaderHandle countFragment = makeShader(driver, count_frag);
+            CHECK(countFragment.valid());
+            const std::uint32_t zero = 0;
+            BufferDesc counterDesc;
+            counterDesc.usage = BufferUsage::Storage;
+            counterDesc.size = sizeof(std::uint32_t);
+            counterDesc.data = &zero;
+            const BufferHandle counter = driver->createBuffer(counterDesc);
+            CHECK(counter.valid());
+
+            PipelineDesc countDesc = flatPipelineDesc;
+            countDesc.targets = TargetFormats();
+            countDesc.blend = false;
+            countDesc.depthTest = false;
+            countDesc.fragmentShader = countFragment;
+            countDesc.storageBufferCount = 1;
+            countDesc.storageBuffers[0].name = "Counter";
+            countDesc.storageBuffers[0].slot = 0;
+            const PipelineHandle countPipeline = driver->createPipeline(countDesc);
+            CHECK(countPipeline.valid());
+
+            messages = 0;
+            pump(window);
+            driver->beginFrame();
+            driver->beginRenderPass(black);
+            driver->bindUniformBuffer(2, params, kParamGreen * stride, sizeof(Params));
+            driver->bindStorageBuffer(0, counter, 0, sizeof(std::uint32_t));
+            driver->bindPipeline(countPipeline);
+            driver->bindVertexBuffer(0, buffer, 0);
+            driver->draw(3, 0);
+            driver->endRenderPass();
+            std::uint32_t covered = 0;
+            CHECK(driver->readBuffer(counter, 0, sizeof(covered), &covered));
+            driver->endFrame();
+            driver->present();
+            CHECK(covered == 320u * 240u);
+            CHECK(messages == 0);
+            printf("fragment shader counted %u pixels\n", covered);
+
+            driver->destroy(countPipeline);
+            driver->destroy(counter);
+            driver->destroy(countFragment);
+        }
+
         CHECK(driver->caps().occlusionQueries);
         const QueryHandle visibleQuery = driver->createQuery(QueryType::Occlusion);
         const QueryHandle hiddenQuery = driver->createQuery(QueryType::Occlusion);
@@ -3293,9 +3358,12 @@ int main(int argc, char** argv)
         bool hiddenReady = false;
         bool timeReady = !timeQuery.valid();
         int queryFrames = 0;
-        for (; queryFrames < 60 && !(visibleReady && hiddenReady && timeReady && queryFrames >= 6);
+        const double queryStart = nowSeconds();
+        for (; nowSeconds() - queryStart < 3.0 &&
+                !(visibleReady && hiddenReady && timeReady && queryFrames >= 6);
                 ++queryFrames)
         {
+            breathe();
             pump(window);
             driver->beginFrame();
             if (timeQuery.valid()) driver->beginQuery(timeQuery);

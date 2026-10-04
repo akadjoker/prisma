@@ -2372,6 +2372,7 @@ public:
         storageBindings_[slot].offset = offset;
         storageBindings_[slot].size = size;
         storageDirty_ = true;
+        if (passActive_) storageUsedInPass_ = true;
     }
 
     void bindStorageTexture(std::uint32_t slot, TextureHandle handle, std::uint32_t mip,
@@ -2434,6 +2435,22 @@ public:
         passActive_ = false;
         VkCommandBuffer commands = frames_[frameIndex_].commands;
         vkCmdEndRendering(commands);
+        if (storageUsedInPass_)
+        {
+            VkMemoryBarrier2 barrier = {};
+            barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
+            barrier.srcStageMask =
+                    VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+            barrier.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
+            barrier.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+            barrier.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
+            VkDependencyInfo dependency = {};
+            dependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+            dependency.memoryBarrierCount = 1;
+            dependency.pMemoryBarriers = &barrier;
+            vkCmdPipelineBarrier2(commands, &dependency);
+            storageUsedInPass_ = false;
+        }
         for (std::uint32_t i = 0; i < passTargetCount_; ++i)
             imageBarrier(commands, passTargets_[i].image, passTargets_[i].aspect,
                     passTargets_[i].mip, 1, passTargets_[i].layer, 1, passTargets_[i].layout,
@@ -3589,7 +3606,7 @@ private:
             }
             BufferVersion& version = buffer->versions[buffer->current];
             version.lastUsedFrame = frameNumber_;
-            if (pipeline.compute) buffer->gpuWritten = true;
+            buffer->gpuWritten = true;
             infos[i].buffer = version.buffer;
             infos[i].offset = binding.offset;
             infos[i].range = binding.size;
@@ -3935,6 +3952,8 @@ private:
                                 VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT) != 0;
                 caps_.geometryShaders = features.features.geometryShader;
                 caps_.independentBlend = features.features.independentBlend;
+                fragmentStores_ = features.features.fragmentStoresAndAtomics;
+                vertexStores_ = features.features.vertexPipelineStoresAndAtomics;
                 caps_.tessellation = features.features.tessellationShader;
                 caps_.maxPatchControlPoints = properties.limits.maxTessellationPatchSize;
                 multiDrawIndirect_ = features.features.multiDrawIndirect;
@@ -3963,6 +3982,7 @@ private:
         caps_.multipleWindows = true;
 #endif
         caps_.storageBuffersInGraphics = true;
+        caps_.storageWritesInGraphics = fragmentStores_;
         caps_.floatColorTargets = true;
         return true;
     }
@@ -3996,6 +4016,8 @@ private:
         enabled.tessellationShader = caps_.tessellation;
         enabled.multiDrawIndirect = multiDrawIndirect_;
         enabled.independentBlend = caps_.independentBlend;
+        enabled.fragmentStoresAndAtomics = fragmentStores_;
+        enabled.vertexPipelineStoresAndAtomics = vertexStores_;
 
         const char* const extension = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
         VkDeviceCreateInfo info = {};
@@ -4359,6 +4381,9 @@ private:
     bool frameReady_ = false;
     bool passActive_ = false;
     bool computeActive_ = false;
+    bool storageUsedInPass_ = false;
+    bool fragmentStores_ = false;
+    bool vertexStores_ = false;
     bool multiDrawIndirect_ = false;
     bool storageDirty_ = true;
     bool imageDirty_ = true;
