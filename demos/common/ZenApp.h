@@ -150,8 +150,10 @@ inline PlatformWindow* openWindow(const char* title, prisma::DriverType type)
 #else
     const int monitor = MONITOR_CURRENT;
 #endif
-    return openWindowEx(title, type, 1280, 720, WINDOW_POS_CENTERED, WINDOW_POS_CENTERED, monitor,
-            true, true);
+    PlatformWindow* window = openWindowEx(title, type, 1280, 720, WINDOW_POS_CENTERED,
+            WINDOW_POS_CENTERED, monitor, true, true);
+    if (window) window_text_input_stop(window);
+    return window;
 }
 
 inline prisma::ShaderHandle createShader(prisma::Driver* driver, const prisma::ShaderBlob& blob,
