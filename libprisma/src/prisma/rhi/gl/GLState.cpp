@@ -48,6 +48,36 @@ void GLState::viewport(std::int32_t x, std::int32_t y, std::int32_t width, std::
     known_ |= kViewport;
 }
 
+void GLState::depthRange(float minDepth, float maxDepth)
+{
+    if ((known_ & kDepthRange) && depthRange_[0] == minDepth && depthRange_[1] == maxDepth) return;
+    glDepthRangef(minDepth, maxDepth);
+    depthRange_[0] = minDepth;
+    depthRange_[1] = maxDepth;
+    known_ |= kDepthRange;
+}
+
+void GLState::scissorTest(bool enabled)
+{
+    if (same(kScissorTest, scissorTest_, enabled)) return;
+    if (enabled) glEnable(GL_SCISSOR_TEST);
+    else
+        glDisable(GL_SCISSOR_TEST);
+}
+
+void GLState::scissor(std::int32_t x, std::int32_t y, std::int32_t width, std::int32_t height)
+{
+    if ((known_ & kScissor) && scissor_[0] == x && scissor_[1] == y && scissor_[2] == width &&
+            scissor_[3] == height)
+        return;
+    glScissor(x, y, width, height);
+    scissor_[0] = x;
+    scissor_[1] = y;
+    scissor_[2] = width;
+    scissor_[3] = height;
+    known_ |= kScissor;
+}
+
 void GLState::clearColor(const float color[4])
 {
     if ((known_ & kClearColor) && clearColor_[0] == color[0] && clearColor_[1] == color[1] &&

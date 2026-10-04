@@ -345,6 +345,52 @@ int main()
         CHECK(messages == 0);
         if (messages) printf("unexpected: %s\n", lastMessage);
 
+        messages = 0;
+        window_begin_frame(window);
+        driver->beginFrame();
+        driver->beginRenderPass(black);
+        driver->bindUniformBuffer(2, params, 0, sizeof(Params));
+        driver->bindPipeline(flat);
+        driver->bindVertexBuffer(buffer, 0);
+
+        const Params red = { { 1.0f, 0.0f, 0.0f, 1.0f }, { 0.0f, 0.0f, 0.0f, 0.0f } };
+        driver->updateBuffer(params, 0, &red, sizeof(red));
+        Rect topLeft;
+        topLeft.width = 160;
+        topLeft.height = 120;
+        driver->setScissor(topLeft);
+        driver->draw(3, 0);
+        CHECK(pixelIs(80, 180, 255, 0, 0));
+        CHECK(pixelIs(80, 60, 0, 0, 0));
+        CHECK(pixelIs(240, 180, 0, 0, 0));
+
+        Rect whole;
+        whole.width = 320;
+        whole.height = 240;
+        driver->setScissor(whole);
+        driver->updateBuffer(params, 0, &green, sizeof(green));
+        Viewport bottomRight;
+        bottomRight.x = 160.0f;
+        bottomRight.y = 120.0f;
+        bottomRight.width = 160.0f;
+        bottomRight.height = 120.0f;
+        driver->setViewport(bottomRight);
+        driver->draw(3, 0);
+        CHECK(pixelIs(240, 60, 0, 255, 0));
+        CHECK(pixelIs(80, 180, 255, 0, 0));
+        CHECK(pixelIs(240, 180, 0, 0, 0));
+        CHECK(pixelIs(80, 60, 0, 0, 0));
+        driver->endRenderPass();
+
+        driver->beginRenderPass(black);
+        CHECK(pixelIs(80, 180, 0, 0, 0));
+        CHECK(pixelIs(240, 60, 0, 0, 0));
+        driver->endRenderPass();
+        driver->endFrame();
+        driver->present();
+        CHECK(messages == 0);
+        if (messages) printf("unexpected: %s\n", lastMessage);
+
         TextureDesc textureDesc;
         textureDesc.width = 2;
         textureDesc.height = 2;

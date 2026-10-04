@@ -579,7 +579,11 @@ public:
             state_.bindFramebuffer(0);
         }
         passActive_ = true;
+        passWidth_ = width;
+        passHeight_ = height;
         state_.viewport(0, 0, static_cast<std::int32_t>(width), static_cast<std::int32_t>(height));
+        state_.depthRange(0.0f, 1.0f);
+        state_.scissorTest(false);
 
         GLbitfield mask = 0;
         if (desc.colorLoad == LoadOp::Clear && (!passOffscreen_ || desc.colorCount > 0))
@@ -594,6 +598,30 @@ public:
             mask |= GL_DEPTH_BUFFER_BIT;
         }
         if (mask) glClear(mask);
+    }
+
+    void setViewport(const Viewport& viewport) override
+    {
+        if (!passActive_) return;
+        const std::int32_t width = static_cast<std::int32_t>(viewport.width + 0.5f);
+        const std::int32_t height = static_cast<std::int32_t>(viewport.height + 0.5f);
+        const std::int32_t x = static_cast<std::int32_t>(viewport.x + 0.5f);
+        const std::int32_t top = static_cast<std::int32_t>(viewport.y + 0.5f);
+        state_.viewport(x, static_cast<std::int32_t>(passHeight_) - (top + height), width, height);
+        state_.depthRange(viewport.minDepth, viewport.maxDepth);
+    }
+
+    void setScissor(const Rect& rect) override
+    {
+        if (!passActive_) return;
+        const bool whole = rect.x <= 0 && rect.y <= 0 &&
+                           rect.x + static_cast<std::int64_t>(rect.width) >= passWidth_ &&
+                           rect.y + static_cast<std::int64_t>(rect.height) >= passHeight_;
+        state_.scissorTest(!whole);
+        if (whole) return;
+        const std::int32_t height = static_cast<std::int32_t>(rect.height);
+        state_.scissor(rect.x, static_cast<std::int32_t>(passHeight_) - (rect.y + height),
+                static_cast<std::int32_t>(rect.width), height);
     }
 
     void bindPipeline(PipelineHandle handle) override
@@ -885,6 +913,8 @@ private:
     ct::Vector<GLFramebuffer> framebuffers_;
 
     bool passActive_ = false;
+    std::uint32_t passWidth_ = 0;
+    std::uint32_t passHeight_ = 0;
     bool passOffscreen_ = false;
     std::uint32_t passColorCount_ = 0;
     bool passHasDepth_ = false;

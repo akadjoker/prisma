@@ -170,6 +170,8 @@ public:
         passActive_ = true;
     }
 
+    void setViewport(const Viewport&) override {}
+    void setScissor(const Rect&) override {}
     void bindPipeline(PipelineHandle) override {}
     void bindVertexBuffer(BufferHandle, std::uint32_t) override {}
     void bindIndexBuffer(BufferHandle, IndexFormat) override {}

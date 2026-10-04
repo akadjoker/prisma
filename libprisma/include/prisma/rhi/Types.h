@@ -276,6 +276,24 @@ struct PipelineDesc
     const char* debugName = nullptr;
 };
 
+struct Viewport
+{
+    float x = 0.0f;
+    float y = 0.0f;
+    float width = 0.0f;
+    float height = 0.0f;
+    float minDepth = 0.0f;
+    float maxDepth = 1.0f;
+};
+
+struct Rect
+{
+    std::int32_t x = 0;
+    std::int32_t y = 0;
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+};
+
 enum class LoadOp : std::uint8_t
 {
     Load,

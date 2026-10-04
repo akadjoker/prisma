@@ -29,6 +29,8 @@ public:
 
     virtual void beginFrame() = 0;
     virtual void beginRenderPass(const RenderPassDesc& desc) = 0;
+    virtual void setViewport(const Viewport& viewport) = 0;
+    virtual void setScissor(const Rect& rect) = 0;
     virtual void bindPipeline(PipelineHandle handle) = 0;
     virtual void bindVertexBuffer(BufferHandle handle, std::uint32_t offset) = 0;
     virtual void bindIndexBuffer(BufferHandle handle, IndexFormat format) = 0;
