@@ -1447,50 +1447,6 @@ int main(int argc, char** argv)
         }
 
         {
-            unsigned char initial[64];
-            for (int i = 0; i < 64; ++i) initial[i] = static_cast<unsigned char>(i);
-            BufferDesc streamDesc;
-            streamDesc.usage = BufferUsage::Vertex;
-            streamDesc.size = 64;
-            streamDesc.data = initial;
-            streamDesc.update = BufferUpdate::Stream;
-            const BufferHandle streamed = driver->createBuffer(streamDesc);
-            CHECK(streamed.valid());
-            messages = 0;
-            unsigned char patch[16];
-            for (int frame = 0; frame < 8; ++frame)
-            {
-                for (int i = 0; i < 16; ++i) patch[i] = static_cast<unsigned char>(200 + frame);
-                driver->beginFrame();
-                driver->updateBuffer(streamed, 16, patch, 16);
-                if (frame == 5)
-                {
-                    unsigned char second[4] = { 9, 9, 9, 9 };
-                    driver->updateBuffer(streamed, 0, second, 4);
-                }
-                driver->endFrame();
-                driver->present();
-            }
-            unsigned char result[64];
-            memset(result, 0, sizeof(result));
-            const bool read = driver->readBuffer(streamed, 0, 64, result);
-            bool preserved = read;
-            for (int i = 0; i < 64 && read; ++i)
-            {
-                unsigned char expected = static_cast<unsigned char>(i);
-                if (i < 4) expected = 9;
-                if (i >= 16 && i < 32) expected = 207;
-                if (i >= 4 && i < 16) expected = static_cast<unsigned char>(i);
-                if (result[i] != expected) preserved = false;
-            }
-            CHECK(read);
-            CHECK(preserved);
-            CHECK(messages == 0);
-            if (messages) printf("unexpected: %s\n", lastMessage);
-            driver->destroy(streamed);
-        }
-
-        {
             const ShaderHandle blocksVertex = makeShader(driver, no_buffer_vert);
             const ShaderHandle blocksFragment = makeShader(driver, blocks_frag);
             PipelineDesc blocksDesc;
@@ -1555,6 +1511,57 @@ int main(int argc, char** argv)
         driver->present();
         CHECK(messages == 0);
         if (messages) printf("unexpected: %s\n", lastMessage);
+
+        driver->beginFrame();
+        messages = 0;
+        driver->beginFrame();
+        CHECK(messages == 1);
+        driver->endFrame();
+        driver->present();
+
+        {
+            unsigned char initial[64];
+            for (int i = 0; i < 64; ++i) initial[i] = static_cast<unsigned char>(i);
+            BufferDesc streamDesc;
+            streamDesc.usage = BufferUsage::Vertex;
+            streamDesc.size = 64;
+            streamDesc.data = initial;
+            streamDesc.update = BufferUpdate::Stream;
+            const BufferHandle streamed = driver->createBuffer(streamDesc);
+            CHECK(streamed.valid());
+            messages = 0;
+            unsigned char patch[16];
+            for (int frame = 0; frame < 8; ++frame)
+            {
+                for (int i = 0; i < 16; ++i) patch[i] = static_cast<unsigned char>(200 + frame);
+                driver->beginFrame();
+                driver->updateBuffer(streamed, 16, patch, 16);
+                if (frame == 5)
+                {
+                    unsigned char second[4] = { 9, 9, 9, 9 };
+                    driver->updateBuffer(streamed, 0, second, 4);
+                }
+                driver->endFrame();
+                driver->present();
+            }
+            unsigned char result[64];
+            memset(result, 0, sizeof(result));
+            const bool read = driver->readBuffer(streamed, 0, 64, result);
+            bool preserved = read;
+            for (int i = 0; i < 64 && read; ++i)
+            {
+                unsigned char expected = static_cast<unsigned char>(i);
+                if (i < 4) expected = 9;
+                if (i >= 16 && i < 32) expected = 207;
+                if (i >= 4 && i < 16) expected = static_cast<unsigned char>(i);
+                if (result[i] != expected) preserved = false;
+            }
+            CHECK(read);
+            CHECK(preserved);
+            CHECK(messages == 0);
+            if (messages) printf("unexpected: %s\n", lastMessage);
+            driver->destroy(streamed);
+        }
 
         messages = 0;
         RenderPassDesc badLayerPass;

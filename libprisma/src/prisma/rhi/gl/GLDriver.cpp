@@ -1476,6 +1476,12 @@ public:
 
     void beginFrame() override
     {
+        if (frameOpen_)
+        {
+            log("beginFrame: the previous frame was not presented");
+            return;
+        }
+        frameOpen_ = true;
         if (!surfacesUsed_) return;
         platform_.makeCurrent(platform_.user);
         currentSurface_ = SwapchainHandle();
@@ -1872,6 +1878,7 @@ public:
         glFlush();
         mainSwapped_ = false;
         mainDrawn_ = false;
+        frameOpen_ = false;
         ++frameNumber_;
     }
 
@@ -2793,6 +2800,7 @@ private:
     GLBlendTarget independentCache_[TargetFormats::kMaxColors];
     bool surfacesUsed_ = false;
     bool mainDrawn_ = false;
+    bool frameOpen_ = false;
     std::uint64_t frameNumber_ = 0;
     bool mainSwapped_ = false;
     std::uint64_t querySequence_ = 0;

@@ -1870,7 +1870,11 @@ public:
 
     void beginFrame() override
     {
-        frameReady_ = false;
+        if (frameReady_)
+        {
+            log("beginFrame: the previous frame was not presented");
+            return;
+        }
         frameSubmitted_ = false;
         for (VulkanWindow* extra: swapchains_) extra->acquired = false;
 
