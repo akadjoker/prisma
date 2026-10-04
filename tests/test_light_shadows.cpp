@@ -47,13 +47,23 @@ int main()
     zenapp::addPointLight(&single, centrePosition, white, 100.0f, radius);
 
     zenapp::LightShadows shadows;
-    zenapp::selectLightShadows(single, Math::Vec3(0.0f, 0.0f, 0.0f), 64, &shadows);
+    zenapp::selectLightShadows(single, Math::Vec3(0.0f, 0.0f, 0.0f), 64, zenapp::kShadowNear,
+            &shadows);
     CHECK(shadows.maps.size() == 6);
     CHECK(shadows.firstMap.size() == 1 && shadows.firstMap[0] == 0);
     for (unsigned face = 0; face < shadows.maps.size(); ++face)
     {
         CHECK(shadows.maps[face].light == 0);
         CHECK(shadows.maps[face].face == face);
+        CHECK(fabsf(shadows.maps[face].texelScale - 2.0f) < 1e-5f);
+        const Math::Frustum frustum =
+                Math::Frustum::FromViewProjection(shadows.maps[face].cullViewProjection);
+        static const float axes[6][3] = { { 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 }, { 0, -1, 0 },
+            { 0, 0, 1 }, { 0, 0, -1 } };
+        const Math::Vec3 axis(axes[face][0], axes[face][1], axes[face][2]);
+        CHECK(frustum.ContainsPoint(centre + axis * 2.0f));
+        CHECK(!frustum.ContainsPoint(centre - axis * 2.0f));
+        CHECK(!frustum.ContainsPoint(centre + axis * (radius + 1.0f)));
     }
 
     unsigned outsideOwnFace = 0;
@@ -114,28 +124,43 @@ int main()
     const int spot = zenapp::addSpotLight(&many, ps, down, white, 10.0f, 6.0f, 0.3f, 0.6f);
     const Math::Vec3 viewer(0.0f, 0.0f, 0.0f);
 
-    zenapp::selectLightShadows(many, viewer, 13, &shadows);
+    zenapp::selectLightShadows(many, viewer, 13, zenapp::kShadowNear, &shadows);
     CHECK(shadows.maps.size() == 13);
     CHECK(shadows.firstMap[nearest] == 0);
     CHECK(shadows.firstMap[middle] == 6);
     CHECK(shadows.firstMap[spot] == 12);
     CHECK(shadows.firstMap[far] == -1);
 
-    zenapp::selectLightShadows(many, viewer, 7, &shadows);
+    zenapp::selectLightShadows(many, viewer, 7, zenapp::kShadowNear, &shadows);
     CHECK(shadows.maps.size() == 7);
     CHECK(shadows.firstMap[nearest] == 0);
     CHECK(shadows.firstMap[middle] == -1);
     CHECK(shadows.firstMap[spot] == 6);
 
-    zenapp::selectLightShadows(many, viewer, 5, &shadows);
+    zenapp::selectLightShadows(many, viewer, 5, zenapp::kShadowNear, &shadows);
     CHECK(shadows.maps.size() == 1);
     CHECK(shadows.firstMap[spot] == 0);
 
-    zenapp::selectLightShadows(many, viewer, 0, &shadows);
+    zenapp::applyLightShadows(shadows, &many);
+    CHECK(many.lights[spot].spot[3] == 1.0f);
+    CHECK(many.lights[nearest].spot[3] == 0.0f);
+    static zenapp::ShadowUniforms uniforms;
+    zenapp::fillShadowUniforms(shadows, 512, 1.5f, &uniforms);
+    CHECK(uniforms.params[0] == 1.0f / 512.0f && uniforms.params[1] == 1.5f);
+    CHECK(uniforms.params[2] == 1.0f);
+    CHECK(fabsf(uniforms.info[0][0] - 2.0f * tanf(0.6f)) < 1e-5f);
+    CHECK(sizeof(zenapp::ShadowUniforms) == 16 + 96 * 64 + 96 * 16);
+
+    zenapp::selectLightShadows(many, viewer, 0, zenapp::kShadowNear, &shadows);
     CHECK(shadows.maps.size() == 0);
     CHECK(shadows.firstMap[nearest] == -1 && shadows.firstMap[spot] == -1);
 
-    zenapp::selectLightShadows(many, viewer, 64, &shadows);
+    zenapp::selectLightShadows(many, viewer, 64, 4.5f, &shadows);
+    CHECK(shadows.maps.size() == 1);
+    CHECK(shadows.firstMap[spot] == 0);
+    CHECK(depth(shadows.maps[0].viewProjection, Math::Vec3(0.0f, 2.5f - 4.5f, 0.0f)) < 1e-3f);
+
+    zenapp::selectLightShadows(many, viewer, 64, zenapp::kShadowNear, &shadows);
     CHECK(shadows.maps.size() == 19);
     if (shadows.firstMap[spot] >= 0)
     {

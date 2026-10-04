@@ -15,8 +15,22 @@ namespace zenapp
 struct ShadowMapView
 {
     Math::Mat4 viewProjection;
+    Math::Mat4 cullViewProjection;
+    float texelScale = 2.0f;
     unsigned light = 0;
     unsigned face = 0;
+};
+
+struct ShadowUniforms
+{
+    enum
+    {
+        kMaxMaps = 96
+    };
+
+    float params[4];
+    Math::Mat4 matrices[kMaxMaps];
+    float info[kMaxMaps][4];
 };
 
 struct LightShadows
@@ -54,14 +68,14 @@ inline Math::Mat4 pointShadowView(unsigned face, const Math::Vec3& position)
             Math::Vec3(directions[face][0], directions[face][1], directions[face][2]));
 }
 
-inline Math::Mat4 shadowProjection(float halfAngle, float radius)
+inline float shadowHalfAngle(const FroxelLight& light)
 {
-    const float clamped = halfAngle < kShadowMaxHalfAngle ? halfAngle : kShadowMaxHalfAngle;
-    return perspectiveZeroToOne(clamped * 2.0f, 1.0f, kShadowNear, radius);
+    if (!light.spot) return 0.78539816f;
+    return light.outerAngle < kShadowMaxHalfAngle ? light.outerAngle : kShadowMaxHalfAngle;
 }
 
 inline void selectLightShadows(const LightSet& set, const Math::Vec3& viewer, unsigned maxMaps,
-        LightShadows* out)
+        float nearPlane, LightShadows* out)
 {
     out->maps.clear();
     out->firstMap.resize(set.count);
@@ -75,7 +89,7 @@ inline void selectLightShadows(const LightSet& set, const Math::Vec3& viewer, un
         out->firstMap[i] = -1;
         distance[i] = (Math::Vec3(light.position[0], light.position[1], light.position[2]) - viewer)
                               .Length();
-        if (light.radius > kShadowNear) order.push_back(i);
+        if (light.radius > nearPlane) order.push_back(i);
     }
     if (order.size() > 1)
         ct::sort(order.data(), order.data() + order.size(), [&distance](unsigned a, unsigned b) {
@@ -91,8 +105,11 @@ inline void selectLightShadows(const LightSet& set, const Math::Vec3& viewer, un
         if (out->maps.size() + needed > maxMaps) continue;
 
         const Math::Vec3 position(light.position[0], light.position[1], light.position[2]);
+        const float halfAngle = shadowHalfAngle(light);
         const Math::Mat4 projection =
-                shadowProjection(light.spot ? light.outerAngle : 0.78539816f, light.radius);
+                perspectiveZeroToOne(halfAngle * 2.0f, 1.0f, nearPlane, light.radius);
+        const Math::Mat4 cullProjection =
+                Math::Mat4::Perspective(halfAngle * 2.0f, 1.0f, nearPlane, light.radius);
         out->firstMap[index] = static_cast<int>(out->maps.size());
         for (unsigned face = 0; face < needed; ++face)
         {
@@ -105,8 +122,30 @@ inline void selectLightShadows(const LightSet& set, const Math::Vec3& viewer, un
                                                               light.direction[2]))
                                : pointShadowView(face, position);
             map.viewProjection = projection * view;
+            map.cullViewProjection = cullProjection * view;
+            map.texelScale = 2.0f * tanf(halfAngle);
             out->maps.push_back(map);
         }
+    }
+}
+
+inline void applyLightShadows(const LightShadows& shadows, LightSet* set)
+{
+    for (unsigned i = 0; i < set->count && i < shadows.firstMap.size(); ++i)
+        set->lights[i].spot[3] = static_cast<float>(shadows.firstMap[i] + 1);
+}
+
+inline void fillShadowUniforms(const LightShadows& shadows, unsigned mapSize, float normalOffset,
+        ShadowUniforms* out)
+{
+    memset(out, 0, sizeof(*out));
+    out->params[0] = mapSize > 0 ? 1.0f / static_cast<float>(mapSize) : 0.0f;
+    out->params[1] = normalOffset;
+    out->params[2] = static_cast<float>(shadows.maps.size());
+    for (unsigned i = 0; i < shadows.maps.size() && i < ShadowUniforms::kMaxMaps; ++i)
+    {
+        out->matrices[i] = shadows.maps[i].viewProjection;
+        out->info[i][0] = shadows.maps[i].texelScale;
     }
 }
 
