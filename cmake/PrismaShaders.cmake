@@ -23,6 +23,8 @@ else()
   message(STATUS "prisma: glslang or spirv-cross not found, targets that need shaders are skipped")
 endif()
 
+file(GLOB PRISMA_SHADER_INCLUDES CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/demos/common/shaders/*.glsl)
+
 function(prisma_shaders target)
   set(directory ${CMAKE_CURRENT_BINARY_DIR}/shaders/${target})
   foreach(shader ${ARGN})
@@ -40,6 +42,7 @@ function(prisma_shaders target)
               -DOUTPUT=${output}
               -P ${PROJECT_SOURCE_DIR}/cmake/ShaderHeader.cmake
       DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/${shader}
+              ${PRISMA_SHADER_INCLUDES}
               ${PROJECT_SOURCE_DIR}/cmake/ShaderHeader.cmake
               ${PRISMA_SPIRV_CROSS_DEPENDS}
       VERBATIM)

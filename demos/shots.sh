@@ -49,5 +49,6 @@ done <<LIST
 27_compute_sort compute_sort 26
 28_shadow_volume shadow_volume 10
 29_hdr_tonemap_compute hdr_tonemap_compute 10
+30_pbr_ibl pbr_ibl 10
 LIST
 exit $status
