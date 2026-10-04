@@ -58,7 +58,7 @@ private:
     void rebuild(unsigned width, unsigned height, const float* projection);
     void froxelizeLight(uint32_t* bits, unsigned light, const float* position, const float* axis,
             float cosSquared, float inverseSin, float radius, bool spot) const;
-    void assignRecords(const uint32_t* bits, unsigned lightCount);
+    void assignRecords(const uint32_t* bits);
     unsigned findSliceZ(float viewZ) const;
     void clipToIndices(float clipX, float clipY, unsigned* x, unsigned* y) const;
     void project(const float* point, float* clip) const;
@@ -88,6 +88,7 @@ private:
     ct::Vector<Float4> planesX_;
     ct::Vector<Float4> planesY_;
     ct::Vector<Float4> boundingSpheres_;
+    ct::Vector<uint32_t> bits_;
 
     uint32_t entries_[kEntryCount] = {};
     uint8_t records_[kRecordCount] = {};

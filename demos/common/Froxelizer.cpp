@@ -36,12 +36,40 @@ float dot(const Vec3& a, const Vec3& b)
 
 unsigned popCount(uint32_t v)
 {
+#if defined(__GNUC__) || defined(__clang__)
+    return static_cast<unsigned>(__builtin_popcount(v));
+#else
     unsigned count = 0;
     while (v)
     {
         v &= v - 1;
         ++count;
     }
+    return count;
+#endif
+}
+
+unsigned lowestBit(uint32_t v)
+{
+#if defined(__GNUC__) || defined(__clang__)
+    return static_cast<unsigned>(__builtin_ctz(v));
+#else
+    unsigned index = 0;
+    while (!(v & 1u))
+    {
+        v >>= 1;
+        ++index;
+    }
+    return index;
+#endif
+}
+
+unsigned writeLights(const uint32_t* words, uint8_t* out)
+{
+    unsigned count = 0;
+    for (unsigned w = 0; w < 8; ++w)
+        for (uint32_t left = words[w]; left; left &= left - 1)
+            out[count++] = static_cast<uint8_t>(w * 32u + lowestBit(left));
     return count;
 }
 
@@ -370,10 +398,8 @@ void Froxelizer::froxelizeLight(uint32_t* bits, unsigned light, const float* pos
 void Froxelizer::froxelize(const float* view, const FroxelLight* lights, unsigned count)
 {
     count = count > kMaxLights ? kMaxLights : count;
-    const unsigned froxels = froxelCount();
-    ct::Vector<uint32_t> bits;
-    bits.resize(static_cast<size_t>(froxels) * 8);
-    memset(bits.data(), 0, bits.size() * sizeof(uint32_t));
+    bits_.resize(static_cast<size_t>(froxelCount()) * 8);
+    memset(bits_.data(), 0, bits_.size() * sizeof(uint32_t));
 
     const float maxInverseSin = 114.59301f;
     const float maxCosSquared = 0.99992385f;
@@ -401,13 +427,13 @@ void Froxelizer::froxelize(const float* view, const FroxelLight* lights, unsigne
             inverseSin = 1.0f / sinf(outer);
             inverseSin = inverseSin < maxInverseSin ? inverseSin : maxInverseSin;
         }
-        froxelizeLight(bits.data(), i, position, axis, cosSquared, inverseSin, light.radius,
+        froxelizeLight(bits_.data(), i, position, axis, cosSquared, inverseSin, light.radius,
                 light.spot);
     }
-    assignRecords(bits.data(), count);
+    assignRecords(bits_.data());
 }
 
-void Froxelizer::assignRecords(const uint32_t* bits, unsigned lightCount)
+void Froxelizer::assignRecords(const uint32_t* bits)
 {
     const unsigned froxels = froxelCount();
     uint32_t all[8] = {};
@@ -420,9 +446,7 @@ void Froxelizer::assignRecords(const uint32_t* bits, unsigned lightCount)
 
     unsigned allCount = 0;
     for (unsigned w = 0; w < 8; ++w) allCount += popCount(all[w]);
-    unsigned offset = 0;
-    for (unsigned light = 0; light < lightCount; ++light)
-        if (all[light >> 5] & (1u << (light & 31u))) records_[offset++] = static_cast<uint8_t>(light);
+    unsigned offset = writeLights(all, records_);
 
     const auto equal = [&](unsigned a, unsigned b) {
         return memcmp(bits + a * 8, bits + b * 8, 8 * sizeof(uint32_t)) == 0;
@@ -455,9 +479,7 @@ void Froxelizer::assignRecords(const uint32_t* bits, unsigned lightCount)
         }
 
         const uint32_t entry = (offset << 16) | lightsHere;
-        for (unsigned light = 0; light < lightCount; ++light)
-            if (bits[current * 8 + (light >> 5)] & (1u << (light & 31u)))
-                records_[offset++] = static_cast<uint8_t>(light);
+        offset += writeLights(bits + current * 8, records_ + offset);
 
         uint32_t value = entry;
         do
