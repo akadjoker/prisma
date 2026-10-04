@@ -183,6 +183,18 @@ GLFormat toGLFormat(TextureFormat format)
             return { GL_RGBA16F, GL_RGBA, GL_HALF_FLOAT };
         case TextureFormat::R11G11B10F:
             return { GL_R11F_G11F_B10F, GL_RGB, GL_UNSIGNED_INT_10F_11F_11F_REV };
+        case TextureFormat::R16F:
+            return { GL_R16F, GL_RED, GL_HALF_FLOAT };
+        case TextureFormat::RG16F:
+            return { GL_RG16F, GL_RG, GL_HALF_FLOAT };
+        case TextureFormat::R32F:
+            return { GL_R32F, GL_RED, GL_FLOAT };
+        case TextureFormat::RG32F:
+            return { GL_RG32F, GL_RG, GL_FLOAT };
+        case TextureFormat::RGBA32F:
+            return { GL_RGBA32F, GL_RGBA, GL_FLOAT };
+        case TextureFormat::R32UInt:
+            return { GL_R32UI, GL_RED_INTEGER, GL_UNSIGNED_INT };
         case TextureFormat::Depth32F:
             return { GL_DEPTH_COMPONENT32F, GL_DEPTH_COMPONENT, GL_FLOAT };
         case TextureFormat::Depth24Stencil8:
@@ -626,8 +638,10 @@ public:
 #endif
 #ifdef PRISMA_GLES
         caps_.floatColorTargets = glESExt::EXT_color_buffer_float;
+        caps_.floatLinearFiltering = hasExtension("OES_texture_float_linear");
 #else
         caps_.floatColorTargets = true;
+        caps_.floatLinearFiltering = true;
 #endif
 
         glGenVertexArrays(1, &scratchVertexArray_);
@@ -855,6 +869,12 @@ public:
             return TextureHandle();
         }
 
+        if ((desc.usage & kTextureRenderTarget) && isFloatFormat(desc.format) &&
+                !caps_.floatColorTargets)
+        {
+            log("createTexture: floating point render targets are not supported");
+            return TextureHandle();
+        }
         if ((desc.usage & kTextureStorage) &&
                 (!caps_.compute || desc.samples != 1 || !isStorageFormat(desc.format, caps_.gles)))
         {

@@ -383,6 +383,18 @@ VkFormat toVkFormat(TextureFormat format)
             return VK_FORMAT_R16G16B16A16_SFLOAT;
         case TextureFormat::R11G11B10F:
             return VK_FORMAT_B10G11R11_UFLOAT_PACK32;
+        case TextureFormat::R16F:
+            return VK_FORMAT_R16_SFLOAT;
+        case TextureFormat::RG16F:
+            return VK_FORMAT_R16G16_SFLOAT;
+        case TextureFormat::R32F:
+            return VK_FORMAT_R32_SFLOAT;
+        case TextureFormat::RG32F:
+            return VK_FORMAT_R32G32_SFLOAT;
+        case TextureFormat::RGBA32F:
+            return VK_FORMAT_R32G32B32A32_SFLOAT;
+        case TextureFormat::R32UInt:
+            return VK_FORMAT_R32_UINT;
         case TextureFormat::Depth32F:
             return VK_FORMAT_D32_SFLOAT;
         case TextureFormat::Depth24Stencil8:
@@ -3838,6 +3850,12 @@ private:
                 caps_.textureETC2 = features.features.textureCompressionETC2;
                 caps_.textureASTC = features.features.textureCompressionASTC_LDR;
                 caps_.cubeArrays = features.features.imageCubeArray;
+                VkFormatProperties floatProperties = {};
+                vkGetPhysicalDeviceFormatProperties(devices[d], VK_FORMAT_R32G32B32A32_SFLOAT,
+                        &floatProperties);
+                caps_.floatLinearFiltering =
+                        (floatProperties.optimalTilingFeatures &
+                                VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT) != 0;
                 caps_.geometryShaders = features.features.geometryShader;
                 caps_.tessellation = features.features.tessellationShader;
                 caps_.maxPatchControlPoints = properties.limits.maxTessellationPatchSize;

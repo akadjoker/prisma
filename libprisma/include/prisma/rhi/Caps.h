@@ -18,6 +18,7 @@ struct Caps
     bool storageBuffersInGraphics = false;
     bool debugOutput = false;
     bool floatColorTargets = false;
+    bool floatLinearFiltering = false;
     bool wireframe = false;
     bool textureBC = false;
     bool textureETC2 = false;

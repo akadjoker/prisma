@@ -2872,6 +2872,115 @@ int main(int argc, char** argv)
             driver->destroy(notchControl);
         }
 
+        {
+            struct FloatCase
+            {
+                TextureFormat format;
+                const void* data;
+                int red;
+                int green;
+                int blue;
+            };
+            static const std::uint16_t kHalfRed[1] = { 0x3800 };
+            static const std::uint16_t kHalfRedGreen[2] = { 0x3400, 0x3A00 };
+            static const float kSingleRed[1] = { 0.5f };
+            static const float kSingleRedGreen[2] = { 0.25f, 0.75f };
+            static const float kSingleAll[4] = { 2.0f, 0.5f, 0.25f, 1.0f };
+            const FloatCase cases[5] = {
+                { TextureFormat::R16F, kHalfRed, 128, 0, 0 },
+                { TextureFormat::RG16F, kHalfRedGreen, 64, 191, 0 },
+                { TextureFormat::R32F, kSingleRed, 128, 0, 0 },
+                { TextureFormat::RG32F, kSingleRedGreen, 64, 191, 0 },
+                { TextureFormat::RGBA32F, kSingleAll, 255, 128, 64 },
+            };
+
+            messages = 0;
+            window_begin_frame(window);
+            driver->beginFrame();
+            for (int i = 0; i < 5; ++i)
+            {
+                TextureDesc floatDesc;
+                floatDesc.format = cases[i].format;
+                floatDesc.width = 1;
+                floatDesc.height = 1;
+                floatDesc.data = cases[i].data;
+                const TextureHandle floatTexture = driver->createTexture(floatDesc);
+                CHECK(floatTexture.valid());
+                driver->beginRenderPass(black);
+                driver->bindPipeline(textured);
+                driver->bindVertexBuffer(0, buffer, 0);
+                driver->bindTexture(3, floatTexture, nearest);
+                driver->draw(3, 0);
+                driver->endRenderPass();
+                CHECK(pixelIs(160, 120, cases[i].red, cases[i].green, cases[i].blue, 2));
+                driver->destroy(floatTexture);
+            }
+
+            const TextureFormat targetFormats[5] = { TextureFormat::R16F, TextureFormat::RG16F,
+                TextureFormat::R32F, TextureFormat::RG32F, TextureFormat::RGBA32F };
+            const int expectedGreen[5] = { 0, 128, 0, 128, 128 };
+            const int expectedBlue[5] = { 0, 0, 0, 0, 128 };
+            for (int i = 0; i < 5; ++i)
+            {
+                TextureDesc targetDesc;
+                targetDesc.format = targetFormats[i];
+                targetDesc.width = 4;
+                targetDesc.height = 4;
+                targetDesc.usage = kTextureSampled | kTextureRenderTarget;
+                messages = 0;
+                const TextureHandle floatTarget = driver->createTexture(targetDesc);
+                if (!driver->caps().floatColorTargets)
+                {
+                    CHECK(!floatTarget.valid());
+                    CHECK(messages == 1);
+                    continue;
+                }
+                CHECK(floatTarget.valid());
+                PipelineDesc floatPipelineDesc = flatPipelineDesc;
+                floatPipelineDesc.blend = false;
+                floatPipelineDesc.depthTest = false;
+                floatPipelineDesc.targets = TargetFormats();
+                floatPipelineDesc.targets.window = false;
+                floatPipelineDesc.targets.colorCount = 1;
+                floatPipelineDesc.targets.colors[0] = targetFormats[i];
+                const PipelineHandle floatPipeline = driver->createPipeline(floatPipelineDesc);
+                CHECK(floatPipeline.valid());
+                RenderPassDesc floatPass;
+                floatPass.colors[0].texture = floatTarget;
+                floatPass.colorCount = 1;
+                driver->beginRenderPass(floatPass);
+                driver->bindUniformBuffer(2, params, kParamHalf * stride, sizeof(Params));
+                driver->bindPipeline(floatPipeline);
+                driver->bindVertexBuffer(0, buffer, 0);
+                driver->draw(3, 0);
+                driver->endRenderPass();
+                driver->beginRenderPass(black);
+                driver->bindPipeline(textured);
+                driver->bindVertexBuffer(0, buffer, 0);
+                driver->bindTexture(3, floatTarget, nearest);
+                driver->draw(3, 0);
+                driver->endRenderPass();
+                CHECK(pixelIs(160, 120, 128, expectedGreen[i], expectedBlue[i], 2));
+                driver->destroy(floatPipeline);
+                driver->destroy(floatTarget);
+            }
+            driver->endFrame();
+            driver->present();
+            CHECK(messages == 0);
+            if (messages) printf("unexpected: %s\n", lastMessage);
+
+            TextureDesc storageDesc;
+            storageDesc.format = TextureFormat::R32UInt;
+            storageDesc.width = 4;
+            storageDesc.height = 4;
+            storageDesc.usage = kTextureSampled | kTextureStorage;
+            const TextureHandle unsignedStorage = driver->createTexture(storageDesc);
+            CHECK(unsignedStorage.valid() == driver->caps().compute);
+            driver->destroy(unsignedStorage);
+            printf("float formats: colour targets %d, linear 32-bit filtering %d\n",
+                    driver->caps().floatColorTargets, driver->caps().floatLinearFiltering);
+        }
+
         CHECK(driver->caps().occlusionQueries);
         const QueryHandle visibleQuery = driver->createQuery(QueryType::Occlusion);
         const QueryHandle hiddenQuery = driver->createQuery(QueryType::Occlusion);

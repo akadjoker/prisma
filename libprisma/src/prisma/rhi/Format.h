@@ -77,7 +77,12 @@ inline FormatBlock formatBlock(TextureFormat format)
         case TextureFormat::RG8:
             return { 1, 1, 2 };
         case TextureFormat::RGBA16F:
+        case TextureFormat::RG32F:
             return { 1, 1, 8 };
+        case TextureFormat::R16F:
+            return { 1, 1, 2 };
+        case TextureFormat::RGBA32F:
+            return { 1, 1, 16 };
         case TextureFormat::BC1:
         case TextureFormat::BC1Srgb:
         case TextureFormat::BC4:
@@ -138,12 +143,25 @@ inline bool isAdjacency(Topology topology)
            topology == Topology::TrianglesAdjacency || topology == Topology::TriangleStripAdjacency;
 }
 
+inline bool isFloatFormat(TextureFormat format)
+{
+    return format == TextureFormat::RGBA16F || format == TextureFormat::R11G11B10F ||
+           format == TextureFormat::R16F || format == TextureFormat::RG16F ||
+           format == TextureFormat::R32F || format == TextureFormat::RG32F ||
+           format == TextureFormat::RGBA32F;
+}
+
 inline bool isStorageFormat(TextureFormat format, bool gles)
 {
-    if (format == TextureFormat::RGBA8 || format == TextureFormat::RGBA16F) return true;
+    if (format == TextureFormat::RGBA8 || format == TextureFormat::RGBA16F ||
+            format == TextureFormat::RGBA32F || format == TextureFormat::R32F ||
+            format == TextureFormat::R32UInt)
+        return true;
     if (gles) return false;
     return format == TextureFormat::R8 || format == TextureFormat::RG8 ||
-           format == TextureFormat::RGB10A2 || format == TextureFormat::R11G11B10F;
+           format == TextureFormat::RGB10A2 || format == TextureFormat::R11G11B10F ||
+           format == TextureFormat::R16F || format == TextureFormat::RG16F ||
+           format == TextureFormat::RG32F;
 }
 
 inline bool validIndirect(bool valid, std::uint32_t bufferSize, std::uint32_t offset,
