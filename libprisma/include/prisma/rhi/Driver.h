@@ -30,6 +30,12 @@ public:
     virtual void destroy(TextureHandle handle) = 0;
     virtual void destroy(SamplerHandle handle) = 0;
 
+    virtual QueryHandle createQuery(QueryType type) = 0;
+    virtual void destroy(QueryHandle handle) = 0;
+    virtual void beginQuery(QueryHandle handle) = 0;
+    virtual void endQuery(QueryHandle handle) = 0;
+    virtual bool queryResult(QueryHandle handle, std::uint64_t* result) = 0;
+
     virtual void beginFrame() = 0;
     virtual void beginRenderPass(const RenderPassDesc& desc) = 0;
     virtual void setViewport(const Viewport& viewport) = 0;

@@ -134,9 +134,23 @@ struct TextureSlot
     SamplerHandle sampler;
 };
 
+const std::uint32_t kQuerySlots = 4;
+const std::uint32_t kPoolQueries = 4096;
+
+struct VulkanQuery
+{
+    QueryType type = QueryType::Occlusion;
+    std::uint32_t slots[kQuerySlots] = {};
+    std::uint64_t sequence[kQuerySlots] = {};
+    std::uint32_t next = 0;
+    std::int32_t active = -1;
+};
+
 struct Garbage
 {
     std::uint64_t frame = 0;
+    std::uint32_t querySlot = 0;
+    std::uint8_t queryKind = 0;
     VkBuffer buffer = VK_NULL_HANDLE;
     VkDeviceMemory memory = VK_NULL_HANDLE;
     VkPipeline pipeline = VK_NULL_HANDLE;
@@ -501,6 +515,8 @@ public:
             for (std::uint32_t i = 0; i < kFramesInFlight; ++i)
                 if (descriptorPools_[i])
                     vkDestroyDescriptorPool(device_, descriptorPools_[i], nullptr);
+            if (occlusionPool_) vkDestroyQueryPool(device_, occlusionPool_, nullptr);
+            if (timePool_) vkDestroyQueryPool(device_, timePool_, nullptr);
             if (commandPool_) vkDestroyCommandPool(device_, commandPool_, nullptr);
             vkDestroyDevice(device_, nullptr);
         }
@@ -523,7 +539,8 @@ public:
 
         if (!pickPhysicalDevice()) return DriverError::VersionTooLow;
         if (!createDevice()) return DriverError::ContextFailed;
-        if (!createFrames() || !createDescriptorPools()) return DriverError::ContextFailed;
+        if (!createFrames() || !createDescriptorPools() || !createQueryPools())
+            return DriverError::ContextFailed;
         createSwapchain();
         return DriverError::None;
     }
@@ -1107,6 +1124,141 @@ public:
         item.sampler = sampler->sampler;
         garbage_.push_back(item);
         samplers_.erase(slot);
+    }
+
+    QueryHandle createQuery(QueryType type) override
+    {
+        const bool time = type == QueryType::Time;
+        if ((time && !caps_.timerQueries) || (!time && !caps_.occlusionQueries))
+            return QueryHandle();
+
+        VulkanQuery query;
+        query.type = type;
+        ct::Vector<std::uint32_t>& freeSlots = time ? freeTime_ : freeOcclusion_;
+        std::uint32_t& top = time ? timeTop_ : occlusionTop_;
+        const std::uint32_t step = time ? 2 : 1;
+        for (std::uint32_t i = 0; i < kQuerySlots; ++i)
+        {
+            if (!freeSlots.empty())
+            {
+                query.slots[i] = freeSlots[freeSlots.size() - 1];
+                freeSlots.pop_back();
+            }
+            else if (top + step <= kPoolQueries)
+            {
+                query.slots[i] = top;
+                top += step;
+            }
+            else
+            {
+                log("createQuery: no query slots left");
+                for (std::uint32_t used = 0; used < i; ++used)
+                    freeSlots.push_back(query.slots[used]);
+                return QueryHandle();
+            }
+        }
+        return handleCast<QueryHandle>(queries_.insert(query));
+    }
+
+    void destroy(QueryHandle handle) override
+    {
+        const QuerySlotHandle slot = handleCast<QuerySlotHandle>(handle);
+        const VulkanQuery* query = queries_.get(slot);
+        if (!query) return;
+        for (std::uint32_t i = 0; i < kQuerySlots; ++i)
+        {
+            Garbage item;
+            item.frame = frameNumber_;
+            item.querySlot = query->slots[i];
+            item.queryKind = query->type == QueryType::Time ? 2 : 1;
+            garbage_.push_back(item);
+        }
+        queries_.erase(slot);
+    }
+
+    void beginQuery(QueryHandle handle) override
+    {
+        VulkanQuery* query = queries_.get(handleCast<QuerySlotHandle>(handle));
+        if (!query || !frameReady_ || query->active >= 0 ||
+                (query->type == QueryType::Occlusion && (!passActive_ || occlusionActive_)))
+        {
+            log("beginQuery: invalid or already open query, or an occlusion query outside a "
+                "render pass");
+            return;
+        }
+        const std::uint32_t slot = query->next;
+        query->next = (slot + 1) % kQuerySlots;
+        query->active = static_cast<std::int32_t>(slot);
+        query->sequence[slot] = 0;
+
+        VkCommandBuffer commands = frames_[frameIndex_].commands;
+        const std::uint32_t index = query->slots[slot];
+        if (query->type == QueryType::Occlusion)
+        {
+            vkResetQueryPool(device_, occlusionPool_, index, 1);
+            vkCmdBeginQuery(commands, occlusionPool_, index, 0);
+            occlusionActive_ = true;
+        }
+        else
+        {
+            vkResetQueryPool(device_, timePool_, index, 2);
+            vkCmdWriteTimestamp(commands, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, timePool_, index);
+        }
+    }
+
+    void endQuery(QueryHandle handle) override
+    {
+        VulkanQuery* query = queries_.get(handleCast<QuerySlotHandle>(handle));
+        if (!query || query->active < 0 || !frameReady_)
+        {
+            log("endQuery: the query is not open");
+            return;
+        }
+        const std::uint32_t slot = static_cast<std::uint32_t>(query->active);
+        query->active = -1;
+        query->sequence[slot] = ++querySequence_;
+
+        VkCommandBuffer commands = frames_[frameIndex_].commands;
+        const std::uint32_t index = query->slots[slot];
+        if (query->type == QueryType::Occlusion)
+        {
+            vkCmdEndQuery(commands, occlusionPool_, index);
+            occlusionActive_ = false;
+        }
+        else
+            vkCmdWriteTimestamp(commands, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, timePool_,
+                    index + 1);
+    }
+
+    bool queryResult(QueryHandle handle, std::uint64_t* result) override
+    {
+        const VulkanQuery* query = queries_.get(handleCast<QuerySlotHandle>(handle));
+        if (!query || !result) return false;
+
+        const bool time = query->type == QueryType::Time;
+        const std::uint32_t count = time ? 2 : 1;
+        std::uint64_t bestSequence = 0;
+        bool found = false;
+        for (std::uint32_t slot = 0; slot < kQuerySlots; ++slot)
+        {
+            if (query->sequence[slot] == 0 || query->sequence[slot] < bestSequence) continue;
+            std::uint64_t data[4] = { 0, 0, 0, 0 };
+            const VkResult status = vkGetQueryPoolResults(device_,
+                    time ? timePool_ : occlusionPool_, query->slots[slot], count, sizeof(data),
+                    data, sizeof(std::uint64_t) * 2,
+                    VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);
+            if (status != VK_SUCCESS && status != VK_NOT_READY) continue;
+            if (data[1] == 0 || (time && data[3] == 0)) continue;
+
+            found = true;
+            bestSequence = query->sequence[slot];
+            if (time)
+                *result = static_cast<std::uint64_t>(
+                        static_cast<double>(data[2] - data[0]) * timestampPeriod_);
+            else
+                *result = data[0] ? 1 : 0;
+        }
+        return found;
     }
 
     void beginFrame() override
@@ -1754,6 +1906,8 @@ private:
             if (item.sampler) vkDestroySampler(device_, item.sampler, nullptr);
             if (item.memory) vkFreeMemory(device_, item.memory, nullptr);
             if (item.commands) vkFreeCommandBuffers(device_, commandPool_, 1, &item.commands);
+            if (item.queryKind == 1) freeOcclusion_.push_back(item.querySlot);
+            if (item.queryKind == 2) freeTime_.push_back(item.querySlot);
         }
         garbage_.resize(kept);
     }
@@ -2310,6 +2464,9 @@ private:
 
             VkPhysicalDeviceVulkan13Features features13 = {};
             features13.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
+            VkPhysicalDeviceVulkan12Features features12 = {};
+            features12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+            features13.pNext = &features12;
             VkPhysicalDeviceFeatures2 features = {};
             features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
             features.pNext = &features13;
@@ -2344,6 +2501,10 @@ private:
                 caps_.maxTextureSize = properties.limits.maxImageDimension2D;
                 caps_.maxColorTargets = properties.limits.maxColorAttachments;
                 caps_.wireframe = features.features.fillModeNonSolid;
+                caps_.occlusionQueries = features12.hostQueryReset;
+                caps_.timerQueries =
+                        features12.hostQueryReset && properties.limits.timestampComputeAndGraphics;
+                timestampPeriod_ = properties.limits.timestampPeriod;
                 caps_.maxAnisotropy = features.features.samplerAnisotropy
                                               ? properties.limits.maxSamplerAnisotropy
                                               : 1.0f;
@@ -2373,6 +2534,10 @@ private:
         VkPhysicalDeviceVulkan13Features features13 = {};
         features13.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
         features13.dynamicRendering = VK_TRUE;
+        VkPhysicalDeviceVulkan12Features features12 = {};
+        features12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+        features12.hostQueryReset = caps_.occlusionQueries;
+        features13.pNext = &features12;
         features13.synchronization2 = VK_TRUE;
 
         VkPhysicalDeviceFeatures enabled = {};
@@ -2443,6 +2608,25 @@ private:
                             VK_SUCCESS ||
                     vkCreateFence(device_, &fence, nullptr, &frames_[i].inFlight) != VK_SUCCESS)
                 return false;
+        }
+        return true;
+    }
+
+    bool createQueryPools()
+    {
+        VkQueryPoolCreateInfo info = {};
+        info.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
+        info.queryCount = kPoolQueries;
+        if (caps_.occlusionQueries)
+        {
+            info.queryType = VK_QUERY_TYPE_OCCLUSION;
+            if (vkCreateQueryPool(device_, &info, nullptr, &occlusionPool_) != VK_SUCCESS)
+                return false;
+        }
+        if (caps_.timerQueries)
+        {
+            info.queryType = VK_QUERY_TYPE_TIMESTAMP;
+            if (vkCreateQueryPool(device_, &info, nullptr, &timePool_) != VK_SUCCESS) return false;
         }
         return true;
     }
@@ -2772,6 +2956,18 @@ private:
     VkDescriptorSetLayout lastTextureSetLayout_ = VK_NULL_HANDLE;
     VkImageView lastViews_[PipelineDesc::kMaxTextures] = {};
     VkSampler lastSamplers_[PipelineDesc::kMaxTextures] = {};
+    using QuerySlotHandle = ct::Handle32<VulkanQuery>;
+    ct::SlotMap32<VulkanQuery> queries_;
+    VkQueryPool occlusionPool_ = VK_NULL_HANDLE;
+    VkQueryPool timePool_ = VK_NULL_HANDLE;
+    ct::Vector<std::uint32_t> freeOcclusion_;
+    ct::Vector<std::uint32_t> freeTime_;
+    std::uint32_t occlusionTop_ = 0;
+    std::uint32_t timeTop_ = 0;
+    std::uint64_t querySequence_ = 0;
+    float timestampPeriod_ = 1.0f;
+    bool occlusionActive_ = false;
+
     VkCommandBuffer immediateCommands_ = VK_NULL_HANDLE;
     VkCommandBuffer pendingTransfer_ = VK_NULL_HANDLE;
     bool frameSubmitted_ = false;

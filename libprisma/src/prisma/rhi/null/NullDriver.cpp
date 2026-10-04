@@ -53,6 +53,15 @@ public:
     void destroy(TextureHandle handle) override { textures_.erase(handleCast<Slot>(handle)); }
     void destroy(SamplerHandle handle) override { samplers_.erase(handleCast<Slot>(handle)); }
 
+    QueryHandle createQuery(QueryType) override
+    {
+        return handleCast<QueryHandle>(queries_.insert(0));
+    }
+    void destroy(QueryHandle handle) override { queries_.erase(handleCast<Slot>(handle)); }
+    void beginQuery(QueryHandle) override {}
+    void endQuery(QueryHandle) override {}
+    bool queryResult(QueryHandle, std::uint64_t*) override { return false; }
+
     void beginFrame() override {}
     void beginRenderPass(const RenderPassDesc&) override {}
     void setViewport(const Viewport&) override {}
@@ -79,6 +88,7 @@ private:
     ct::SlotMap32<std::uint32_t> pipelines_;
     ct::SlotMap32<std::uint32_t> textures_;
     ct::SlotMap32<std::uint32_t> samplers_;
+    ct::SlotMap32<std::uint32_t> queries_;
 };
 
 } // namespace

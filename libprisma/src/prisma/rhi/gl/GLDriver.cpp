@@ -221,6 +221,18 @@ std::uint32_t fullMipCount(std::uint32_t width, std::uint32_t height)
     return levels;
 }
 
+const std::uint32_t kQuerySlots = 4;
+const GLenum kTimestamp = 0x8E28;
+
+struct GLQuery
+{
+    QueryType type = QueryType::Occlusion;
+    GLuint ids[kQuerySlots][2] = {};
+    std::uint64_t sequence[kQuerySlots] = {};
+    std::uint32_t next = 0;
+    std::int32_t active = -1;
+};
+
 struct GLPipeline
 {
     GLuint program = 0;
@@ -460,6 +472,12 @@ public:
         caps_.versionMajor = static_cast<std::uint32_t>(major);
         caps_.versionMinor = static_cast<std::uint32_t>(minor);
         caps_.debugOutput = debug_;
+        caps_.occlusionQueries = true;
+#ifdef PRISMA_GLES
+        caps_.timerQueries = glESExt::EXT_disjoint_timer_query;
+#else
+        caps_.timerQueries = true;
+#endif
 #ifndef PRISMA_GLES
         caps_.wireframe = true;
 #endif
@@ -490,6 +508,7 @@ public:
             glDeleteFramebuffers(1, &framebuffers_[i].id);
         for (GLTexture& texture: textures_) glDeleteTextures(1, &texture.id);
         for (GLSampler& sampler: samplers_) glDeleteSamplers(1, &sampler.id);
+        for (GLQuery& query: queries_) glDeleteQueries(kQuerySlots * 2, &query.ids[0][0]);
         for (GLBuffer& buffer: buffers_) glDeleteBuffers(1, &buffer.id);
         glDeleteVertexArrays(1, &scratchVertexArray_);
     }
@@ -845,6 +864,100 @@ public:
         samplers_.erase(slot);
     }
 
+    QueryHandle createQuery(QueryType type) override
+    {
+        if (type == QueryType::Time && !caps_.timerQueries) return QueryHandle();
+        GLQuery query;
+        query.type = type;
+        glGenQueries(kQuerySlots * 2, &query.ids[0][0]);
+        return handleCast<QueryHandle>(queries_.insert(query));
+    }
+
+    void destroy(QueryHandle handle) override
+    {
+        const QuerySlot slot = handleCast<QuerySlot>(handle);
+        GLQuery* query = queries_.get(slot);
+        if (!query) return;
+        if (query->active >= 0 && query->type == QueryType::Occlusion)
+        {
+            glEndQuery(GL_ANY_SAMPLES_PASSED);
+            occlusionActive_ = false;
+        }
+        glDeleteQueries(kQuerySlots * 2, &query->ids[0][0]);
+        queries_.erase(slot);
+    }
+
+    void beginQuery(QueryHandle handle) override
+    {
+        GLQuery* query = queries_.get(handleCast<QuerySlot>(handle));
+        if (!query || query->active >= 0 ||
+                (query->type == QueryType::Occlusion && (!passActive_ || occlusionActive_)))
+        {
+            log("beginQuery: invalid or already open query, or an occlusion query outside a "
+                "render pass");
+            return;
+        }
+        const std::uint32_t slot = query->next;
+        query->next = (slot + 1) % kQuerySlots;
+        query->active = static_cast<std::int32_t>(slot);
+        query->sequence[slot] = 0;
+        if (query->type == QueryType::Occlusion)
+        {
+            glBeginQuery(GL_ANY_SAMPLES_PASSED, query->ids[slot][0]);
+            occlusionActive_ = true;
+        }
+        else
+            writeTimestamp(query->ids[slot][0]);
+    }
+
+    void endQuery(QueryHandle handle) override
+    {
+        GLQuery* query = queries_.get(handleCast<QuerySlot>(handle));
+        if (!query || query->active < 0)
+        {
+            log("endQuery: the query is not open");
+            return;
+        }
+        const std::uint32_t slot = static_cast<std::uint32_t>(query->active);
+        query->active = -1;
+        query->sequence[slot] = ++querySequence_;
+        if (query->type == QueryType::Occlusion)
+        {
+            glEndQuery(GL_ANY_SAMPLES_PASSED);
+            occlusionActive_ = false;
+        }
+        else
+            writeTimestamp(query->ids[slot][1]);
+    }
+
+    bool queryResult(QueryHandle handle, std::uint64_t* result) override
+    {
+        const GLQuery* query = queries_.get(handleCast<QuerySlot>(handle));
+        if (!query || !result) return false;
+
+        const int last = query->type == QueryType::Occlusion ? 0 : 1;
+        int best = -1;
+        for (std::uint32_t slot = 0; slot < kQuerySlots; ++slot)
+        {
+            if (query->sequence[slot] == 0) continue;
+            GLuint available = 0;
+            glGetQueryObjectuiv(query->ids[slot][last], GL_QUERY_RESULT_AVAILABLE, &available);
+            if (available && (best < 0 || query->sequence[slot] > query->sequence[best]))
+                best = static_cast<int>(slot);
+        }
+        if (best < 0) return false;
+
+        if (query->type == QueryType::Occlusion)
+        {
+            GLuint passed = 0;
+            glGetQueryObjectuiv(query->ids[best][0], GL_QUERY_RESULT, &passed);
+            *result = passed ? 1 : 0;
+        }
+        else
+            *result = readTimestamp(query->ids[best][1]) - readTimestamp(query->ids[best][0]);
+        return true;
+    }
+
     void beginFrame() override {}
 
     void beginRenderPass(const RenderPassDesc& desc) override
@@ -1053,6 +1166,7 @@ public:
     void endRenderPass() override
     {
         if (!passActive_) return;
+        if (occlusionActive_) log("endRenderPass: an occlusion query is still open");
         passActive_ = false;
 
         GLenum attachments[RenderPassDesc::kMaxColorTargets + 1];
@@ -1148,6 +1262,27 @@ private:
     using PipelineSlot = ct::Handle32<GLPipeline>;
     using TextureSlot = ct::Handle32<GLTexture>;
     using SamplerSlot = ct::Handle32<GLSampler>;
+    using QuerySlot = ct::Handle32<GLQuery>;
+
+    static void writeTimestamp(GLuint id)
+    {
+#ifdef PRISMA_GLES
+        glQueryCounterEXT(id, kTimestamp);
+#else
+        glQueryCounter(id, kTimestamp);
+#endif
+    }
+
+    static std::uint64_t readTimestamp(GLuint id)
+    {
+        GLuint64 value = 0;
+#ifdef PRISMA_GLES
+        glGetQueryObjectui64vEXT(id, GL_QUERY_RESULT, &value);
+#else
+        glGetQueryObjectui64v(id, GL_QUERY_RESULT, &value);
+#endif
+        return value;
+    }
 
     static bool framebufferUses(const GLFramebuffer& framebuffer, std::uint32_t texture)
     {
@@ -1436,6 +1571,9 @@ private:
     ct::SlotMap32<GLPipeline> pipelines_;
     ct::SlotMap32<GLTexture> textures_;
     ct::SlotMap32<GLSampler> samplers_;
+    ct::SlotMap32<GLQuery> queries_;
+    std::uint64_t querySequence_ = 0;
+    bool occlusionActive_ = false;
     ct::Vector<GLFramebuffer> framebuffers_;
 
     bool passActive_ = false;

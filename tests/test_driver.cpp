@@ -1704,6 +1704,90 @@ int main(int argc, char** argv)
         CHECK(messages == 0);
         if (messages) printf("unexpected: %s\n", lastMessage);
 
+        CHECK(driver->caps().occlusionQueries);
+        const QueryHandle visibleQuery = driver->createQuery(QueryType::Occlusion);
+        const QueryHandle hiddenQuery = driver->createQuery(QueryType::Occlusion);
+        const QueryHandle timeQuery = driver->createQuery(QueryType::Time);
+        CHECK(visibleQuery.valid());
+        CHECK(hiddenQuery.valid());
+        CHECK(timeQuery.valid() == driver->caps().timerQueries);
+
+        std::uint64_t visibleResult = 7;
+        std::uint64_t hiddenResult = 7;
+        std::uint64_t timeResult = 0;
+        CHECK(!driver->queryResult(visibleQuery, &visibleResult));
+        CHECK(!driver->queryResult(QueryHandle(), &visibleResult));
+
+        messages = 0;
+        window_begin_frame(window);
+        driver->beginFrame();
+        driver->beginQuery(visibleQuery);
+        CHECK(messages == 1);
+        driver->endQuery(visibleQuery);
+        CHECK(messages == 2);
+        driver->beginRenderPass(black);
+        driver->beginQuery(visibleQuery);
+        driver->beginQuery(hiddenQuery);
+        CHECK(messages == 3);
+        driver->beginQuery(visibleQuery);
+        CHECK(messages == 4);
+        driver->endQuery(visibleQuery);
+        driver->endRenderPass();
+        driver->endFrame();
+        driver->present();
+        CHECK(messages == 4);
+
+        messages = 0;
+        bool visibleReady = false;
+        bool hiddenReady = false;
+        bool timeReady = !timeQuery.valid();
+        int queryFrames = 0;
+        for (; queryFrames < 60 && !(visibleReady && hiddenReady && timeReady && queryFrames >= 6);
+                ++queryFrames)
+        {
+            window_begin_frame(window);
+            driver->beginFrame();
+            if (timeQuery.valid()) driver->beginQuery(timeQuery);
+            driver->beginRenderPass(black);
+            driver->bindPipeline(flatDepth);
+            driver->bindVertexBuffer(0, buffer, 0);
+            driver->bindUniformBuffer(2, params, kParamNearBlue * stride, sizeof(Params));
+            driver->beginQuery(visibleQuery);
+            driver->draw(3, 0);
+            driver->endQuery(visibleQuery);
+            driver->bindUniformBuffer(2, params, kParamFarRed * stride, sizeof(Params));
+            driver->beginQuery(hiddenQuery);
+            driver->draw(3, 0);
+            driver->endQuery(hiddenQuery);
+            driver->endRenderPass();
+            if (timeQuery.valid()) driver->endQuery(timeQuery);
+            driver->endFrame();
+            driver->present();
+
+            visibleReady = driver->queryResult(visibleQuery, &visibleResult);
+            hiddenReady = driver->queryResult(hiddenQuery, &hiddenResult);
+            if (timeQuery.valid()) timeReady = driver->queryResult(timeQuery, &timeResult);
+        }
+        CHECK(visibleReady);
+        CHECK(hiddenReady);
+        CHECK(timeReady);
+        CHECK(visibleResult == 1);
+        CHECK(hiddenResult == 0);
+        if (timeQuery.valid())
+        {
+            CHECK(timeResult > 0);
+            CHECK(timeResult < 1000000000ull);
+        }
+        CHECK(messages == 0);
+        if (messages) printf("unexpected: %s\n", lastMessage);
+        printf("queries: ready after %d frames, gpu time %llu ns\n", queryFrames,
+                static_cast<unsigned long long>(timeResult));
+
+        driver->destroy(timeQuery);
+        driver->destroy(hiddenQuery);
+        driver->destroy(visibleQuery);
+        CHECK(!driver->queryResult(visibleQuery, &visibleResult));
+
         driver->destroy(stencilEqualOffscreen);
         driver->destroy(stencilWriteOffscreen);
         driver->destroy(stencilDepth);
