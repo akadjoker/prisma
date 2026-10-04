@@ -2,7 +2,7 @@
 
 Modern 3D renderer in C++14 for desktop, Android and web: PBR, dynamic lights, shadows, fog, HDR and bloom. Every effect can be switched on and off in code, and the minimum target is 30 fps with headroom on an integrated GPU.
 
-Status: early work, written from scratch. Working today: the null backend and one OpenGL backend that builds for OpenGL 4.6 or OpenGL ES 3 (`-DPRISMA_GLES=ON`), with vertex, index and uniform buffers, 2D textures and samplers, shaders, pipelines with depth, cull and blend state, indexed draw and debug output (a spinning textured cube on screen). The rest of this page describes the planned design; names may change.
+Status: early work, written from scratch. Working today: the null backend and one OpenGL backend that builds for OpenGL 4.6 or OpenGL ES 3 (`-DPRISMA_GLES=ON`), with vertex, index and uniform buffers, 2D textures and samplers, offscreen render targets (HDR colour, depth, several colour targets), shaders, pipelines with depth, cull and blend state, indexed draw and debug output (a spinning textured cube on screen). The rest of this page describes the planned design; names may change.
 
 ## Architecture
 

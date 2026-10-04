@@ -43,6 +43,7 @@ public:
     void programDeleted(std::uint32_t program);
     void vertexArrayDeleted(std::uint32_t vertexArray);
     void bufferDeleted(std::uint32_t buffer);
+    void framebufferDeleted(std::uint32_t framebuffer);
     void textureDeleted(std::uint32_t texture);
     void samplerDeleted(std::uint32_t sampler);
 

@@ -74,6 +74,17 @@ const char* kTexturedFragmentSource =
                       "out vec4 oColor;\n"
                       "void main() { oColor = texture(uTexture, vUv); }\n";
 
+const char* kScaledFragmentSource =
+        SHADER_HEADER "in vec2 vUv;\n"
+                      "uniform sampler2D uTexture;\n"
+                      "out vec4 oColor;\n"
+                      "void main() { oColor = vec4(texture(uTexture, vUv).rgb * 0.25, 1.0); }\n";
+
+const char* kTwoTargetsFragmentSource = SHADER_HEADER
+        "layout(location = 0) out vec4 oFirst;\n"
+        "layout(location = 1) out vec4 oSecond;\n"
+        "void main() { oFirst = vec4(1.0, 0.0, 0.0, 1.0); oSecond = vec4(0.0, 1.0, 0.0, 1.0); }\n";
+
 const unsigned char kFourTexels[16] = {
     255,
     0,
@@ -400,6 +411,132 @@ int main()
         driver->present();
         CHECK(messages == 0);
         if (messages) printf("unexpected: %s\n", lastMessage);
+
+        if (driver->caps().floatColorTargets)
+        {
+            TextureDesc hdrDesc;
+            hdrDesc.format = TextureFormat::RGBA16F;
+            hdrDesc.width = 64;
+            hdrDesc.height = 64;
+            hdrDesc.usage = kTextureSampled | kTextureRenderTarget;
+            const TextureHandle hdr = driver->createTexture(hdrDesc);
+            hdrDesc.format = TextureFormat::Depth32F;
+            hdrDesc.usage = kTextureRenderTarget;
+            const TextureHandle hdrDepth = driver->createTexture(hdrDesc);
+            CHECK(hdr.valid());
+            CHECK(hdrDepth.valid());
+
+            ShaderDesc scaledDesc;
+            scaledDesc.stage = ShaderStage::Fragment;
+            scaledDesc.source = kScaledFragmentSource;
+            const ShaderHandle scaledFragment = driver->createShader(scaledDesc);
+            texturedPipelineDesc.fragmentShader = scaledFragment;
+            const PipelineHandle scaled = driver->createPipeline(texturedPipelineDesc);
+            texturedPipelineDesc.fragmentShader = texturedFragment;
+            CHECK(scaled.valid());
+
+            RenderPassDesc offscreen;
+            offscreen.colors[0] = hdr;
+            offscreen.colorCount = 1;
+            offscreen.depth = hdrDepth;
+            offscreen.depthStore = StoreOp::Discard;
+
+            messages = 0;
+            window_begin_frame(window);
+            driver->beginFrame();
+            driver->beginRenderPass(offscreen);
+            driver->bindUniformBuffer(2, params, 0, sizeof(Params));
+            const Params nearBright = { { 4.0f, 2.0f, 0.5f, 1.0f }, { 0.0f, 0.0f, -0.5f, 0.0f } };
+            driver->updateBuffer(params, 0, &nearBright, sizeof(nearBright));
+            driver->bindPipeline(flatDepth);
+            driver->bindVertexBuffer(buffer, 0);
+            driver->draw(3, 0);
+            const Params farGreen = { { 0.0f, 9.0f, 0.0f, 1.0f }, { 0.0f, 0.0f, 0.5f, 0.0f } };
+            driver->updateBuffer(params, 0, &farGreen, sizeof(farGreen));
+            driver->draw(3, 0);
+            driver->endRenderPass();
+
+            driver->beginRenderPass(black);
+            driver->bindPipeline(scaled);
+            driver->bindVertexBuffer(buffer, 0);
+            driver->bindTexture(3, hdr, nearest);
+            driver->draw(3, 0);
+            CHECK(pixelIs(160, 120, 255, 128, 32, 2));
+            driver->endRenderPass();
+            driver->endFrame();
+            driver->present();
+            CHECK(messages == 0);
+            if (messages) printf("unexpected: %s\n", lastMessage);
+
+            driver->destroy(scaled);
+            driver->destroy(scaledFragment);
+            driver->destroy(hdrDepth);
+            driver->destroy(hdr);
+        }
+
+        TextureDesc targetDesc;
+        targetDesc.width = 32;
+        targetDesc.height = 32;
+        targetDesc.usage = kTextureSampled | kTextureRenderTarget;
+        const TextureHandle first = driver->createTexture(targetDesc);
+        const TextureHandle second = driver->createTexture(targetDesc);
+        CHECK(first.valid());
+        CHECK(second.valid());
+
+        ShaderDesc twoTargetsDesc;
+        twoTargetsDesc.stage = ShaderStage::Fragment;
+        twoTargetsDesc.source = kTwoTargetsFragmentSource;
+        const ShaderHandle twoTargetsFragment = driver->createShader(twoTargetsDesc);
+        PipelineDesc twoTargetsPipelineDesc;
+        twoTargetsPipelineDesc.vertexShader = vertexShader;
+        twoTargetsPipelineDesc.fragmentShader = twoTargetsFragment;
+        twoTargetsPipelineDesc.vertexStride = sizeof(float) * 2;
+        twoTargetsPipelineDesc.attributeCount = 1;
+        twoTargetsPipelineDesc.attributes[0].format = VertexFormat::Float2;
+        const PipelineHandle twoTargets = driver->createPipeline(twoTargetsPipelineDesc);
+        CHECK(twoTargets.valid());
+
+        RenderPassDesc twoTargetsPass;
+        twoTargetsPass.colors[0] = first;
+        twoTargetsPass.colors[1] = second;
+        twoTargetsPass.colorCount = 2;
+
+        messages = 0;
+        window_begin_frame(window);
+        driver->beginFrame();
+        driver->beginRenderPass(twoTargetsPass);
+        driver->bindPipeline(twoTargets);
+        driver->bindVertexBuffer(buffer, 0);
+        driver->draw(3, 0);
+        driver->endRenderPass();
+
+        driver->beginRenderPass(black);
+        driver->bindPipeline(textured);
+        driver->bindVertexBuffer(buffer, 0);
+        driver->bindTexture(3, first, nearest);
+        driver->draw(3, 0);
+        CHECK(pixelIs(160, 120, 255, 0, 0));
+        driver->bindTexture(3, second, nearest);
+        driver->draw(3, 0);
+        CHECK(pixelIs(160, 120, 0, 255, 0));
+        driver->endRenderPass();
+        driver->endFrame();
+        driver->present();
+        CHECK(messages == 0);
+        if (messages) printf("unexpected: %s\n", lastMessage);
+
+        messages = 0;
+        RenderPassDesc invalidPass;
+        invalidPass.colors[0] = texture;
+        invalidPass.colorCount = 1;
+        driver->beginRenderPass(invalidPass);
+        driver->endRenderPass();
+        CHECK(messages == 1);
+
+        driver->destroy(twoTargets);
+        driver->destroy(twoTargetsFragment);
+        driver->destroy(second);
+        driver->destroy(first);
 
         driver->destroy(textured);
         driver->destroy(texturedVertex);

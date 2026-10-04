@@ -87,7 +87,17 @@ enum class TextureFormat : std::uint8_t
     R8,
     RG8,
     RGBA8,
-    RGBA8Srgb
+    RGBA8Srgb,
+    RGBA16F,
+    R11G11B10F,
+    Depth32F,
+    Depth24Stencil8
+};
+
+enum TextureUsage : std::uint32_t
+{
+    kTextureSampled = 1u << 0,
+    kTextureRenderTarget = 1u << 1
 };
 
 struct TextureDesc
@@ -96,6 +106,7 @@ struct TextureDesc
     std::uint32_t width = 0;
     std::uint32_t height = 0;
     std::uint32_t mipLevels = 1;
+    std::uint32_t usage = kTextureSampled;
     const void* data = nullptr;
     bool generateMipmaps = false;
     const char* debugName = nullptr;
@@ -263,10 +274,27 @@ enum class LoadOp : std::uint8_t
     DontCare
 };
 
+enum class StoreOp : std::uint8_t
+{
+    Store,
+    Discard
+};
+
 struct RenderPassDesc
 {
+    enum : std::uint32_t
+    {
+        kMaxColorTargets = 4
+    };
+
+    TextureHandle colors[kMaxColorTargets];
+    std::uint32_t colorCount = 0;
+    TextureHandle depth;
+
     LoadOp colorLoad = LoadOp::Clear;
     LoadOp depthLoad = LoadOp::Clear;
+    StoreOp colorStore = StoreOp::Store;
+    StoreOp depthStore = StoreOp::Store;
     float clearColor[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
     float clearDepth = 1.0f;
 };

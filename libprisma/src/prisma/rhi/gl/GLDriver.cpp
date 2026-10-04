@@ -3,6 +3,8 @@
 #include "prisma/rhi/gl/GL.h"
 #include "prisma/rhi/gl/GLState.h"
 
+#include <ct/vector.hpp>
+
 #include <stdio.h>
 
 namespace prisma
@@ -28,7 +30,25 @@ struct GLTexture
     GLuint id = 0;
     std::uint32_t width = 0;
     std::uint32_t height = 0;
+    TextureFormat format = TextureFormat::RGBA8;
+    std::uint32_t usage = 0;
 };
+
+struct GLFramebuffer
+{
+    GLuint id = 0;
+    std::uint32_t colors[RenderPassDesc::kMaxColorTargets] = {};
+    std::uint32_t colorCount = 0;
+    std::uint32_t depth = 0;
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+    bool stencil = false;
+};
+
+bool isDepthFormat(TextureFormat format)
+{
+    return format == TextureFormat::Depth32F || format == TextureFormat::Depth24Stencil8;
+}
 
 struct GLSampler
 {
@@ -54,6 +74,14 @@ GLFormat toGLFormat(TextureFormat format)
             return { GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE };
         case TextureFormat::RGBA8Srgb:
             return { GL_SRGB8_ALPHA8, GL_RGBA, GL_UNSIGNED_BYTE };
+        case TextureFormat::RGBA16F:
+            return { GL_RGBA16F, GL_RGBA, GL_HALF_FLOAT };
+        case TextureFormat::R11G11B10F:
+            return { GL_R11F_G11F_B10F, GL_RGB, GL_UNSIGNED_INT_10F_11F_11F_REV };
+        case TextureFormat::Depth32F:
+            return { GL_DEPTH_COMPONENT32F, GL_DEPTH_COMPONENT, GL_FLOAT };
+        case TextureFormat::Depth24Stencil8:
+            return { GL_DEPTH24_STENCIL8, GL_DEPTH_STENCIL, GL_UNSIGNED_INT_24_8 };
     }
     return { GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE };
 }
@@ -249,6 +277,11 @@ public:
         caps_.versionMajor = static_cast<std::uint32_t>(major);
         caps_.versionMinor = static_cast<std::uint32_t>(minor);
         caps_.debugOutput = debug_;
+#ifdef PRISMA_GLES
+        caps_.floatColorTargets = glESExt::EXT_color_buffer_float;
+#else
+        caps_.floatColorTargets = true;
+#endif
 
         glGenVertexArrays(1, &scratchVertexArray_);
     }
@@ -261,6 +294,8 @@ public:
             glDeleteVertexArrays(1, &pipeline.vertexArray);
         }
         for (GLShader& shader: shaders_) glDeleteShader(shader.id);
+        for (std::size_t i = 0; i < framebuffers_.size(); ++i)
+            glDeleteFramebuffers(1, &framebuffers_[i].id);
         for (GLTexture& texture: textures_) glDeleteTextures(1, &texture.id);
         for (GLSampler& sampler: samplers_) glDeleteSamplers(1, &sampler.id);
         for (GLBuffer& buffer: buffers_) glDeleteBuffers(1, &buffer.id);
@@ -339,11 +374,13 @@ public:
         GLTexture texture;
         texture.width = desc.width;
         texture.height = desc.height;
+        texture.format = desc.format;
+        texture.usage = desc.usage;
         glGenTextures(1, &texture.id);
         state_.bindTexture(0, GL_TEXTURE_2D, texture.id);
         glTexStorage2D(GL_TEXTURE_2D, static_cast<GLsizei>(levels), format.internal,
                 static_cast<GLsizei>(desc.width), static_cast<GLsizei>(desc.height));
-        if (desc.data)
+        if (desc.data && !isDepthFormat(desc.format))
         {
             glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
             glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, static_cast<GLsizei>(desc.width),
@@ -485,6 +522,13 @@ public:
         const TextureSlot slot = handleCast<TextureSlot>(handle);
         const GLTexture* texture = textures_.get(slot);
         if (!texture) return;
+        for (std::size_t i = framebuffers_.size(); i > 0; --i)
+        {
+            if (!framebufferUses(framebuffers_[i - 1], handle.bits())) continue;
+            glDeleteFramebuffers(1, &framebuffers_[i - 1].id);
+            state_.framebufferDeleted(framebuffers_[i - 1].id);
+            framebuffers_.erase(framebuffers_.begin() + (i - 1));
+        }
         glDeleteTextures(1, &texture->id);
         state_.textureDeleted(texture->id);
         textures_.erase(slot);
@@ -506,18 +550,44 @@ public:
     {
         std::uint32_t width = 0;
         std::uint32_t height = 0;
-        platform_.framebufferSize(platform_.user, &width, &height);
+        passActive_ = false;
+        passOffscreen_ = desc.colorCount > 0 || desc.depth.valid();
+        passColorCount_ = desc.colorCount;
+        passHasDepth_ = true;
+        passStencil_ = false;
+        passColorStore_ = desc.colorStore;
+        passDepthStore_ = desc.depthStore;
 
-        state_.bindFramebuffer(0);
+        if (passOffscreen_)
+        {
+            const GLFramebuffer* framebuffer = findFramebuffer(desc);
+            if (!framebuffer) framebuffer = createFramebuffer(desc);
+            if (!framebuffer)
+            {
+                log("beginRenderPass: invalid or unsupported render targets");
+                return;
+            }
+            state_.bindFramebuffer(framebuffer->id);
+            width = framebuffer->width;
+            height = framebuffer->height;
+            passHasDepth_ = desc.depth.valid();
+            passStencil_ = framebuffer->stencil;
+        }
+        else
+        {
+            platform_.framebufferSize(platform_.user, &width, &height);
+            state_.bindFramebuffer(0);
+        }
+        passActive_ = true;
         state_.viewport(0, 0, static_cast<std::int32_t>(width), static_cast<std::int32_t>(height));
 
         GLbitfield mask = 0;
-        if (desc.colorLoad == LoadOp::Clear)
+        if (desc.colorLoad == LoadOp::Clear && (!passOffscreen_ || desc.colorCount > 0))
         {
             state_.clearColor(desc.clearColor);
             mask |= GL_COLOR_BUFFER_BIT;
         }
-        if (desc.depthLoad == LoadOp::Clear)
+        if (desc.depthLoad == LoadOp::Clear && passHasDepth_)
         {
             state_.depthMask(true);
             state_.clearDepth(desc.clearDepth);
@@ -605,7 +675,28 @@ public:
                 wide ? GL_UNSIGNED_INT : GL_UNSIGNED_SHORT, reinterpret_cast<const void*>(offset));
     }
 
-    void endRenderPass() override {}
+    void endRenderPass() override
+    {
+        if (!passActive_) return;
+        passActive_ = false;
+
+        GLenum attachments[RenderPassDesc::kMaxColorTargets + 1];
+        GLsizei count = 0;
+        if (passColorStore_ == StoreOp::Discard)
+        {
+            if (!passOffscreen_) attachments[count++] = GL_COLOR;
+            for (std::uint32_t i = 0; passOffscreen_ && i < passColorCount_; ++i)
+                attachments[count++] = GL_COLOR_ATTACHMENT0 + i;
+        }
+        if (passDepthStore_ == StoreOp::Discard && passHasDepth_)
+        {
+            if (!passOffscreen_) attachments[count++] = GL_DEPTH;
+            else
+                attachments[count++] =
+                        passStencil_ ? GL_DEPTH_STENCIL_ATTACHMENT : GL_DEPTH_ATTACHMENT;
+        }
+        if (count > 0) glInvalidateFramebuffer(GL_FRAMEBUFFER, count, attachments);
+    }
     void endFrame() override {}
 
     void present() override { platform_.swapBuffers(platform_.user); }
@@ -616,6 +707,89 @@ private:
     using PipelineSlot = ct::Handle32<GLPipeline>;
     using TextureSlot = ct::Handle32<GLTexture>;
     using SamplerSlot = ct::Handle32<GLSampler>;
+
+    static bool framebufferUses(const GLFramebuffer& framebuffer, std::uint32_t texture)
+    {
+        if (framebuffer.depth == texture) return true;
+        for (std::uint32_t i = 0; i < framebuffer.colorCount; ++i)
+            if (framebuffer.colors[i] == texture) return true;
+        return false;
+    }
+
+    const GLFramebuffer* findFramebuffer(const RenderPassDesc& desc) const
+    {
+        for (std::size_t i = 0; i < framebuffers_.size(); ++i)
+        {
+            const GLFramebuffer& framebuffer = framebuffers_[i];
+            if (framebuffer.colorCount != desc.colorCount || framebuffer.depth != desc.depth.bits())
+                continue;
+            bool same = true;
+            for (std::uint32_t c = 0; c < desc.colorCount; ++c)
+                if (framebuffer.colors[c] != desc.colors[c].bits()) same = false;
+            if (same) return &framebuffer;
+        }
+        return nullptr;
+    }
+
+    const GLFramebuffer* createFramebuffer(const RenderPassDesc& desc)
+    {
+        if (desc.colorCount > RenderPassDesc::kMaxColorTargets ||
+                desc.colorCount > caps_.maxColorTargets)
+            return nullptr;
+
+        GLFramebuffer framebuffer;
+        framebuffer.colorCount = desc.colorCount;
+        framebuffer.depth = desc.depth.bits();
+
+        const GLTexture* colors[RenderPassDesc::kMaxColorTargets] = {};
+        for (std::uint32_t i = 0; i < desc.colorCount; ++i)
+        {
+            colors[i] = textures_.get(handleCast<TextureSlot>(desc.colors[i]));
+            if (!colors[i] || !(colors[i]->usage & kTextureRenderTarget) ||
+                    isDepthFormat(colors[i]->format))
+                return nullptr;
+            framebuffer.colors[i] = desc.colors[i].bits();
+            framebuffer.width = colors[i]->width;
+            framebuffer.height = colors[i]->height;
+        }
+
+        const GLTexture* depth = nullptr;
+        if (desc.depth.valid())
+        {
+            depth = textures_.get(handleCast<TextureSlot>(desc.depth));
+            if (!depth || !(depth->usage & kTextureRenderTarget) || !isDepthFormat(depth->format))
+                return nullptr;
+            framebuffer.width = depth->width;
+            framebuffer.height = depth->height;
+            framebuffer.stencil = depth->format == TextureFormat::Depth24Stencil8;
+        }
+
+        glGenFramebuffers(1, &framebuffer.id);
+        state_.bindFramebuffer(framebuffer.id);
+        GLenum drawBuffers[RenderPassDesc::kMaxColorTargets] = { GL_NONE, GL_NONE, GL_NONE,
+            GL_NONE };
+        for (std::uint32_t i = 0; i < desc.colorCount; ++i)
+        {
+            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0 + i, GL_TEXTURE_2D,
+                    colors[i]->id, 0);
+            drawBuffers[i] = GL_COLOR_ATTACHMENT0 + i;
+        }
+        if (depth)
+            glFramebufferTexture2D(GL_FRAMEBUFFER,
+                    framebuffer.stencil ? GL_DEPTH_STENCIL_ATTACHMENT : GL_DEPTH_ATTACHMENT,
+                    GL_TEXTURE_2D, depth->id, 0);
+        glDrawBuffers(desc.colorCount > 0 ? static_cast<GLsizei>(desc.colorCount) : 1, drawBuffers);
+
+        if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+        {
+            state_.bindFramebuffer(0);
+            glDeleteFramebuffers(1, &framebuffer.id);
+            state_.framebufferDeleted(framebuffer.id);
+            return nullptr;
+        }
+        framebuffers_.push_back(framebuffer);
+        return &framebuffers_[framebuffers_.size() - 1];
+    }
 
     GLenum bindForEdit(const GLBuffer& buffer)
     {
@@ -639,9 +813,9 @@ private:
     {
         const GLPipeline* pipeline = pipelines_.get(handleCast<PipelineSlot>(pipeline_));
         const GLBuffer* buffer = buffers_.get(handleCast<BufferSlot>(vertexBuffer_));
-        if (!pipeline || !buffer || buffer->usage != BufferUsage::Vertex)
+        if (!passActive_ || !pipeline || !buffer || buffer->usage != BufferUsage::Vertex)
         {
-            log("draw: no valid pipeline or vertex buffer bound");
+            log("draw: no active render pass, pipeline or vertex buffer");
             return nullptr;
         }
 
@@ -708,6 +882,15 @@ private:
     ct::SlotMap32<GLPipeline> pipelines_;
     ct::SlotMap32<GLTexture> textures_;
     ct::SlotMap32<GLSampler> samplers_;
+    ct::Vector<GLFramebuffer> framebuffers_;
+
+    bool passActive_ = false;
+    bool passOffscreen_ = false;
+    std::uint32_t passColorCount_ = 0;
+    bool passHasDepth_ = false;
+    bool passStencil_ = false;
+    StoreOp passColorStore_ = StoreOp::Store;
+    StoreOp passDepthStore_ = StoreOp::Store;
 
     PipelineHandle pipeline_;
     BufferHandle vertexBuffer_;

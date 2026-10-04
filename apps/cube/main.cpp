@@ -2,6 +2,7 @@
 #include "mathc.h"
 
 #include <stdlib.h>
+#include <string.h>
 
 namespace
 {
@@ -32,6 +33,25 @@ const char* kFragmentSource =
                             "{\n"
                             "    oColor = vec4(vColor * texture(uTexture, vUv).rgb, 1.0);\n"
                             "}\n";
+
+const char* kCopyVertexSource = ZENGL_SHADER_HEADER "layout(location = 0) in vec2 aPosition;\n"
+                                                    "out vec2 vUv;\n"
+                                                    "void main()\n"
+                                                    "{\n"
+                                                    "    vUv = aPosition * 0.5 + 0.5;\n"
+                                                    "    gl_Position = vec4(aPosition, 0.0, 1.0);\n"
+                                                    "}\n";
+
+const char* kCopyFragmentSource =
+        ZENGL_SHADER_HEADER "in vec2 vUv;\n"
+                            "uniform sampler2D uTexture;\n"
+                            "out vec4 oColor;\n"
+                            "void main()\n"
+                            "{\n"
+                            "    oColor = vec4(texture(uTexture, vUv).rgb, 1.0);\n"
+                            "}\n";
+
+const float kCoveringTriangle[6] = { -1.0f, -1.0f, 3.0f, -1.0f, -1.0f, 3.0f };
 
 struct Corner
 {
@@ -119,6 +139,7 @@ const std::uint16_t kIndices[36] = {
 int main(int argc, char** argv)
 {
     const int maxFrames = argc > 1 ? atoi(argv[1]) : 0;
+    const bool offscreen = argc > 2 && strcmp(argv[2], "offscreen") == 0;
 
     if (!platform_init())
     {
@@ -239,10 +260,76 @@ int main(int argc, char** argv)
                        pipeline.valid() && texture.valid() && sampler.valid();
     if (!ready) printf("cube: resource creation failed\n");
 
+    const std::uint32_t kTargetWidth = 320;
+    const std::uint32_t kTargetHeight = 180;
+    prisma::TextureHandle colorTarget;
+    prisma::TextureHandle depthTarget;
+    prisma::SamplerHandle copySampler;
+    prisma::BufferHandle copyVertices;
+    prisma::PipelineHandle copyPipeline;
+    if (offscreen)
+    {
+        prisma::TextureDesc targetDesc;
+        targetDesc.format = driver->caps().floatColorTargets ? prisma::TextureFormat::RGBA16F
+                                                             : prisma::TextureFormat::RGBA8;
+        targetDesc.width = kTargetWidth;
+        targetDesc.height = kTargetHeight;
+        targetDesc.usage = prisma::kTextureSampled | prisma::kTextureRenderTarget;
+        targetDesc.debugName = "cube color target";
+        colorTarget = driver->createTexture(targetDesc);
+        targetDesc.format = prisma::TextureFormat::Depth32F;
+        targetDesc.usage = prisma::kTextureRenderTarget;
+        targetDesc.debugName = "cube depth target";
+        depthTarget = driver->createTexture(targetDesc);
+
+        prisma::SamplerDesc copySamplerDesc;
+        copySamplerDesc.minFilter = prisma::Filter::Nearest;
+        copySamplerDesc.magFilter = prisma::Filter::Nearest;
+        copySamplerDesc.mipFilter = prisma::MipFilter::None;
+        copySamplerDesc.addressU = prisma::AddressMode::ClampToEdge;
+        copySamplerDesc.addressV = prisma::AddressMode::ClampToEdge;
+        copySampler = driver->createSampler(copySamplerDesc);
+
+        prisma::BufferDesc copyBufferDesc;
+        copyBufferDesc.size = sizeof(kCoveringTriangle);
+        copyBufferDesc.data = kCoveringTriangle;
+        copyVertices = driver->createBuffer(copyBufferDesc);
+
+        prisma::ShaderDesc copyShaderDesc;
+        copyShaderDesc.source = kCopyVertexSource;
+        const prisma::ShaderHandle copyVertex = driver->createShader(copyShaderDesc);
+        copyShaderDesc.stage = prisma::ShaderStage::Fragment;
+        copyShaderDesc.source = kCopyFragmentSource;
+        const prisma::ShaderHandle copyFragment = driver->createShader(copyShaderDesc);
+
+        prisma::PipelineDesc copyDesc;
+        copyDesc.vertexShader = copyVertex;
+        copyDesc.fragmentShader = copyFragment;
+        copyDesc.vertexStride = sizeof(float) * 2;
+        copyDesc.attributeCount = 1;
+        copyDesc.attributes[0].format = prisma::VertexFormat::Float2;
+        copyDesc.textureCount = 1;
+        copyDesc.textures[0].name = "uTexture";
+        copyDesc.textures[0].slot = 0;
+        copyDesc.debugName = "copy pipeline";
+        copyPipeline = driver->createPipeline(copyDesc);
+        driver->destroy(copyVertex);
+        driver->destroy(copyFragment);
+    }
+
     prisma::RenderPassDesc pass;
     pass.clearColor[0] = 0.08f;
     pass.clearColor[1] = 0.08f;
     pass.clearColor[2] = 0.10f;
+    prisma::RenderPassDesc scenePass = pass;
+    if (offscreen)
+    {
+        scenePass.colors[0] = colorTarget;
+        scenePass.colorCount = 1;
+        scenePass.depth = depthTarget;
+        scenePass.depthStore = prisma::StoreOp::Discard;
+        pass.depthLoad = prisma::LoadOp::DontCare;
+    }
 
     int frames = 0;
     while (ready && !window_should_close(window))
@@ -264,7 +351,7 @@ int main(int argc, char** argv)
 
         driver->beginFrame();
         driver->updateBuffer(uniformBuffer, 0, &modelViewProjection, sizeof(Math::Mat4));
-        driver->beginRenderPass(pass);
+        driver->beginRenderPass(scenePass);
         driver->bindPipeline(pipeline);
         driver->bindVertexBuffer(vertexBuffer, 0);
         driver->bindIndexBuffer(indexBuffer, prisma::IndexFormat::UInt16);
@@ -272,12 +359,29 @@ int main(int argc, char** argv)
         driver->bindTexture(0, texture, sampler);
         driver->drawIndexed(36, 0);
         driver->endRenderPass();
+        if (offscreen)
+        {
+            driver->beginRenderPass(pass);
+            driver->bindPipeline(copyPipeline);
+            driver->bindVertexBuffer(copyVertices, 0);
+            driver->bindTexture(0, colorTarget, copySampler);
+            driver->draw(3, 0);
+            driver->endRenderPass();
+        }
         driver->endFrame();
         driver->present();
 
         if (maxFrames > 0 && ++frames >= maxFrames) window_set_should_close(window, true);
     }
 
+    if (offscreen)
+    {
+        driver->destroy(copyPipeline);
+        driver->destroy(copyVertices);
+        driver->destroy(copySampler);
+        driver->destroy(depthTarget);
+        driver->destroy(colorTarget);
+    }
     driver->destroy(pipeline);
     driver->destroy(sampler);
     driver->destroy(texture);

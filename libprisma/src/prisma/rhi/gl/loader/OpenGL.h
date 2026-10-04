@@ -2290,6 +2290,12 @@ typedef void ( GLAPIENTRY  *GLDEBUGPROC )( GLenum source, GLenum type, GLuint id
 #define GL_DISPATCH_INDIRECT_BUFFER       0x90EE
 #define GL_DISPATCH_INDIRECT_BUFFER_BINDING 0x90EF
 #define GL_COMPUTE_SHADER_BIT             0x00000020
+#ifndef GL_COLOR
+#define GL_COLOR                          0x1800
+#endif
+#ifndef GL_DEPTH
+#define GL_DEPTH                          0x1801
+#endif
 #ifndef GL_TEXTURE
 #define GL_TEXTURE                        0x1702
 #endif

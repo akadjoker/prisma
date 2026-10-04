@@ -206,6 +206,11 @@ void GLState::bufferDeleted(std::uint32_t buffer)
         if (uniformSlots_[slot].buffer == buffer) knownUniformSlots_ &= ~(1u << slot);
 }
 
+void GLState::framebufferDeleted(std::uint32_t framebuffer)
+{
+    if (framebuffer_ == framebuffer) known_ &= ~static_cast<std::uint32_t>(kFramebuffer);
+}
+
 void GLState::textureDeleted(std::uint32_t texture)
 {
     for (std::uint32_t unit = 0; unit < kMaxTextureUnits; ++unit)
