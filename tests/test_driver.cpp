@@ -1704,6 +1704,154 @@ int main(int argc, char** argv)
         CHECK(messages == 0);
         if (messages) printf("unexpected: %s\n", lastMessage);
 
+        CHECK(driver->caps().maxSamples >= 4);
+        const float kWedge[6] = { -1.0f, -1.0f, 1.0f, 0.0f, -1.0f, 1.0f };
+        BufferDesc wedgeDesc;
+        wedgeDesc.size = sizeof(kWedge);
+        wedgeDesc.data = kWedge;
+        const BufferHandle wedge = driver->createBuffer(wedgeDesc);
+
+        TextureDesc msaaDesc;
+        msaaDesc.width = 320;
+        msaaDesc.height = 240;
+        msaaDesc.samples = 4;
+        msaaDesc.usage = kTextureRenderTarget;
+        const TextureHandle msaaColor = driver->createTexture(msaaDesc);
+        msaaDesc.format = TextureFormat::Depth32F;
+        const TextureHandle msaaDepth = driver->createTexture(msaaDesc);
+        TextureDesc resolvedDesc;
+        resolvedDesc.width = 320;
+        resolvedDesc.height = 240;
+        resolvedDesc.usage = kTextureSampled | kTextureRenderTarget;
+        const TextureHandle resolvedColor = driver->createTexture(resolvedDesc);
+        resolvedDesc.format = TextureFormat::Depth32F;
+        const TextureHandle resolvedDepth = driver->createTexture(resolvedDesc);
+        CHECK(wedge.valid());
+        CHECK(msaaColor.valid());
+        CHECK(msaaDepth.valid());
+        CHECK(resolvedColor.valid());
+        CHECK(resolvedDepth.valid());
+
+        messages = 0;
+        msaaDesc.samples = 3;
+        CHECK(!driver->createTexture(msaaDesc).valid());
+        msaaDesc.samples = 4;
+        msaaDesc.usage = kTextureSampled | kTextureRenderTarget;
+        CHECK(!driver->createTexture(msaaDesc).valid());
+        CHECK(messages == 2);
+
+        PipelineDesc msaaPipelineDesc = flatPipelineDesc;
+        msaaPipelineDesc.blend = false;
+        msaaPipelineDesc.depthTest = true;
+        msaaPipelineDesc.targets.window = false;
+        msaaPipelineDesc.targets.colorCount = 1;
+        msaaPipelineDesc.targets.colors[0] = TextureFormat::RGBA8;
+        msaaPipelineDesc.targets.depth = TextureFormat::Depth32F;
+        msaaPipelineDesc.targets.samples = 4;
+        const PipelineHandle msaaPipeline = driver->createPipeline(msaaPipelineDesc);
+        msaaPipelineDesc.targets.samples = 1;
+        const PipelineHandle singlePipeline = driver->createPipeline(msaaPipelineDesc);
+        CHECK(msaaPipeline.valid());
+        CHECK(singlePipeline.valid());
+
+        RenderPassDesc msaaPass;
+        msaaPass.colors[0].texture = msaaColor;
+        msaaPass.colorCount = 1;
+        msaaPass.depth.texture = msaaDepth;
+        msaaPass.resolves[0].texture = resolvedColor;
+        msaaPass.depthResolve.texture = resolvedDepth;
+        msaaPass.colorStore = StoreOp::Discard;
+        msaaPass.depthStore = StoreOp::Discard;
+        RenderPassDesc badResolve = msaaPass;
+        badResolve.resolves[0].texture = stencilColor;
+        RenderPassDesc mixedSamples = msaaPass;
+        mixedSamples.depth.texture = resolvedDepth;
+        mixedSamples.depthResolve = RenderTarget();
+
+        messages = 0;
+        window_begin_frame(window);
+        driver->beginFrame();
+        driver->beginRenderPass(badResolve);
+        CHECK(messages == 1);
+        driver->endRenderPass();
+        driver->beginRenderPass(mixedSamples);
+        CHECK(messages == 2);
+        driver->endRenderPass();
+
+        messages = 0;
+        driver->beginRenderPass(msaaPass);
+        driver->bindUniformBuffer(2, params, kParamRedMid * stride, sizeof(Params));
+        driver->bindPipeline(singlePipeline);
+        driver->bindVertexBuffer(0, wedge, 0);
+        driver->draw(3, 0);
+        CHECK(messages == 1);
+        driver->bindTexture(3, msaaColor, nearest);
+        CHECK(messages == 2);
+        messages = 0;
+        driver->bindPipeline(msaaPipeline);
+        driver->bindVertexBuffer(0, wedge, 0);
+        driver->draw(3, 0);
+        driver->endRenderPass();
+
+        {
+            RenderTarget resolvedTarget;
+            resolvedTarget.texture = resolvedColor;
+            RenderTarget msaaTarget;
+            msaaTarget.texture = msaaColor;
+            Rect one;
+            one.width = 1;
+            one.height = 1;
+            unsigned char inside[4] = { 0, 0, 0, 0 };
+            unsigned char outside[4] = { 9, 9, 9, 9 };
+            unsigned char lowEdge[4] = { 0, 0, 0, 0 };
+            unsigned char highEdge[4] = { 0, 0, 0, 0 };
+            one.x = 40;
+            one.y = 120;
+            CHECK(driver->readPixels(resolvedTarget, one, inside));
+            one.x = 300;
+            one.y = 20;
+            CHECK(driver->readPixels(resolvedTarget, one, outside));
+            one.x = 161;
+            one.y = 179;
+            CHECK(driver->readPixels(resolvedTarget, one, lowEdge));
+            one.y = 60;
+            CHECK(driver->readPixels(resolvedTarget, one, highEdge));
+            CHECK(inside[0] == 255 && inside[1] == 0 && inside[2] == 0);
+            CHECK(outside[0] == 0 && outside[1] == 0 && outside[2] == 0);
+            CHECK(lowEdge[0] > 32 && lowEdge[0] < 224);
+            CHECK(highEdge[0] > 32 && highEdge[0] < 224);
+            if (failures)
+                printf("msaa: inside %d, outside %d, edges %d %d\n", inside[0], outside[0],
+                        lowEdge[0], highEdge[0]);
+            CHECK(messages == 0);
+            CHECK(!driver->readPixels(msaaTarget, one, inside));
+            CHECK(messages == 1);
+        }
+
+        messages = 0;
+        driver->beginRenderPass(black);
+        driver->bindPipeline(shadowPipeline);
+        driver->bindVertexBuffer(0, buffer, 0);
+        driver->bindTexture(3, resolvedDepth, comparison);
+        driver->bindUniformBuffer(2, params, kParamSliceThreeQuarters * stride, sizeof(Params));
+        driver->draw(3, 0);
+        driver->endRenderPass();
+        CHECK(pixelIs(40, 120, 0, 0, 0));
+        CHECK(pixelIs(300, 20, 255, 255, 255));
+        CHECK(pixelIs(300, 220, 255, 255, 255));
+        driver->endFrame();
+        driver->present();
+        CHECK(messages == 0);
+        if (messages) printf("unexpected: %s\n", lastMessage);
+
+        driver->destroy(singlePipeline);
+        driver->destroy(msaaPipeline);
+        driver->destroy(resolvedDepth);
+        driver->destroy(resolvedColor);
+        driver->destroy(msaaDepth);
+        driver->destroy(msaaColor);
+        driver->destroy(wedge);
+
         CHECK(driver->caps().occlusionQueries);
         const QueryHandle visibleQuery = driver->createQuery(QueryType::Occlusion);
         const QueryHandle hiddenQuery = driver->createQuery(QueryType::Occlusion);

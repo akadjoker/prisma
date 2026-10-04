@@ -136,6 +136,7 @@ struct TextureDesc
     std::uint32_t height = 0;
     std::uint32_t depth = 1;
     std::uint32_t mipLevels = 1;
+    std::uint32_t samples = 1;
     std::uint32_t usage = kTextureSampled;
     const void* data = nullptr;
     bool generateMipmaps = false;
@@ -330,6 +331,7 @@ struct TargetFormats
     };
 
     bool window = true;
+    std::uint32_t samples = 1;
     TextureFormat colors[kMaxColors] = { TextureFormat::None, TextureFormat::None,
         TextureFormat::None, TextureFormat::None };
     std::uint32_t colorCount = 0;
@@ -444,6 +446,8 @@ struct RenderPassDesc
     RenderTarget colors[kMaxColorTargets];
     std::uint32_t colorCount = 0;
     RenderTarget depth;
+    RenderTarget resolves[kMaxColorTargets];
+    RenderTarget depthResolve;
 
     LoadOp colorLoad = LoadOp::Clear;
     LoadOp depthLoad = LoadOp::Clear;

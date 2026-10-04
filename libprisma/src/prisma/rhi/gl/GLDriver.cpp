@@ -36,6 +36,7 @@ struct GLTexture
     std::uint32_t height = 0;
     std::uint32_t depth = 1;
     std::uint32_t mipLevels = 1;
+    std::uint32_t samples = 1;
     TextureFormat format = TextureFormat::RGBA8;
     std::uint32_t usage = 0;
 };
@@ -129,7 +130,7 @@ bool sameTargets(const TargetFormats& a, const TargetFormats& b)
 {
     if (a.window != b.window) return false;
     if (a.window) return true;
-    if (a.colorCount != b.colorCount || a.depth != b.depth) return false;
+    if (a.colorCount != b.colorCount || a.depth != b.depth || a.samples != b.samples) return false;
     for (std::uint32_t i = 0; i < a.colorCount; ++i)
         if (a.colors[i] != b.colors[i]) return false;
     return true;
@@ -138,6 +139,14 @@ bool sameTargets(const TargetFormats& a, const TargetFormats& b)
 bool isDepthFormat(TextureFormat format)
 {
     return format == TextureFormat::Depth32F || format == TextureFormat::Depth24Stencil8;
+}
+
+bool validSamples(const TextureDesc& desc, std::uint32_t maxSamples)
+{
+    if (desc.samples == 1) return true;
+    return (desc.samples == 2 || desc.samples == 4 || desc.samples == 8) &&
+           desc.samples <= maxSamples && desc.type == TextureType::Texture2D &&
+           desc.mipLevels == 1 && desc.usage == kTextureRenderTarget && !desc.data;
 }
 
 struct GLSampler
@@ -454,6 +463,8 @@ public:
         caps_.maxTextureSize = static_cast<std::uint32_t>(value);
         glGetIntegerv(GL_MAX_DRAW_BUFFERS, &value);
         caps_.maxColorTargets = static_cast<std::uint32_t>(value);
+        glGetIntegerv(GL_MAX_SAMPLES, &value);
+        caps_.maxSamples = value >= 8 ? 8 : value >= 4 ? 4 : value >= 2 ? 2 : 1;
         glGetIntegerv(GL_UNIFORM_BUFFER_OFFSET_ALIGNMENT, &value);
         caps_.uniformBufferOffsetAlignment = static_cast<std::uint32_t>(value);
 #ifdef PRISMA_GLES
@@ -606,6 +617,12 @@ public:
             log("createTexture: invalid format or size");
             return TextureHandle();
         }
+        if (!validSamples(desc, caps_.maxSamples))
+        {
+            log("createTexture: a multisampled texture must be a 2D render target only, with one "
+                "mip, no data and a supported sample count");
+            return TextureHandle();
+        }
 
         GLTexture texture;
         texture.type = desc.type;
@@ -625,6 +642,25 @@ public:
         if (texture.mipLevels > fullChain) texture.mipLevels = fullChain;
 
         const GLFormat format = toGLFormat(desc.format);
+        if (desc.samples > 1)
+        {
+            GLint supported = 0;
+            glGetInternalformativ(GL_RENDERBUFFER, format.internal, GL_SAMPLES, 1, &supported);
+            if (supported < static_cast<GLint>(desc.samples))
+            {
+                log("createTexture: sample count not supported for this format");
+                return TextureHandle();
+            }
+            texture.samples = desc.samples;
+            texture.mipLevels = 1;
+            glGenRenderbuffers(1, &texture.id);
+            glBindRenderbuffer(GL_RENDERBUFFER, texture.id);
+            glRenderbufferStorageMultisample(GL_RENDERBUFFER, static_cast<GLsizei>(desc.samples),
+                    format.internal, static_cast<GLsizei>(desc.width),
+                    static_cast<GLsizei>(desc.height));
+            label(GL_RENDERBUFFER, texture.id, desc.debugName);
+            return handleCast<TextureHandle>(textures_.insert(texture));
+        }
         glGenTextures(1, &texture.id);
         state_.bindTexture(0, texture.target, texture.id);
         if (desc.type == TextureType::Texture2DArray || desc.type == TextureType::Texture3D)
@@ -654,7 +690,7 @@ public:
     {
         const GLTexture* texture = textures_.get(handleCast<TextureSlot>(handle));
         if (passActive_ || !texture || !data || isDepthFormat(texture->format) ||
-                mip >= texture->mipLevels ||
+                texture->samples > 1 || mip >= texture->mipLevels ||
                 (texture->type != TextureType::Texture3D && layer >= layerCount(*texture, mip)))
         {
             log("updateTexture: invalid handle, mip or layer, or called inside a render pass");
@@ -666,7 +702,7 @@ public:
     void generateMipmaps(TextureHandle handle) override
     {
         const GLTexture* texture = textures_.get(handleCast<TextureSlot>(handle));
-        if (passActive_ || !texture || isDepthFormat(texture->format))
+        if (passActive_ || !texture || isDepthFormat(texture->format) || texture->samples > 1)
         {
             log("generateMipmaps: invalid handle, or called inside a render pass");
             return;
@@ -849,8 +885,12 @@ public:
             state_.framebufferDeleted(framebuffers_[i - 1].id);
             framebuffers_.erase(framebuffers_.begin() + (i - 1));
         }
-        glDeleteTextures(1, &texture->id);
-        state_.textureDeleted(texture->id);
+        if (texture->samples > 1) glDeleteRenderbuffers(1, &texture->id);
+        else
+        {
+            glDeleteTextures(1, &texture->id);
+            state_.textureDeleted(texture->id);
+        }
         textures_.erase(slot);
     }
 
@@ -974,19 +1014,25 @@ public:
 
         if (passOffscreen_)
         {
-            const GLFramebuffer* framebuffer = findFramebuffer(desc);
-            if (!framebuffer) framebuffer = createFramebuffer(desc);
-            if (!framebuffer)
+            const GLFramebuffer* found = findFramebuffer(desc);
+            if (!found) found = createFramebuffer(desc);
+            if (!found)
             {
                 log("beginRenderPass: invalid or unsupported render targets");
                 return;
             }
-            state_.bindFramebuffer(framebuffer->id);
-            width = framebuffer->width;
-            height = framebuffer->height;
+            const GLFramebuffer framebuffer = *found;
+            if (!prepareResolves(desc, framebuffer))
+            {
+                log("beginRenderPass: invalid resolve targets");
+                return;
+            }
+            state_.bindFramebuffer(framebuffer.id);
+            width = framebuffer.width;
+            height = framebuffer.height;
             passHasDepth_ = desc.depth.texture.valid();
-            passStencil_ = framebuffer->stencil;
-            passFormats_ = framebuffer->formats;
+            passStencil_ = framebuffer.stencil;
+            passFormats_ = framebuffer.formats;
         }
         else
         {
@@ -1105,7 +1151,7 @@ public:
     {
         const GLTexture* texture = textures_.get(handleCast<TextureSlot>(textureHandle));
         const GLSampler* sampler = samplers_.get(handleCast<SamplerSlot>(samplerHandle));
-        if (!texture || !sampler || slot >= GLState::kMaxTextureUnits)
+        if (!texture || !sampler || texture->samples > 1 || slot >= GLState::kMaxTextureUnits)
         {
             log("bindTexture: invalid texture handle, sampler handle or slot");
             return;
@@ -1168,6 +1214,7 @@ public:
         if (!passActive_) return;
         if (occlusionActive_) log("endRenderPass: an occlusion query is still open");
         passActive_ = false;
+        if (passOffscreen_) resolvePass();
 
         GLenum attachments[RenderPassDesc::kMaxColorTargets + 1];
         GLsizei count = 0;
@@ -1209,7 +1256,7 @@ public:
         else
         {
             const GLTexture* texture = textures_.get(handleCast<TextureSlot>(source.texture));
-            if (!texture ||
+            if (!texture || texture->samples > 1 ||
                     (texture->format != TextureFormat::RGBA8 &&
                             texture->format != TextureFormat::RGBA8Srgb) ||
                     source.mip >= texture->mipLevels ||
@@ -1349,8 +1396,80 @@ private:
         return texture;
     }
 
+    bool prepareResolves(const RenderPassDesc& desc, const GLFramebuffer& pass)
+    {
+        passFramebuffer_ = pass.id;
+        depthResolve_ = 0;
+        for (std::uint32_t i = 0; i < RenderPassDesc::kMaxColorTargets; ++i) colorResolves_[i] = 0;
+        for (std::uint32_t i = 0; i <= desc.colorCount; ++i)
+        {
+            const bool isDepth = i == desc.colorCount;
+            const RenderTarget& target = isDepth ? desc.depthResolve : desc.resolves[i];
+            if (!target.texture.valid()) continue;
+
+            const GLTexture* texture = attachable(target, isDepth);
+            const TextureFormat format = isDepth ? pass.formats.depth : pass.formats.colors[i];
+            if (!texture || pass.formats.samples < 2 || texture->samples != 1 ||
+                    texture->format != format ||
+                    mipSize(texture->width, target.mip) != pass.width ||
+                    mipSize(texture->height, target.mip) != pass.height)
+                return false;
+
+            RenderPassDesc single;
+            if (isDepth) single.depth = target;
+            else
+            {
+                single.colors[0] = target;
+                single.colorCount = 1;
+            }
+            const GLFramebuffer* framebuffer = findFramebuffer(single);
+            if (!framebuffer) framebuffer = createFramebuffer(single);
+            if (!framebuffer) return false;
+            if (isDepth) depthResolve_ = framebuffer->id;
+            else
+                colorResolves_[i] = framebuffer->id;
+        }
+        return true;
+    }
+
+    void resolvePass()
+    {
+        bool any = depthResolve_ != 0;
+        for (std::uint32_t i = 0; i < passColorCount_; ++i) any = any || colorResolves_[i] != 0;
+        if (!any) return;
+
+        state_.scissorTest(false);
+        state_.colorMask(kColorAll);
+        state_.depthMask(true);
+        state_.stencilWriteMask(0xFF);
+        const GLint width = static_cast<GLint>(passWidth_);
+        const GLint height = static_cast<GLint>(passHeight_);
+        for (std::uint32_t i = 0; i < passColorCount_; ++i)
+        {
+            if (!colorResolves_[i]) continue;
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, colorResolves_[i]);
+            glReadBuffer(GL_COLOR_ATTACHMENT0 + i);
+            glBlitFramebuffer(0, 0, width, height, 0, 0, width, height, GL_COLOR_BUFFER_BIT,
+                    GL_NEAREST);
+        }
+        if (depthResolve_)
+        {
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, depthResolve_);
+            glBlitFramebuffer(0, 0, width, height, 0, 0, width, height,
+                    passStencil_ ? GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT
+                                 : GL_DEPTH_BUFFER_BIT,
+                    GL_NEAREST);
+        }
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, passFramebuffer_);
+    }
+
     static void attach(GLenum point, const GLTexture& texture, const RenderTarget& target)
     {
+        if (texture.samples > 1)
+        {
+            glFramebufferRenderbuffer(GL_FRAMEBUFFER, point, GL_RENDERBUFFER, texture.id);
+            return;
+        }
         const GLint mip = static_cast<GLint>(target.mip);
         switch (texture.type)
         {
@@ -1384,7 +1503,8 @@ private:
         for (std::uint32_t i = 0; i < desc.colorCount; ++i)
         {
             colors[i] = attachable(desc.colors[i], false);
-            if (!colors[i]) return nullptr;
+            if (!colors[i] || (i > 0 && colors[i]->samples != colors[0]->samples)) return nullptr;
+            framebuffer.formats.samples = colors[i]->samples;
             framebuffer.colors[i].texture = desc.colors[i].texture.bits();
             framebuffer.colors[i].mip = desc.colors[i].mip;
             framebuffer.colors[i].layer = desc.colors[i].layer;
@@ -1397,7 +1517,9 @@ private:
         if (desc.depth.texture.valid())
         {
             depth = attachable(desc.depth, true);
-            if (!depth) return nullptr;
+            if (!depth || (desc.colorCount > 0 && depth->samples != colors[0]->samples))
+                return nullptr;
+            framebuffer.formats.samples = depth->samples;
             framebuffer.depth.texture = desc.depth.texture.bits();
             framebuffer.depth.mip = desc.depth.mip;
             framebuffer.depth.layer = desc.depth.layer;
@@ -1575,6 +1697,9 @@ private:
     std::uint64_t querySequence_ = 0;
     bool occlusionActive_ = false;
     ct::Vector<GLFramebuffer> framebuffers_;
+    GLuint colorResolves_[RenderPassDesc::kMaxColorTargets] = {};
+    GLuint depthResolve_ = 0;
+    GLuint passFramebuffer_ = 0;
 
     bool passActive_ = false;
     std::uint32_t stencilReference_ = 0;

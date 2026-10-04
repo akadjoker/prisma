@@ -18,6 +18,7 @@ struct Caps
     bool timerQueries = false;
     std::uint32_t maxTextureSize = 0;
     std::uint32_t maxColorTargets = 0;
+    std::uint32_t maxSamples = 1;
     std::uint32_t uniformBufferOffsetAlignment = 1;
     float maxAnisotropy = 1.0f;
 };

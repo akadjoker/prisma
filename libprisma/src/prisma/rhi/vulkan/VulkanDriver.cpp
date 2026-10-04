@@ -108,6 +108,7 @@ struct VulkanTexture
     std::uint32_t height = 0;
     std::uint32_t depth = 1;
     std::uint32_t mipLevels = 1;
+    std::uint32_t samples = 1;
     TextureFormat format = TextureFormat::RGBA8;
     std::uint32_t usage = 0;
     AttachmentView attachmentViews[kMaxAttachmentViews];
@@ -279,10 +280,26 @@ bool sameTargets(const TargetFormats& a, const TargetFormats& b)
 {
     if (a.window != b.window) return false;
     if (a.window) return true;
-    if (a.colorCount != b.colorCount || a.depth != b.depth) return false;
+    if (a.colorCount != b.colorCount || a.depth != b.depth || a.samples != b.samples) return false;
     for (std::uint32_t i = 0; i < a.colorCount; ++i)
         if (a.colors[i] != b.colors[i]) return false;
     return true;
+}
+
+bool validSamples(const TextureDesc& desc, std::uint32_t maxSamples)
+{
+    if (desc.samples == 1) return true;
+    return (desc.samples == 2 || desc.samples == 4 || desc.samples == 8) &&
+           desc.samples <= maxSamples && desc.type == TextureType::Texture2D &&
+           desc.mipLevels == 1 && desc.usage == kTextureRenderTarget && !desc.data;
+}
+
+VkSampleCountFlagBits toSampleCount(std::uint32_t samples)
+{
+    if (samples == 2) return VK_SAMPLE_COUNT_2_BIT;
+    if (samples == 4) return VK_SAMPLE_COUNT_4_BIT;
+    if (samples == 8) return VK_SAMPLE_COUNT_8_BIT;
+    return VK_SAMPLE_COUNT_1_BIT;
 }
 
 VkFormat toVkFormat(TextureFormat format)
@@ -720,7 +737,8 @@ public:
 
         VkPipelineMultisampleStateCreateInfo multisample = {};
         multisample.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
-        multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+        multisample.rasterizationSamples =
+                desc.targets.window ? VK_SAMPLE_COUNT_1_BIT : toSampleCount(desc.targets.samples);
 
         VkPipelineDepthStencilStateCreateInfo depthStencil = {};
         depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
@@ -904,6 +922,12 @@ public:
             log("createTexture: invalid format or size");
             return TextureHandle();
         }
+        if (!validSamples(desc, caps_.maxSamples))
+        {
+            log("createTexture: a multisampled texture must be a 2D render target only, with one "
+                "mip, no data and a supported sample count");
+            return TextureHandle();
+        }
 
         const bool depth = isDepthFormat(desc.format);
         const bool volume = desc.type == TextureType::Texture3D;
@@ -915,6 +939,7 @@ public:
         texture.depth = volume || desc.type == TextureType::Texture2DArray ? desc.depth : 1;
         texture.format = desc.format;
         texture.usage = desc.usage;
+        texture.samples = desc.samples;
         const std::uint32_t deepest = volume ? texture.depth : 1;
         const std::uint32_t fullChain = fullMipCount(largest > deepest ? largest : deepest, 1);
         texture.mipLevels = desc.mipLevels == 0 ? fullChain : desc.mipLevels;
@@ -933,15 +958,28 @@ public:
         image.extent.depth = volume ? texture.depth : 1;
         image.mipLevels = texture.mipLevels;
         image.arrayLayers = layers;
-        image.samples = VK_SAMPLE_COUNT_1_BIT;
+        image.samples = toSampleCount(desc.samples);
         image.tiling = VK_IMAGE_TILING_OPTIMAL;
-        image.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
-        if (!depth) image.usage |= VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+        image.usage = VK_IMAGE_USAGE_SAMPLED_BIT;
+        if (desc.samples == 1) image.usage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+        if (desc.samples == 1 && !depth) image.usage |= VK_IMAGE_USAGE_TRANSFER_DST_BIT;
         if (target)
             image.usage |= depth ? VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT
                                  : VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
         image.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
         image.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        if (desc.samples > 1)
+        {
+            VkImageFormatProperties supported = {};
+            if (vkGetPhysicalDeviceImageFormatProperties(physicalDevice_, image.format,
+                        image.imageType, image.tiling, image.usage, image.flags,
+                        &supported) != VK_SUCCESS ||
+                    !(supported.sampleCounts & image.samples))
+            {
+                log("createTexture: sample count not supported for this format");
+                return TextureHandle();
+            }
+        }
         if (vkCreateImage(device_, &image, nullptr, &texture.image) != VK_SUCCESS)
         {
             log("createTexture: could not create the image");
@@ -1033,7 +1071,7 @@ public:
     {
         const VulkanTexture* texture = textures_.get(handleCast<TextureSlotHandle>(handle));
         if (passActive_ || !texture || !data || isDepthFormat(texture->format) ||
-                mip >= texture->mipLevels ||
+                texture->samples > 1 || mip >= texture->mipLevels ||
                 (texture->type != TextureType::Texture3D && layer >= layerCount(*texture, mip)))
         {
             log("updateTexture: invalid handle, mip or layer, or called inside a render pass");
@@ -1045,7 +1083,7 @@ public:
     void generateMipmaps(TextureHandle handle) override
     {
         const VulkanTexture* texture = textures_.get(handleCast<TextureSlotHandle>(handle));
-        if (passActive_ || !texture || isDepthFormat(texture->format))
+        if (passActive_ || !texture || isDepthFormat(texture->format) || texture->samples > 1)
         {
             log("generateMipmaps: invalid handle, or called inside a render pass");
             return;
@@ -1336,6 +1374,7 @@ public:
                 return;
             }
             VkImageView views[RenderPassDesc::kMaxColorTargets + 1] = {};
+            VkImageView resolveViews[RenderPassDesc::kMaxColorTargets + 1] = {};
             formats.window = false;
             formats.colorCount = desc.colorCount;
             std::uint32_t width = 0;
@@ -1351,12 +1390,14 @@ public:
                 if (!texture || !(texture->usage & kTextureRenderTarget) ||
                         isDepthFormat(texture->format) != isDepth ||
                         target.mip >= texture->mipLevels ||
-                        target.layer >= layerCount(*texture, target.mip))
+                        target.layer >= layerCount(*texture, target.mip) ||
+                        (passTargetCount_ > 0 && texture->samples != formats.samples))
                 {
                     log("beginRenderPass: invalid or unsupported render targets");
                     passTargetCount_ = 0;
                     return;
                 }
+                formats.samples = texture->samples;
                 views[i] = attachmentView(*texture, target.mip, target.layer);
                 if (!views[i])
                 {
@@ -1378,6 +1419,41 @@ public:
                 pass.layout = isDepth ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
                                       : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
             }
+            for (std::uint32_t i = 0; i <= desc.colorCount; ++i)
+            {
+                const bool isDepth = i == desc.colorCount;
+                const RenderTarget& target = isDepth ? desc.depthResolve : desc.resolves[i];
+                if (!target.texture.valid()) continue;
+
+                VulkanTexture* texture =
+                        textures_.get(handleCast<TextureSlotHandle>(target.texture));
+                const TextureFormat format = isDepth ? formats.depth : formats.colors[i];
+                if (!texture || !(texture->usage & kTextureRenderTarget) || formats.samples < 2 ||
+                        texture->samples != 1 || texture->format != format ||
+                        target.mip >= texture->mipLevels ||
+                        target.layer >= layerCount(*texture, target.mip) ||
+                        mipSize(texture->width, target.mip) != width ||
+                        mipSize(texture->height, target.mip) != height)
+                {
+                    log("beginRenderPass: invalid resolve targets");
+                    passTargetCount_ = 0;
+                    return;
+                }
+                resolveViews[i] = attachmentView(*texture, target.mip, target.layer);
+                if (!resolveViews[i])
+                {
+                    log("beginRenderPass: could not create a view of the render target");
+                    passTargetCount_ = 0;
+                    return;
+                }
+                PassTarget& pass = passTargets_[passTargetCount_++];
+                pass.image = texture->image;
+                pass.aspect = aspectOf(texture->format);
+                pass.mip = target.mip;
+                pass.layer = texture->type == TextureType::Texture3D ? 0 : target.layer;
+                pass.layout = isDepth ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
+                                      : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            }
             for (std::uint32_t i = 0; i < passTargetCount_; ++i)
                 imageBarrier(commands, passTargets_[i].image, passTargets_[i].aspect,
                         passTargets_[i].mip, 1, passTargets_[i].layer, 1,
@@ -1389,7 +1465,15 @@ public:
                 colors[i].imageView = views[i];
                 colors[i].imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
                 colors[i].loadOp = toLoadOp(desc.colorLoad);
-                colors[i].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+                colors[i].storeOp = desc.colorStore == StoreOp::Store
+                                            ? VK_ATTACHMENT_STORE_OP_STORE
+                                            : VK_ATTACHMENT_STORE_OP_DONT_CARE;
+                if (resolveViews[i])
+                {
+                    colors[i].resolveMode = VK_RESOLVE_MODE_AVERAGE_BIT;
+                    colors[i].resolveImageView = resolveViews[i];
+                    colors[i].resolveImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+                }
                 for (int c = 0; c < 4; ++c)
                     colors[i].clearValue.color.float32[c] = desc.clearColor[c];
             }
@@ -1405,6 +1489,12 @@ public:
                                         ? VK_ATTACHMENT_STORE_OP_STORE
                                         : VK_ATTACHMENT_STORE_OP_DONT_CARE;
                 depth.clearValue.depthStencil.depth = desc.clearDepth;
+                if (resolveViews[desc.colorCount])
+                {
+                    depth.resolveMode = VK_RESOLVE_MODE_SAMPLE_ZERO_BIT;
+                    depth.resolveImageView = resolveViews[desc.colorCount];
+                    depth.resolveImageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+                }
                 rendering.pDepthAttachment = &depth;
                 hasStencil = formats.depth == TextureFormat::Depth24Stencil8;
             }
@@ -1573,8 +1663,8 @@ public:
 
     void bindTexture(std::uint32_t slot, TextureHandle texture, SamplerHandle sampler) override
     {
-        if (slot >= kMaxTextureSlots ||
-                !textures_.contains(handleCast<TextureSlotHandle>(texture)) ||
+        const VulkanTexture* bound = textures_.get(handleCast<TextureSlotHandle>(texture));
+        if (slot >= kMaxTextureSlots || !bound || bound->samples > 1 ||
                 !samplers_.contains(handleCast<SamplerSlotHandle>(sampler)))
         {
             log("bindTexture: invalid texture handle, sampler handle or slot");
@@ -1731,7 +1821,7 @@ public:
         {
             const VulkanTexture* texture =
                     textures_.get(handleCast<TextureSlotHandle>(source.texture));
-            if (!texture ||
+            if (!texture || texture->samples > 1 ||
                     (texture->format != TextureFormat::RGBA8 &&
                             texture->format != TextureFormat::RGBA8Srgb) ||
                     source.mip >= texture->mipLevels ||
@@ -2500,6 +2590,13 @@ private:
                 caps_.versionMinor = VK_API_VERSION_MINOR(properties.apiVersion);
                 caps_.maxTextureSize = properties.limits.maxImageDimension2D;
                 caps_.maxColorTargets = properties.limits.maxColorAttachments;
+                const VkSampleCountFlags counts = properties.limits.framebufferColorSampleCounts &
+                                                  properties.limits.framebufferDepthSampleCounts &
+                                                  properties.limits.framebufferStencilSampleCounts;
+                caps_.maxSamples = (counts & VK_SAMPLE_COUNT_8_BIT)   ? 8
+                                   : (counts & VK_SAMPLE_COUNT_4_BIT) ? 4
+                                   : (counts & VK_SAMPLE_COUNT_2_BIT) ? 2
+                                                                      : 1;
                 caps_.wireframe = features.features.fillModeNonSolid;
                 caps_.occlusionQueries = features12.hostQueryReset;
                 caps_.timerQueries =
@@ -2973,7 +3070,7 @@ private:
     bool frameSubmitted_ = false;
     bool canReadWindow_ = false;
     bool passOffscreen_ = false;
-    PassTarget passTargets_[RenderPassDesc::kMaxColorTargets + 1];
+    PassTarget passTargets_[RenderPassDesc::kMaxColorTargets * 2 + 2];
     std::uint32_t passTargetCount_ = 0;
     VkFormat depthStencilFormat_ = VK_FORMAT_D24_UNORM_S8_UINT;
 
