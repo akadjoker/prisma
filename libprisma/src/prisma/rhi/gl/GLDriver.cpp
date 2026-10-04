@@ -692,7 +692,12 @@ public:
         for (GLShader& shader: shaders_) glDeleteShader(shader.id);
         for (std::size_t i = 0; i < framebuffers_.size(); ++i)
             glDeleteFramebuffers(1, &framebuffers_[i].id);
-        for (GLTexture& texture: textures_) glDeleteTextures(1, &texture.id);
+        for (GLTexture& texture: textures_)
+        {
+            if (texture.samples > 1) glDeleteRenderbuffers(1, &texture.id);
+            else
+                glDeleteTextures(1, &texture.id);
+        }
         for (GLSampler& sampler: samplers_) glDeleteSamplers(1, &sampler.id);
         if (copyFramebuffers_[0]) glDeleteFramebuffers(2, copyFramebuffers_);
         for (GLQuery& query: queries_) glDeleteQueries(kQuerySlots * 2, &query.ids[0][0]);
@@ -872,7 +877,12 @@ public:
         {
             GLBinding& binding = shader.bindings[shader.bindingCount];
             if (!desc.bindings[i].name || strlen(desc.bindings[i].name) >= sizeof(binding.name))
-                continue;
+            {
+                log("createShader: a binding has no name, or its name is too long");
+                glDeleteShader(shader.id);
+                if (shader.innerId) glDeleteShader(shader.innerId);
+                return ShaderHandle();
+            }
             binding.kind = desc.bindings[i].kind;
             binding.slot = desc.bindings[i].slot;
             strcpy(binding.name, desc.bindings[i].name);
@@ -2008,9 +2018,10 @@ public:
         if (caps_.compute) glMemoryBarrier(GL_ALL_BARRIER_BITS);
         glBindBuffer(GL_COPY_READ_BUFFER, source->id);
         const void* mapped = glMapBufferRange(GL_COPY_READ_BUFFER, offset, size, GL_MAP_READ_BIT);
-        if (mapped) memcpy(data, mapped, size);
+        if (!mapped) return false;
+        memcpy(data, mapped, size);
         glUnmapBuffer(GL_COPY_READ_BUFFER);
-        return mapped != nullptr;
+        return true;
     }
 
     void copyFrom(const GLBuffer& source, std::uint32_t offset, std::uint32_t size)
@@ -2037,7 +2048,12 @@ public:
         glGetBufferSubData(GL_PIXEL_PACK_BUFFER, 0, bytes, rgba);
 #else
         const void* pixels = glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, bytes, GL_MAP_READ_BIT);
-        if (pixels) memcpy(rgba, pixels, static_cast<std::size_t>(bytes));
+        if (!pixels)
+        {
+            glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+            return false;
+        }
+        memcpy(rgba, pixels, static_cast<std::size_t>(bytes));
         glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
 #endif
         glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
