@@ -50,6 +50,14 @@ struct Draw
     bool mask;
 };
 
+struct Candidate
+{
+    Draw draw;
+    Math::Box box;
+    Math::Vec3 center;
+    float diameter;
+};
+
 Math::Mat4 nodeMatrix(const float* world)
 {
     Math::Mat4 m;
@@ -354,6 +362,43 @@ int main(int argc, char** argv)
     ct::Vector<unsigned> depthOrder;
     depthOrder.reserve(maxDraws);
 
+    ct::Vector<ObjectUniforms> nodeUniforms;
+    nodeUniforms.resize(model.nodes.size());
+    ct::Vector<Candidate> candidates;
+    candidates.reserve(maxDraws);
+    for (unsigned n = 0; n < model.nodes.size(); ++n)
+    {
+        const zenapp::GltfNode& node = model.nodes[n];
+        nodeUniforms[n].model = nodeMatrix(node);
+        nodeUniforms[n].normalMatrix = nodeUniforms[n].model.Inverse().Transposed();
+        if (node.mesh < 0) continue;
+        const zenapp::GltfMesh& mesh = model.meshes[node.mesh];
+        for (unsigned p = 0; p < mesh.primitiveCount; ++p)
+        {
+            const unsigned index = mesh.firstPrimitive + p;
+            const zenapp::GltfPrimitive& primitive = model.primitives[index];
+            const zenapp::GltfMaterial* material =
+                    primitive.material >= 0 ? &model.materials[primitive.material] : nullptr;
+            Candidate candidate;
+            candidate.draw.node = n;
+            candidate.draw.primitive = index;
+            candidate.draw.material = primitive.material;
+            candidate.draw.distance = 0.0f;
+            candidate.draw.blend =
+                    material && material->alpha == zenapp::GltfMaterial::Alpha::Blend;
+            candidate.draw.mask = material && material->alpha == zenapp::GltfMaterial::Alpha::Mask;
+            candidate.draw.doubleSided = material && material->doubleSided;
+            if ((noBlend && candidate.draw.blend) || (noMask && candidate.draw.mask)) continue;
+            candidate.box = Math::Box(Math::Vec3(primitive.boundsMin[0], primitive.boundsMin[1],
+                                              primitive.boundsMin[2]),
+                    Math::Vec3(primitive.boundsMax[0], primitive.boundsMax[1],
+                            primitive.boundsMax[2])).Transformed(nodeUniforms[n].model);
+            candidate.center = candidate.box.Center();
+            candidate.diameter = candidate.box.Extents().Length() * 2.0f;
+            candidates.push_back(candidate);
+        }
+    }
+
     Math::Vec3 flyEye(0.0f, 0.0f, 0.0f);
     float flyYaw = 0.0f;
     float flyPitch = 0.0f;
@@ -418,7 +463,7 @@ int main(int argc, char** argv)
                 zenapp::drawGltfPrimitive(driver, gpu, model.primitives[firstPrimitive[m]]);
             }
             driver->endRenderPass();
-            zenapp::endFrame(driver);
+            driver->endFrame();
             driver->present();
         }
         froxelizer.setDepthRange(fileCamera ? 3.0f : radius * 0.3f, fileCamera ? 150.0f : radius * 8.0f);
@@ -437,12 +482,8 @@ int main(int argc, char** argv)
     unsigned visibleTriangles = 0;
     const char* reportPath = zenapp::argumentValue(argc, argv, "report");
     if (!reportPath) reportPath = "gltf_viewer_report.txt";
-    prisma::QueryHandle gpuQueries[3];
-    bool gpuPending[3] = { false, false, false };
-    if (driver->caps().timerQueries)
-        for (int i = 0; i < 3; ++i) gpuQueries[i] = driver->createQuery(prisma::QueryType::Time);
-    unsigned frameIndex = 0;
-    unsigned gpuActive = 3;
+    prisma::QueryHandle gpuQuery;
+    if (driver->caps().timerQueries) gpuQuery = driver->createQuery(prisma::QueryType::Time);
     zenapp::TextOverlay overlay;
     const bool overlayReady = overlay.create(driver);
     bool showStats = !zenapp::hasArgument(argc, argv, "nostats");
@@ -528,42 +569,19 @@ int main(int argc, char** argv)
 
         const float pixelsPerUnit = static_cast<float>(height) * 0.5f / tanf(fov * 0.5f);
         draws.clear();
-        for (unsigned n = 0; n < model.nodes.size(); ++n)
+        for (const Candidate& candidate: candidates)
         {
-            const zenapp::GltfNode& node = model.nodes[n];
-            if (node.mesh < 0) continue;
-            const Math::Mat4 matrix = nodeMatrix(node);
-            const zenapp::GltfMesh& mesh = model.meshes[node.mesh];
-            for (unsigned p = 0; p < mesh.primitiveCount; ++p)
+            if (!frustum.IntersectsBox(candidate.box)) continue;
+            const float distance = (candidate.center - eye).Length();
+            if (minPixels > 0.0f)
             {
-                const unsigned index = mesh.firstPrimitive + p;
-                const zenapp::GltfPrimitive& primitive = model.primitives[index];
-                const Math::Box box = Math::Box(Math::Vec3(primitive.boundsMin[0], primitive.boundsMin[1],
-                                                        primitive.boundsMin[2]),
-                        Math::Vec3(primitive.boundsMax[0], primitive.boundsMax[1],
-                                primitive.boundsMax[2])).Transformed(matrix);
-                if (!frustum.IntersectsBox(box)) continue;
-                if (minPixels > 0.0f)
-                {
-                    const float distanceToBox = (box.Center() - eye).Length();
-                    const float pixels = box.Extents().Length() * 2.0f * pixelsPerUnit /
-                                         (distanceToBox > nearPlane ? distanceToBox : nearPlane);
-                    if (pixels < minPixels) continue;
-                }
-                Draw draw;
-                draw.node = n;
-                draw.primitive = index;
-                draw.material = primitive.material;
-                const Math::Vec3 centerOfBox = box.Center();
-                draw.distance = (centerOfBox - eye).Length();
-                const zenapp::GltfMaterial* material =
-                        primitive.material >= 0 ? &model.materials[primitive.material] : nullptr;
-                draw.blend = material && material->alpha == zenapp::GltfMaterial::Alpha::Blend;
-                draw.mask = material && material->alpha == zenapp::GltfMaterial::Alpha::Mask;
-                draw.doubleSided = material && material->doubleSided;
-                if ((noBlend && draw.blend) || (noMask && draw.mask)) continue;
-                draws.push_back(draw);
+                const float pixels = candidate.diameter * pixelsPerUnit /
+                                     (distance > nearPlane ? distance : nearPlane);
+                if (pixels < minPixels) continue;
             }
+            Draw draw = candidate.draw;
+            draw.distance = distance;
+            draws.push_back(draw);
         }
         if (draws.size() > 1)
             ct::sort(draws.data(), draws.data() + draws.size(), [](const Draw& a, const Draw& b) {
@@ -587,16 +605,17 @@ int main(int argc, char** argv)
         frame.exposure[2] = iblScale;
         frame.exposure[3] = skyScale;
 
+        unsigned triangles = 0;
         for (size_t i = 0; i < draws.size(); ++i)
         {
-            ObjectUniforms object;
-            object.model = nodeMatrix(model.nodes[draws[i].node]);
-            object.normalMatrix = object.model.Inverse().Transposed();
-            memcpy(objectBytes.data() + i * objectStride, &object, sizeof(object));
+            memcpy(objectBytes.data() + i * objectStride, &nodeUniforms[draws[i].node],
+                    sizeof(ObjectUniforms));
+            triangles += model.primitives[draws[i].primitive].indexCount / 3;
         }
+        visibleTriangles = triangles;
 
         depthOrder.clear();
-        for (unsigned i = 0; i < draws.size(); ++i)
+        for (unsigned i = 0; usePrepass && i < draws.size(); ++i)
             if (!draws[i].blend) depthOrder.push_back(i);
         if (depthOrder.size() > 1)
             ct::sort(depthOrder.data(), depthOrder.data() + depthOrder.size(),
@@ -624,24 +643,13 @@ int main(int argc, char** argv)
         if (overlayReady && showStats)
         {
             char extra[128];
-            unsigned triangles = 0;
-            for (size_t d = 0; d < draws.size(); ++d) triangles += model.primitives[draws[d].primitive].indexCount / 3;
-            visibleTriangles = triangles;
             snprintf(extra, sizeof(extra), "%s  %uk tris  draws %u of %u  F1 hides",
                     driver->type() == prisma::DriverType::Vulkan ? "Vulkan" : "OpenGL",
                     triangles / 1000, static_cast<unsigned>(draws.size()), maxDraws);
             zenapp::drawStatsOverlay(&overlay, stats, phaseNames, 4, extra);
         }
         overlay.upload(driver);
-        const unsigned slot = frameIndex % 3;
-        if (gpuQueries[slot].valid() && !gpuPending[slot])
-        {
-            driver->beginQuery(gpuQueries[slot]);
-            gpuPending[slot] = true;
-            gpuActive = slot;
-        }
-        else
-            gpuActive = 3;
+        if (gpuQuery.valid()) driver->beginQuery(gpuQuery);
         driver->beginRenderPass(pass);
 
         driver->bindPipeline(skyPipeline);
@@ -706,22 +714,16 @@ int main(int argc, char** argv)
         }
         overlay.draw(driver);
         driver->endRenderPass();
-        if (gpuActive < 3) driver->endQuery(gpuQueries[gpuActive]);
+        if (gpuQuery.valid()) driver->endQuery(gpuQuery);
         stats.phase(2);
         zenapp::endFrame(driver);
         driver->present();
-        for (int i = 0; i < 3; ++i)
+        std::uint64_t nanoseconds = 0;
+        if (gpuQuery.valid() && driver->queryResult(gpuQuery, &nanoseconds))
         {
-            std::uint64_t nanoseconds = 0;
-            if (gpuPending[i] && static_cast<unsigned>(i) != gpuActive &&
-                    driver->queryResult(gpuQueries[i], &nanoseconds))
-            {
-                lastGpu = static_cast<float>(nanoseconds) * 1e-6f;
-                stats.gpu(lastGpu);
-                gpuPending[i] = false;
-            }
+            lastGpu = static_cast<float>(nanoseconds) * 1e-6f;
+            stats.gpu(lastGpu);
         }
-        ++frameIndex;
         stats.phase(3);
         stats.end();
         frameLog.add(stats, lastGpu, lastStep, lastKeys, visibleTriangles);
@@ -749,7 +751,7 @@ int main(int argc, char** argv)
         if (frameLog.write(reportPath, header)) log_info("report written to %s", reportPath);
     }
     overlay.destroy(driver);
-    for (int i = 0; i < 3; ++i) driver->destroy(gpuQueries[i]);
+    driver->destroy(gpuQuery);
     for (int i = 0; i < 4; ++i) driver->destroy(depthPipelines[i]);
     driver->destroy(skyPipeline);
     driver->destroy(blendPipeline);
