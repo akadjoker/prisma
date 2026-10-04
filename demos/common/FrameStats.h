@@ -64,6 +64,14 @@ public:
             phaseAverage_[i] = static_cast<float>(sum_[i] / frames_);
             phaseWorst_[i] = static_cast<float>(worst_[i]);
         }
+        if (gpuSamples_ > 0)
+        {
+            gpuAverage_ = static_cast<float>(gpuSum_ / gpuSamples_);
+            gpuWorst_ = gpuWorstRaw_;
+        }
+        gpuSum_ = 0.0;
+        gpuSamples_ = 0;
+        gpuWorstRaw_ = 0.0f;
         windowStart_ = now;
         frames_ = 0;
         totalSum_ = 0.0;
@@ -75,7 +83,16 @@ public:
         }
     }
 
+    void gpu(float milliseconds)
+    {
+        gpuSum_ += milliseconds;
+        ++gpuSamples_;
+        if (milliseconds > gpuWorstRaw_) gpuWorstRaw_ = milliseconds;
+    }
+
     float fps() const { return fps_; }
+    float gpuAverageMs() const { return gpuAverage_; }
+    float gpuWorstMs() const { return gpuWorst_; }
     float averageMs() const { return average_; }
     float worstMs() const { return worst_ms_; }
     float phaseAverageMs(int i) const { return phaseAverage_[i]; }
@@ -96,6 +113,11 @@ private:
     double totalWorst_ = 0.0;
     double sum_[kMaxPhases] = {};
     double worst_[kMaxPhases] = {};
+    double gpuSum_ = 0.0;
+    int gpuSamples_ = 0;
+    float gpuWorstRaw_ = 0.0f;
+    float gpuAverage_ = 0.0f;
+    float gpuWorst_ = 0.0f;
     float fps_ = 0.0f;
     float average_ = 0.0f;
     float worst_ms_ = 0.0f;

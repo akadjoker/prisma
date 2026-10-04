@@ -322,6 +322,12 @@ int main(int argc, char** argv)
     if (zenapp::hasArgument(argc, argv, "novsync")) window_set_vsync(window, false);
     static const char* const phaseNames[4] = { "cull", "uniforms", "record", "present" };
     zenapp::FrameStats stats(4);
+    prisma::QueryHandle gpuQueries[3];
+    bool gpuPending[3] = { false, false, false };
+    if (driver->caps().timerQueries)
+        for (int i = 0; i < 3; ++i) gpuQueries[i] = driver->createQuery(prisma::QueryType::Time);
+    unsigned frameIndex = 0;
+    unsigned gpuActive = 3;
     zenapp::TextOverlay overlay;
     const bool overlayReady = overlay.create(driver);
     bool showStats = !zenapp::hasArgument(argc, argv, "nostats");
@@ -471,11 +477,21 @@ int main(int argc, char** argv)
         if (overlayReady && showStats)
         {
             char extra[128];
-            snprintf(extra, sizeof(extra), "draws %u of %u   F1 hides this", static_cast<unsigned>(draws.size()),
-                    maxDraws);
+            snprintf(extra, sizeof(extra), "%s  draws %u of %u  F1 hides",
+                    driver->type() == prisma::DriverType::Vulkan ? "Vulkan" : "OpenGL",
+                    static_cast<unsigned>(draws.size()), maxDraws);
             zenapp::drawStatsOverlay(&overlay, stats, phaseNames, 4, extra);
         }
         overlay.upload(driver);
+        const unsigned slot = frameIndex % 3;
+        if (gpuQueries[slot].valid() && !gpuPending[slot])
+        {
+            driver->beginQuery(gpuQueries[slot]);
+            gpuPending[slot] = true;
+            gpuActive = slot;
+        }
+        else
+            gpuActive = 3;
         driver->beginRenderPass(pass);
 
         driver->bindPipeline(skyPipeline);
@@ -520,9 +536,21 @@ int main(int argc, char** argv)
         }
         overlay.draw(driver);
         driver->endRenderPass();
+        if (gpuActive < 3) driver->endQuery(gpuQueries[gpuActive]);
         stats.phase(2);
         zenapp::endFrame(driver);
         driver->present();
+        for (int i = 0; i < 3; ++i)
+        {
+            std::uint64_t nanoseconds = 0;
+            if (gpuPending[i] && static_cast<unsigned>(i) != gpuActive &&
+                    driver->queryResult(gpuQueries[i], &nanoseconds))
+            {
+                stats.gpu(static_cast<float>(nanoseconds) * 1e-6f);
+                gpuPending[i] = false;
+            }
+        }
+        ++frameIndex;
         stats.phase(3);
         stats.end();
 
@@ -530,6 +558,7 @@ int main(int argc, char** argv)
     }
 
     overlay.destroy(driver);
+    for (int i = 0; i < 3; ++i) driver->destroy(gpuQueries[i]);
     driver->destroy(skyPipeline);
     driver->destroy(blendPipeline);
     driver->destroy(doublePipeline);

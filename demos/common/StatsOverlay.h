@@ -30,7 +30,7 @@ inline void drawStatsOverlay(TextOverlay* overlay, const FrameStats& stats, cons
     char text[256];
     snprintf(text, sizeof(text), "%.0f fps   %.1f ms   worst %.1f ms", stats.fps(), stats.averageMs(),
             stats.worstMs());
-    overlay->text(x, y, text, stats.worstMs() > 33.4f ? red : (stats.worstMs() > 16.8f ? yellow : green));
+    overlay->text(x, y, text, stats.fps() < 30.0f ? red : (stats.fps() < 55.0f ? yellow : green));
 
     int length = 0;
     text[0] = '\0';
@@ -45,7 +45,9 @@ inline void drawStatsOverlay(TextOverlay* overlay, const FrameStats& stats, cons
         length += snprintf(text + length, sizeof(text) - static_cast<size_t>(length), "%s %.1f%s",
                 names[i], stats.phaseWorstMs(i), i + 1 < phaseCount ? "  " : "");
     overlay->text(x, y + 34.0f, text, grey, 1.5f);
-    if (extra) overlay->text(x, y + 50.0f, extra, grey, 1.5f);
+    snprintf(text, sizeof(text), "gpu %.1f  worst %.1f   %s", stats.gpuAverageMs(), stats.gpuWorstMs(),
+            extra ? extra : "");
+    overlay->text(x, y + 50.0f, text, grey, 1.5f);
 
     const float graphTop = y + 68.0f;
     const float graphBottom = graphTop + graphHeight;

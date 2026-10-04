@@ -17,10 +17,19 @@ namespace
 
 struct GLBuffer
 {
+    enum
+    {
+        kVersions = 3
+    };
+
     GLuint id = 0;
     std::uint32_t size = 0;
     BufferUsage usage = BufferUsage::Vertex;
     IndexFormat indexFormat = IndexFormat::UInt16;
+    bool stream = false;
+    std::uint32_t current = 0;
+    std::uint64_t updatedFrame = ~0ull;
+    GLuint versions[kVersions] = {};
 };
 
 struct GLBinding
@@ -692,7 +701,9 @@ public:
             if (readback.sync) glDeleteSync(readback.sync);
             glDeleteBuffers(1, &readback.buffer);
         }
-        for (GLBuffer& buffer: buffers_) glDeleteBuffers(1, &buffer.id);
+        for (GLBuffer& buffer: buffers_)
+            for (GLuint id: buffer.versions)
+                if (id) glDeleteBuffers(1, &id);
         glDeleteVertexArrays(1, &scratchVertexArray_);
     }
 
@@ -714,6 +725,9 @@ public:
         buffer.usage = desc.usage;
         buffer.indexFormat = desc.indexFormat;
         glGenBuffers(1, &buffer.id);
+        buffer.versions[0] = buffer.id;
+        buffer.stream = desc.update == BufferUpdate::Stream && desc.usage != BufferUsage::Storage &&
+                        desc.usage != BufferUsage::Indirect;
         const GLenum target = bindForEdit(buffer);
         glBufferData(target, desc.size, desc.data, toGLUpdate(desc.update));
         label(GL_BUFFER, buffer.id, desc.debugName);
@@ -797,12 +811,14 @@ public:
             log("updateBuffer: not allowed inside a render pass");
             return;
         }
-        const GLBuffer* buffer = buffers_.get(handleCast<BufferSlot>(handle));
+        GLBuffer* buffer = buffers_.get(handleCast<BufferSlot>(handle));
         if (!buffer || !data || static_cast<std::uint64_t>(offset) + size > buffer->size)
         {
             log("updateBuffer: invalid buffer handle or range");
             return;
         }
+        if (buffer->stream && buffer->updatedFrame != frameNumber_)
+            rotateStreamBuffer(buffer, offset == 0 && size == buffer->size);
         const GLenum target = bindForEdit(*buffer);
         glBufferSubData(target, offset, size, data);
     }
@@ -1302,8 +1318,12 @@ public:
         const BufferSlot slot = handleCast<BufferSlot>(handle);
         const GLBuffer* buffer = buffers_.get(slot);
         if (!buffer) return;
-        glDeleteBuffers(1, &buffer->id);
-        state_.bufferDeleted(buffer->id);
+        for (GLuint id: buffer->versions)
+        {
+            if (!id) continue;
+            glDeleteBuffers(1, &id);
+            state_.bufferDeleted(id);
+        }
         buffers_.erase(slot);
     }
 
@@ -1852,6 +1872,7 @@ public:
         glFlush();
         mainSwapped_ = false;
         mainDrawn_ = false;
+        ++frameNumber_;
     }
 
     SwapchainHandle createSwapchain(const SwapchainDesc& desc) override
@@ -2547,6 +2568,32 @@ private:
         return true;
     }
 
+    void rotateStreamBuffer(GLBuffer* buffer, bool overwritten)
+    {
+        const std::uint32_t next = (buffer->current + 1) % GLBuffer::kVersions;
+        if (!buffer->versions[next])
+        {
+            glGenBuffers(1, &buffer->versions[next]);
+            glBindBuffer(GL_COPY_WRITE_BUFFER, buffer->versions[next]);
+            glBufferData(GL_COPY_WRITE_BUFFER, buffer->size, nullptr, GL_STREAM_DRAW);
+            overwritten = false;
+        }
+        if (!overwritten)
+        {
+            glBindBuffer(GL_COPY_READ_BUFFER, buffer->versions[buffer->current]);
+            glBindBuffer(GL_COPY_WRITE_BUFFER, buffer->versions[next]);
+            glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, 0, 0, buffer->size);
+        }
+        else
+        {
+            glBindBuffer(GL_COPY_WRITE_BUFFER, buffer->versions[next]);
+            glBufferData(GL_COPY_WRITE_BUFFER, buffer->size, nullptr, GL_STREAM_DRAW);
+        }
+        buffer->current = next;
+        buffer->id = buffer->versions[next];
+        buffer->updatedFrame = frameNumber_;
+    }
+
     GLenum bindForEdit(const GLBuffer& buffer)
     {
         switch (buffer.usage)
@@ -2740,6 +2787,7 @@ private:
     GLBlendTarget independentCache_[TargetFormats::kMaxColors];
     bool surfacesUsed_ = false;
     bool mainDrawn_ = false;
+    std::uint64_t frameNumber_ = 0;
     bool mainSwapped_ = false;
     std::uint64_t querySequence_ = 0;
     bool occlusionActive_ = false;
