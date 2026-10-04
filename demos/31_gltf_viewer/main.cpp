@@ -227,8 +227,19 @@ int main(int argc, char** argv)
     unsigned maxDraws = 0;
     for (const zenapp::GltfNode& node: model.nodes)
         if (node.mesh >= 0) maxDraws += model.meshes[node.mesh].primitiveCount;
+    const unsigned identityNode = static_cast<unsigned>(model.nodes.size());
+    ct::Vector<ObjectUniforms> nodeUniforms;
+    nodeUniforms.resize(model.nodes.size() + 1);
     ct::Vector<unsigned char> objectBytes;
-    objectBytes.resize(static_cast<size_t>(objectStride) * (maxDraws > 0 ? maxDraws : 1));
+    objectBytes.resize(static_cast<size_t>(objectStride) * nodeUniforms.size());
+    memset(objectBytes.data(), 0, objectBytes.size());
+    for (unsigned n = 0; n < nodeUniforms.size(); ++n)
+    {
+        nodeUniforms[n].model = n < identityNode ? nodeMatrix(model.nodes[n]) : Math::Mat4::Identity();
+        nodeUniforms[n].normalMatrix = nodeUniforms[n].model.Inverse().Transposed();
+        memcpy(objectBytes.data() + static_cast<size_t>(n) * objectStride, &nodeUniforms[n],
+                sizeof(ObjectUniforms));
+    }
 
     prisma::BufferDesc bufferDesc;
     bufferDesc.usage = prisma::BufferUsage::Uniform;
@@ -236,9 +247,12 @@ int main(int argc, char** argv)
     bufferDesc.update = prisma::BufferUpdate::Stream;
     bufferDesc.debugName = "frame uniforms";
     const prisma::BufferHandle frameBuffer = driver->createBuffer(bufferDesc);
-    bufferDesc.size = static_cast<std::uint32_t>(objectBytes.size());
-    bufferDesc.debugName = "object uniforms";
-    const prisma::BufferHandle objectBuffer = driver->createBuffer(bufferDesc);
+    prisma::BufferDesc objectDesc;
+    objectDesc.usage = prisma::BufferUsage::Uniform;
+    objectDesc.size = static_cast<std::uint32_t>(objectBytes.size());
+    objectDesc.data = objectBytes.data();
+    objectDesc.debugName = "object uniforms";
+    const prisma::BufferHandle objectBuffer = driver->createBuffer(objectDesc);
     static zenapp::ClusteredBuffers clustered;
     bufferDesc.size = sizeof(clustered);
     bufferDesc.debugName = "clustered lights";
@@ -362,15 +376,11 @@ int main(int argc, char** argv)
     ct::Vector<unsigned> depthOrder;
     depthOrder.reserve(maxDraws);
 
-    ct::Vector<ObjectUniforms> nodeUniforms;
-    nodeUniforms.resize(model.nodes.size());
     ct::Vector<Candidate> candidates;
     candidates.reserve(maxDraws);
     for (unsigned n = 0; n < model.nodes.size(); ++n)
     {
         const zenapp::GltfNode& node = model.nodes[n];
-        nodeUniforms[n].model = nodeMatrix(node);
-        nodeUniforms[n].normalMatrix = nodeUniforms[n].model.Inverse().Transposed();
         if (node.mesh < 0) continue;
         const zenapp::GltfMesh& mesh = model.meshes[node.mesh];
         for (unsigned p = 0; p < mesh.primitiveCount; ++p)
@@ -423,9 +433,6 @@ int main(int argc, char** argv)
         FrameUniforms warmFrame;
         memset(&warmFrame, 0, sizeof(warmFrame));
         warmFrame.camera[3] = 1.0f;
-        ObjectUniforms warmObject;
-        warmObject.model = Math::Mat4::Identity();
-        warmObject.normalMatrix = Math::Mat4::Identity();
         memset(&clustered, 0, sizeof(clustered));
         prisma::Rect pixel;
         pixel.width = 1;
@@ -435,13 +442,13 @@ int main(int argc, char** argv)
         {
             driver->beginFrame();
             driver->updateBuffer(frameBuffer, 0, &warmFrame, sizeof(warmFrame));
-            driver->updateBuffer(objectBuffer, 0, &warmObject, sizeof(warmObject));
             driver->updateBuffer(clusteredBuffer, 0, &clustered, sizeof(clustered));
             driver->beginRenderPass(pass);
             driver->setScissor(pixel);
             zenapp::bindIbl(driver, ibl);
             driver->bindUniformBuffer(0, frameBuffer, 0, sizeof(FrameUniforms));
-            driver->bindUniformBuffer(2, objectBuffer, 0, sizeof(ObjectUniforms));
+            driver->bindUniformBuffer(2, objectBuffer, identityNode * objectStride,
+                    sizeof(ObjectUniforms));
             driver->bindUniformBuffer(3, clusteredBuffer, offsetof(zenapp::ClusteredBuffers, cluster),
                     sizeof(zenapp::ClusterUniforms));
             driver->bindUniformBuffer(4, clusteredBuffer, offsetof(zenapp::ClusteredBuffers, lights),
@@ -612,11 +619,7 @@ int main(int argc, char** argv)
 
         unsigned triangles = 0;
         for (size_t i = 0; i < draws.size(); ++i)
-        {
-            memcpy(objectBytes.data() + i * objectStride, &nodeUniforms[draws[i].node],
-                    sizeof(ObjectUniforms));
             triangles += model.primitives[draws[i].primitive].indexCount / 3;
-        }
         visibleTriangles = triangles;
 
         depthOrder.clear();
@@ -653,9 +656,6 @@ int main(int argc, char** argv)
         stats.phase(1);
         driver->beginFrame();
         driver->updateBuffer(frameBuffer, 0, &frame, sizeof(frame));
-        if (draws.size() > 0)
-            driver->updateBuffer(objectBuffer, 0, objectBytes.data(),
-                    static_cast<std::uint32_t>(draws.size() * objectStride));
         if (lightsMoved) driver->updateBuffer(clusteredBuffer, 0, &clustered, sizeof(clustered));
         overlay.begin(static_cast<unsigned>(width), static_cast<unsigned>(height));
         if (overlayReady && showStats)
@@ -701,7 +701,7 @@ int main(int argc, char** argv)
                     depthKind = kind;
                 }
                 if (draw.mask) zenapp::bindGltfMaterial(driver, gpu, model, draw.material);
-                driver->bindUniformBuffer(2, objectBuffer, static_cast<std::uint32_t>(i * objectStride),
+                driver->bindUniformBuffer(2, objectBuffer, draw.node * objectStride,
                         sizeof(ObjectUniforms));
                 zenapp::drawGltfPrimitive(driver, gpu, model.primitives[draw.primitive]);
             }
@@ -726,7 +726,7 @@ int main(int argc, char** argv)
                 zenapp::bindGltfMaterial(driver, gpu, model, draw.material);
                 boundMaterial = draw.material;
             }
-            driver->bindUniformBuffer(2, objectBuffer, static_cast<std::uint32_t>(i * objectStride),
+            driver->bindUniformBuffer(2, objectBuffer, draw.node * objectStride,
                     sizeof(ObjectUniforms));
             zenapp::drawGltfPrimitive(driver, gpu, model.primitives[draw.primitive]);
         }
