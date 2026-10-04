@@ -1,5 +1,12 @@
 #include "Check.h"
+#ifdef PRISMA_GLES
+#include "OpenGLES3.h"
+using namespace gles;
+#define SHADER_HEADER "#version 300 es\nprecision mediump float;\n"
+#else
 #include "OpenGL.h"
+#define SHADER_HEADER "#version 460 core\n"
+#endif
 #include "platform.h"
 #include "prisma/rhi/Driver.h"
 
@@ -35,13 +42,12 @@ void framebufferSize(void* user, std::uint32_t* width, std::uint32_t* height)
     *height = static_cast<std::uint32_t>(h);
 }
 
-const char* kVertexSource = "#version 460 core\n"
-                            "layout(location = 0) in vec2 aPosition;\n"
-                            "void main() { gl_Position = vec4(aPosition, 0.0, 1.0); }\n";
+const char* kVertexSource =
+        SHADER_HEADER "layout(location = 0) in vec2 aPosition;\n"
+                      "void main() { gl_Position = vec4(aPosition, 0.0, 1.0); }\n";
 
-const char* kFragmentSource = "#version 460 core\n"
-                              "out vec4 oColor;\n"
-                              "void main() { oColor = vec4(1.0, 0.0, 0.0, 1.0); }\n";
+const char* kFragmentSource = SHADER_HEADER "out vec4 oColor;\n"
+                                            "void main() { oColor = vec4(1.0, 0.0, 0.0, 1.0); }\n";
 
 const float kCoveringTriangle[6] = { -1.0f, -1.0f, 3.0f, -1.0f, -1.0f, 3.0f };
 
@@ -77,12 +83,23 @@ int main()
     config.y = WINDOW_POS_CENTERED;
     config.monitor = MONITOR_CURRENT;
     config.render = RENDER_GL;
+    config.gl.debug = true;
+
+#ifdef PRISMA_GLES
+    config.gl.profile = GL_PROFILE_ES;
+    config.gl.major = 3;
+    PlatformWindow* window = nullptr;
+    for (int minor = 2; minor >= 0 && !window; --minor)
+    {
+        config.gl.minor = minor;
+        window = window_create(&config);
+    }
+#else
     config.gl.profile = GL_PROFILE_CORE;
     config.gl.major = 4;
     config.gl.minor = 6;
-    config.gl.debug = true;
-
     PlatformWindow* window = window_create(&config);
+#endif
     if (!window)
     {
         printf("window: %s\n", platform_get_error());
@@ -95,6 +112,7 @@ int main()
     gl.makeCurrent = makeCurrent;
     gl.swapBuffers = swapBuffers;
     gl.framebufferSize = framebufferSize;
+    gl.getProcAddress = gl_proc_address;
 
     DriverDesc desc;
     desc.type = DriverType::OpenGL;
@@ -113,10 +131,20 @@ int main()
         CHECK(driver->caps().maxTextureSize >= 2048);
         CHECK(driver->caps().maxColorTargets >= 4);
 
-        messages = 0;
-        glEnable(0xDEAD);
-        CHECK(messages == 1);
-        CHECK(strstr(lastMessage, "GL error") != nullptr);
+#ifdef PRISMA_GLES
+        CHECK(driver->caps().gles);
+        CHECK(driver->caps().versionMajor == 3);
+#else
+        CHECK(!driver->caps().gles);
+        CHECK(driver->caps().versionMajor == 4 && driver->caps().versionMinor == 6);
+#endif
+        if (driver->caps().debugOutput)
+        {
+            messages = 0;
+            glEnable(0xDEAD);
+            CHECK(messages == 1);
+            CHECK(strstr(lastMessage, "GL error") != nullptr);
+        }
 
         messages = 0;
         ShaderDesc broken;

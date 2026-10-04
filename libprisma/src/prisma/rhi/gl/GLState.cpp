@@ -1,6 +1,6 @@
 #include "prisma/rhi/gl/GLState.h"
 
-#include "OpenGL.h"
+#include "prisma/rhi/gl/GL.h"
 
 namespace prisma
 {
@@ -41,7 +41,7 @@ void GLState::clearColor(const float color[4])
 void GLState::clearDepth(float depth)
 {
     if ((known_ & kClearDepth) && clearDepth_ == depth) return;
-    glClearDepth(depth);
+    glClearDepthf(depth);
     clearDepth_ = depth;
     known_ |= kClearDepth;
 }

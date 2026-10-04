@@ -28,8 +28,10 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    printf("OpenGL driver: max texture %u, max color targets %u\n", driver->caps().maxTextureSize,
-            driver->caps().maxColorTargets);
+    const prisma::Caps& caps = driver->caps();
+    printf("%s %u.%u: max texture %u, max color targets %u, compute %d, debug %d\n",
+            caps.gles ? "OpenGL ES" : "OpenGL", caps.versionMajor, caps.versionMinor,
+            caps.maxTextureSize, caps.maxColorTargets, caps.compute, caps.debugOutput);
 
     prisma::RenderPassDesc pass;
     pass.clearColor[0] = 0.10f;

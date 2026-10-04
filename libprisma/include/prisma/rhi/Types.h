@@ -30,6 +30,7 @@ struct GLPlatform
     bool (*makeCurrent)(void* user) = nullptr;
     void (*swapBuffers)(void* user) = nullptr;
     void (*framebufferSize)(void* user, std::uint32_t* width, std::uint32_t* height) = nullptr;
+    void* (*getProcAddress)(const char* name) = nullptr;
 };
 
 struct DriverDesc

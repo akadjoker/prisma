@@ -14,5 +14,8 @@ endif()
 
 if(PRISMA_OPENGL)
   target_compile_definitions(prisma PRIVATE PRISMA_HAS_OPENGL)
+  if(PRISMA_GLES)
+    target_compile_definitions(prisma PUBLIC PRISMA_GLES)
+  endif()
   target_link_libraries(prisma PRIVATE gl)
 endif()

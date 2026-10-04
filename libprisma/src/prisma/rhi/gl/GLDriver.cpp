@@ -1,8 +1,7 @@
 #include "prisma/rhi/Driver.h"
 #include "prisma/rhi/HandleCast.h"
+#include "prisma/rhi/gl/GL.h"
 #include "prisma/rhi/gl/GLState.h"
-
-#include "OpenGL.h"
 
 #include <stdio.h>
 
@@ -68,10 +67,10 @@ GLenum toGLTopology(Topology topology)
 class GLDriver final : public Driver
 {
 public:
-    GLDriver(const GLPlatform& platform, void (*log)(const char*), bool debug)
+    GLDriver(const GLPlatform& platform, void (*log)(const char*), bool debug, int major, int minor)
             : platform_(platform),
               log_(log),
-              debug_(debug)
+              debug_(debug && glDebugMessageCallback != nullptr)
     {
         if (debug_)
         {
@@ -87,7 +86,15 @@ public:
         caps_.maxTextureSize = static_cast<std::uint32_t>(value);
         glGetIntegerv(GL_MAX_DRAW_BUFFERS, &value);
         caps_.maxColorTargets = static_cast<std::uint32_t>(value);
+#ifdef PRISMA_GLES
+        caps_.gles = true;
+        caps_.compute = major > 3 || (major == 3 && minor >= 1);
+#else
         caps_.compute = true;
+#endif
+        caps_.versionMajor = static_cast<std::uint32_t>(major);
+        caps_.versionMinor = static_cast<std::uint32_t>(minor);
+        caps_.debugOutput = debug_;
     }
 
     ~GLDriver() override
@@ -347,18 +354,30 @@ Driver* createGLDriver(const DriverDesc& desc, DriverError* error)
         *error = DriverError::ContextFailed;
         return nullptr;
     }
-    if (!initOpenGLExtensions(false))
+#ifdef PRISMA_GLES
+    glesSetProcAddressLoader(gl->getProcAddress);
+    const bool loaded = initOpenGLExtensions();
+    const int major = glESExt::majorVersion;
+    const int minor = glESExt::minorVersion;
+    const bool versionOk = major >= 3;
+#else
+    const bool loaded = initOpenGLExtensions(false);
+    const int major = glExt::majorVersion;
+    const int minor = glExt::minorVersion;
+    const bool versionOk = major > 4 || (major == 4 && minor >= 6);
+#endif
+    if (!loaded)
     {
         *error = DriverError::LoaderFailed;
         return nullptr;
     }
-    if (glExt::majorVersion < 4 || (glExt::majorVersion == 4 && glExt::minorVersion < 6))
+    if (!versionOk)
     {
         *error = DriverError::VersionTooLow;
         return nullptr;
     }
     *error = DriverError::None;
-    return new GLDriver(*gl, desc.log, desc.debug);
+    return new GLDriver(*gl, desc.log, desc.debug, major, minor);
 }
 
 } // namespace prisma

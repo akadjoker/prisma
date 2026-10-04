@@ -8,6 +8,12 @@
 namespace zengl
 {
 
+#ifdef PRISMA_GLES
+#define ZENGL_SHADER_HEADER "#version 300 es\nprecision mediump float;\n"
+#else
+#define ZENGL_SHADER_HEADER "#version 460 core\n"
+#endif
+
 #ifdef NDEBUG
 const bool kDebug = false;
 #else
@@ -43,13 +49,25 @@ inline PlatformWindow* openWindow(const char* title)
     config.y = WINDOW_POS_CENTERED;
     config.monitor = MONITOR_CURRENT;
     config.render = RENDER_GL;
-    config.gl.profile = GL_PROFILE_CORE;
-    config.gl.major = 4;
-    config.gl.minor = 6;
     config.gl.debug = kDebug;
     config.resizable = true;
     config.vsync = true;
+#ifdef PRISMA_GLES
+    config.gl.profile = GL_PROFILE_ES;
+    config.gl.major = 3;
+    for (int minor = 2; minor >= 0; --minor)
+    {
+        config.gl.minor = minor;
+        PlatformWindow* window = window_create(&config);
+        if (window) return window;
+    }
+    return nullptr;
+#else
+    config.gl.profile = GL_PROFILE_CORE;
+    config.gl.major = 4;
+    config.gl.minor = 6;
     return window_create(&config);
+#endif
 }
 
 inline prisma::Driver* createDriver(PlatformWindow* window)
@@ -59,6 +77,7 @@ inline prisma::Driver* createDriver(PlatformWindow* window)
     gl.makeCurrent = makeCurrent;
     gl.swapBuffers = swapBuffers;
     gl.framebufferSize = framebufferSize;
+    gl.getProcAddress = gl_proc_address;
 
     prisma::DriverDesc desc;
     desc.type = prisma::DriverType::OpenGL;
