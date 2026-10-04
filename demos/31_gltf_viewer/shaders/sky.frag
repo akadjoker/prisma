@@ -19,7 +19,7 @@ layout(location = 0) out vec4 oColor;
 
 void main()
 {
-    vec3 color = textureLod(uSky, normalize(vRay), uExposure.y).rgb * uExposure.x;
+    vec3 color = textureLod(uSky, normalize(vRay), uExposure.y).rgb * uExposure.x * uExposure.w;
     color = tonemapFilmic(color);
     oColor = vec4(pow(color, vec3(1.0 / 2.2)), 1.0);
 }

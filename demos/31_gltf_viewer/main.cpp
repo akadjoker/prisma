@@ -42,11 +42,16 @@ struct Draw
     bool doubleSided;
 };
 
-Math::Mat4 nodeMatrix(const zenapp::GltfNode& node)
+Math::Mat4 nodeMatrix(const float* world)
 {
     Math::Mat4 m;
-    memcpy(m.Data(), node.world, sizeof(node.world));
+    memcpy(m.Data(), world, 16 * sizeof(float));
     return m;
+}
+
+Math::Mat4 nodeMatrix(const zenapp::GltfNode& node)
+{
+    return nodeMatrix(node.world);
 }
 
 Math::Box modelBounds(const zenapp::GltfModel& model)
@@ -79,7 +84,14 @@ float lightRadius(const zenapp::GltfLight& light, float intensity)
     return radius < 1.0f ? 1.0f : (radius > 60.0f ? 60.0f : radius);
 }
 
-void addModelLights(const zenapp::GltfModel& model, float scale, zenapp::LightSet* set)
+float numberArgument(int argc, char** argv, const char* name, float fallback)
+{
+    const char* value = zenapp::argumentValue(argc, argv, name);
+    return value ? static_cast<float>(atof(value)) : fallback;
+}
+
+void addModelLights(const zenapp::GltfModel& model, float scale, float sunScale,
+        zenapp::LightSet* set)
 {
     for (const zenapp::GltfLight& light: model.lights)
     {
@@ -87,7 +99,7 @@ void addModelLights(const zenapp::GltfModel& model, float scale, zenapp::LightSe
         if (light.type == zenapp::GltfLight::Type::Directional)
         {
             const float toLight[3] = { -light.direction[0], -light.direction[1], -light.direction[2] };
-            zenapp::setSunLight(set, toLight, light.color, intensity);
+            zenapp::setSunLight(set, toLight, light.color, light.intensity * sunScale);
         }
         else if (light.type == zenapp::GltfLight::Type::Spot)
             zenapp::addSpotLight(set, light.position, light.direction, light.color, intensity,
@@ -115,10 +127,13 @@ int main(int argc, char** argv)
                 PRISMA_MODELS_DIR);
     const char* exposureArgument = zenapp::argumentValue(argc, argv, "exposure");
     const float exposure = exposureArgument ? static_cast<float>(atof(exposureArgument)) : 1.0f;
-    const char* lightArgument = zenapp::argumentValue(argc, argv, "lightscale");
-    const float lightScale = lightArgument ? static_cast<float>(atof(lightArgument)) : 1.0f;
+    const float lightScale = numberArgument(argc, argv, "lightscale", 1.0f);
+    const float sunScale = numberArgument(argc, argv, "sunscale", 1.0f);
+    const float iblScale = numberArgument(argc, argv, "ibl", 1.0f);
+    const float skyScale = numberArgument(argc, argv, "sky", 1.0f);
     const char* skipArgument = zenapp::argumentValue(argc, argv, "skipmips");
     const unsigned skipMips = skipArgument ? static_cast<unsigned>(atoi(skipArgument)) : 0;
+    const bool useFileCamera = zenapp::hasArgument(argc, argv, "camera");
 
     zenapp::GltfModel model;
     if (!zenapp::loadGltf(modelPath, &model))
@@ -270,7 +285,8 @@ int main(int argc, char** argv)
     const Math::Vec3 center = bounds.Center();
     const float radius = bounds.Extents().Length();
     zenapp::Froxelizer froxelizer;
-    froxelizer.setDepthRange(radius * 0.3f, radius * 8.0f);
+    const bool fileCamera = useFileCamera && model.camera.valid;
+    froxelizer.setDepthRange(fileCamera ? 3.0f : radius * 0.3f, fileCamera ? 150.0f : radius * 8.0f);
 
     zenapp::LightSet lights;
     zenapp::clearLights(&lights);
@@ -280,7 +296,7 @@ int main(int argc, char** argv)
         const float color[3] = { 1.0f, 0.96f, 0.9f };
         zenapp::setSunLight(&lights, toLight, color, 2.0f);
     }
-    addModelLights(model, lightScale, &lights);
+    addModelLights(model, lightScale, sunScale, &lights);
 
     prisma::RenderPassDesc pass;
     pass.clearColor[0] = pass.clearColor[1] = pass.clearColor[2] = 0.0f;
@@ -300,14 +316,31 @@ int main(int argc, char** argv)
                 height > 0 ? static_cast<float>(width) / static_cast<float>(height) : 1.0f;
         const float time = still ? 0.0f : static_cast<float>(time_seconds());
 
-        const float fov = 0.7f;
-        const float nearPlane = radius * 0.02f;
-        const float farPlane = radius * 20.0f;
-        const float angle = 0.6f + 0.25f * time;
-        const float distance = radius * 2.4f;
-        const Math::Vec3 eye(center.x + distance * sinf(angle), center.y + radius * 0.35f,
-                center.z + distance * cosf(angle));
-        const Math::Mat4 view = Math::Mat4::LookAt(eye, center, Math::Vec3(0.0f, 1.0f, 0.0f));
+        float fov = 0.7f;
+        float nearPlane = radius * 0.02f;
+        float farPlane = radius * 20.0f;
+        Math::Vec3 eye;
+        Math::Mat4 view;
+        if (fileCamera)
+        {
+            const Math::Mat4 cameraWorld = nodeMatrix(model.camera.world);
+            fov = model.camera.yfov;
+            nearPlane = model.camera.nearPlane;
+            farPlane = model.camera.farPlane < 400.0f ? model.camera.farPlane : 400.0f;
+            eye = Math::Vec3(model.camera.world[12], model.camera.world[13], model.camera.world[14]);
+            const Math::Vec3 forward(-model.camera.world[8], -model.camera.world[9],
+                    -model.camera.world[10]);
+            view = Math::Mat4::LookAt(eye, eye + forward, Math::Vec3(0.0f, 1.0f, 0.0f));
+            (void) cameraWorld;
+        }
+        else
+        {
+            const float angle = 0.6f + 0.25f * time;
+            const float distance = radius * 2.4f;
+            eye = Math::Vec3(center.x + distance * sinf(angle), center.y + radius * 0.35f,
+                    center.z + distance * cosf(angle));
+            view = Math::Mat4::LookAt(eye, center, Math::Vec3(0.0f, 1.0f, 0.0f));
+        }
         const Math::Mat4 projection = zenapp::perspectiveZeroToOne(fov, aspect, nearPlane, farPlane);
         const Math::Frustum frustum = Math::Frustum::FromViewProjection(
                 Math::Mat4::Perspective(fov, aspect, nearPlane, farPlane) * view);
@@ -368,8 +401,8 @@ int main(int argc, char** argv)
         frame.camera[3] = 1.0f;
         frame.exposure[0] = exposure;
         frame.exposure[1] = 0.0f;
-        frame.exposure[2] = 1.0f;
-        frame.exposure[3] = 0.0f;
+        frame.exposure[2] = iblScale;
+        frame.exposure[3] = skyScale;
 
         for (size_t i = 0; i < draws.size(); ++i)
         {
