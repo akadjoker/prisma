@@ -14,6 +14,9 @@ struct Caps
     bool debugOutput = false;
     bool floatColorTargets = false;
     bool wireframe = false;
+    bool textureBC = false;
+    bool textureETC2 = false;
+    bool textureASTC = false;
     bool occlusionQueries = false;
     bool timerQueries = false;
     std::uint32_t maxTextureSize = 0;

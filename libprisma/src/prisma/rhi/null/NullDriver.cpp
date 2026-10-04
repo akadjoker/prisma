@@ -35,6 +35,7 @@ public:
 
     void updateBuffer(BufferHandle, std::uint32_t, const void*, std::uint32_t) override {}
     void updateTexture(TextureHandle, std::uint32_t, std::uint32_t, const void*) override {}
+    void updateTextureRegion(TextureHandle, const TextureRegion&, const void*) override {}
     void generateMipmaps(TextureHandle) override {}
     void destroy(BufferHandle handle) override { buffers_.erase(handleCast<Slot>(handle)); }
     void destroy(ShaderHandle handle) override { shaders_.erase(handleCast<Slot>(handle)); }

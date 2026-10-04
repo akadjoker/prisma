@@ -1852,6 +1852,172 @@ int main(int argc, char** argv)
         driver->destroy(msaaColor);
         driver->destroy(wedge);
 
+        {
+            unsigned char regionTexels[4 * 4 * 4];
+            for (int i = 0; i < 16; ++i)
+            {
+                regionTexels[i * 4 + 0] = 255;
+                regionTexels[i * 4 + 1] = 0;
+                regionTexels[i * 4 + 2] = 0;
+                regionTexels[i * 4 + 3] = 255;
+            }
+            unsigned char bluePatch[2 * 3 * 4];
+            for (int i = 0; i < 6; ++i)
+            {
+                bluePatch[i * 4 + 0] = 0;
+                bluePatch[i * 4 + 1] = 0;
+                bluePatch[i * 4 + 2] = 255;
+                bluePatch[i * 4 + 3] = 255;
+            }
+            TextureDesc regionDesc;
+            regionDesc.width = 4;
+            regionDesc.height = 4;
+            regionDesc.data = regionTexels;
+            const TextureHandle regionTexture = driver->createTexture(regionDesc);
+            CHECK(regionTexture.valid());
+
+            TextureRegion region;
+            region.x = 2;
+            region.y = 1;
+            region.width = 2;
+            region.height = 3;
+            messages = 0;
+            driver->updateTextureRegion(regionTexture, region, bluePatch);
+            CHECK(messages == 0);
+            TextureRegion outside = region;
+            outside.width = 3;
+            driver->updateTextureRegion(regionTexture, outside, bluePatch);
+            CHECK(messages == 1);
+
+            const unsigned char kRedBlock[8] = { 0x00, 0xF8, 0x00, 0xF8, 0, 0, 0, 0 };
+            const unsigned char kGreenBlock[8] = { 0xE0, 0x07, 0xE0, 0x07, 0, 0, 0, 0 };
+            const unsigned char kBlueBlock[8] = { 0x1F, 0x00, 0x1F, 0x00, 0, 0, 0, 0 };
+            unsigned char bcData[16];
+            memcpy(bcData, kRedBlock, 8);
+            memcpy(bcData + 8, kGreenBlock, 8);
+            const unsigned char kEtcData[16] = { 0xFF, 0x00, 0x00, 0x00, 0, 0, 0, 0, 0x00, 0xFF,
+                0x00, 0x00, 0, 0, 0, 0 };
+            const unsigned char kAstcData[16] = { 0xFC, 0xFD, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+                0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF };
+
+            TextureDesc bcDesc;
+            bcDesc.format = TextureFormat::BC1;
+            bcDesc.width = 8;
+            bcDesc.height = 4;
+            bcDesc.mipLevels = 2;
+            bcDesc.data = bcData;
+            TextureDesc etcDesc = bcDesc;
+            etcDesc.format = TextureFormat::ETC2RGB8;
+            etcDesc.mipLevels = 1;
+            etcDesc.data = kEtcData;
+            TextureDesc astcDesc;
+            astcDesc.format = TextureFormat::ASTC4x4;
+            astcDesc.width = 4;
+            astcDesc.height = 4;
+            astcDesc.data = kAstcData;
+
+            messages = 0;
+            const TextureHandle bcTexture = driver->createTexture(bcDesc);
+            const TextureHandle etcTexture = driver->createTexture(etcDesc);
+            const TextureHandle astcTexture = driver->createTexture(astcDesc);
+            const Caps& formats = driver->caps();
+            CHECK(formats.textureBC || formats.textureETC2);
+            CHECK(bcTexture.valid() == formats.textureBC);
+            CHECK(etcTexture.valid() == formats.textureETC2);
+            CHECK(astcTexture.valid() == formats.textureASTC);
+            CHECK(messages == (formats.textureBC ? 0 : 1) + (formats.textureETC2 ? 0 : 1) +
+                                      (formats.textureASTC ? 0 : 1));
+            printf("compressed textures: BC %d, ETC2 %d, ASTC %d\n", formats.textureBC,
+                    formats.textureETC2, formats.textureASTC);
+
+            messages = 0;
+            TextureDesc targetDesc = formats.textureBC ? bcDesc : etcDesc;
+            targetDesc.data = nullptr;
+            targetDesc.usage = kTextureSampled | kTextureRenderTarget;
+            CHECK(!driver->createTexture(targetDesc).valid());
+            CHECK(messages == 1);
+
+            messages = 0;
+            window_begin_frame(window);
+            driver->beginFrame();
+            driver->beginRenderPass(black);
+            driver->bindPipeline(textured);
+            driver->bindVertexBuffer(0, buffer, 0);
+            driver->bindTexture(3, regionTexture, nearest);
+            driver->draw(3, 0);
+            driver->endRenderPass();
+            CHECK(pixelIs(280, 210, 0, 0, 255));
+            CHECK(pixelIs(200, 90, 0, 0, 255));
+            CHECK(pixelIs(280, 30, 255, 0, 0));
+            CHECK(pixelIs(120, 150, 255, 0, 0));
+
+            if (bcTexture.valid())
+            {
+                driver->updateTexture(bcTexture, 1, 0, kBlueBlock);
+                driver->beginRenderPass(black);
+                driver->bindPipeline(textured);
+                driver->bindVertexBuffer(0, buffer, 0);
+                driver->bindTexture(3, bcTexture, nearest);
+                driver->draw(3, 0);
+                driver->endRenderPass();
+                CHECK(pixelIs(80, 120, 255, 0, 0));
+                CHECK(pixelIs(240, 120, 0, 255, 0));
+                CHECK(messages == 0);
+
+                TextureRegion block;
+                block.x = 4;
+                block.width = 4;
+                block.height = 4;
+                driver->updateTextureRegion(bcTexture, block, kBlueBlock);
+                CHECK(messages == 0);
+                block.x = 2;
+                driver->updateTextureRegion(bcTexture, block, kBlueBlock);
+                CHECK(messages == 1);
+                driver->generateMipmaps(bcTexture);
+                CHECK(messages == 2);
+                messages = 0;
+
+                driver->beginRenderPass(black);
+                driver->bindPipeline(textured);
+                driver->bindVertexBuffer(0, buffer, 0);
+                driver->bindTexture(3, bcTexture, nearest);
+                driver->draw(3, 0);
+                driver->endRenderPass();
+                CHECK(pixelIs(80, 120, 255, 0, 0));
+                CHECK(pixelIs(240, 120, 0, 0, 255));
+            }
+            if (etcTexture.valid())
+            {
+                driver->beginRenderPass(black);
+                driver->bindPipeline(textured);
+                driver->bindVertexBuffer(0, buffer, 0);
+                driver->bindTexture(3, etcTexture, nearest);
+                driver->draw(3, 0);
+                driver->endRenderPass();
+                CHECK(pixelIs(80, 120, 255, 2, 2, 3));
+                CHECK(pixelIs(240, 120, 2, 255, 2, 3));
+            }
+            if (astcTexture.valid())
+            {
+                driver->beginRenderPass(black);
+                driver->bindPipeline(textured);
+                driver->bindVertexBuffer(0, buffer, 0);
+                driver->bindTexture(3, astcTexture, nearest);
+                driver->draw(3, 0);
+                driver->endRenderPass();
+                CHECK(pixelIs(160, 120, 255, 0, 0));
+            }
+            driver->endFrame();
+            driver->present();
+            CHECK(messages == 0);
+            if (messages) printf("unexpected: %s\n", lastMessage);
+
+            driver->destroy(astcTexture);
+            driver->destroy(etcTexture);
+            driver->destroy(bcTexture);
+            driver->destroy(regionTexture);
+        }
+
         CHECK(driver->caps().occlusionQueries);
         const QueryHandle visibleQuery = driver->createQuery(QueryType::Occlusion);
         const QueryHandle hiddenQuery = driver->createQuery(QueryType::Occlusion);

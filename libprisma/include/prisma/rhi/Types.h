@@ -111,7 +111,30 @@ enum class TextureFormat : std::uint8_t
     RGBA16F,
     R11G11B10F,
     Depth32F,
-    Depth24Stencil8
+    Depth24Stencil8,
+    BC1,
+    BC1Srgb,
+    BC2,
+    BC2Srgb,
+    BC3,
+    BC3Srgb,
+    BC4,
+    BC5,
+    BC6H,
+    BC7,
+    BC7Srgb,
+    ETC2RGB8,
+    ETC2RGB8Srgb,
+    ETC2RGBA8,
+    ETC2RGBA8Srgb,
+    EACR11,
+    EACRG11,
+    ASTC4x4,
+    ASTC4x4Srgb,
+    ASTC6x6,
+    ASTC6x6Srgb,
+    ASTC8x8,
+    ASTC8x8Srgb
 };
 
 enum TextureUsage : std::uint32_t
@@ -141,6 +164,16 @@ struct TextureDesc
     const void* data = nullptr;
     bool generateMipmaps = false;
     const char* debugName = nullptr;
+};
+
+struct TextureRegion
+{
+    std::uint32_t mip = 0;
+    std::uint32_t layer = 0;
+    std::uint32_t x = 0;
+    std::uint32_t y = 0;
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
 };
 
 enum class CompareOp : std::uint8_t

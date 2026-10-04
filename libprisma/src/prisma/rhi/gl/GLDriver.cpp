@@ -1,4 +1,5 @@
 #include "prisma/rhi/Driver.h"
+#include "prisma/rhi/Format.h"
 #include "prisma/rhi/HandleCast.h"
 #include "prisma/rhi/gl/GL.h"
 #include "prisma/rhi/gl/GLState.h"
@@ -75,21 +76,6 @@ std::uint32_t mipSize(std::uint32_t size, std::uint32_t mip)
     return reduced > 0 ? reduced : 1;
 }
 
-std::uint32_t bytesPerPixel(TextureFormat format)
-{
-    switch (format)
-    {
-        case TextureFormat::R8:
-            return 1;
-        case TextureFormat::RG8:
-            return 2;
-        case TextureFormat::RGBA16F:
-            return 8;
-        default:
-            return 4;
-    }
-}
-
 GLenum toGLTarget(TextureType type)
 {
     switch (type)
@@ -136,11 +122,6 @@ bool sameTargets(const TargetFormats& a, const TargetFormats& b)
     return true;
 }
 
-bool isDepthFormat(TextureFormat format)
-{
-    return format == TextureFormat::Depth32F || format == TextureFormat::Depth24Stencil8;
-}
-
 bool validSamples(const TextureDesc& desc, std::uint32_t maxSamples)
 {
     if (desc.samples == 1) return true;
@@ -185,6 +166,52 @@ GLFormat toGLFormat(TextureFormat format)
             return { GL_DEPTH_COMPONENT32F, GL_DEPTH_COMPONENT, GL_FLOAT };
         case TextureFormat::Depth24Stencil8:
             return { GL_DEPTH24_STENCIL8, GL_DEPTH_STENCIL, GL_UNSIGNED_INT_24_8 };
+        case TextureFormat::BC1:
+            return { 0x83F1, 0, 0 };
+        case TextureFormat::BC1Srgb:
+            return { 0x8C4D, 0, 0 };
+        case TextureFormat::BC2:
+            return { 0x83F2, 0, 0 };
+        case TextureFormat::BC2Srgb:
+            return { 0x8C4E, 0, 0 };
+        case TextureFormat::BC3:
+            return { 0x83F3, 0, 0 };
+        case TextureFormat::BC3Srgb:
+            return { 0x8C4F, 0, 0 };
+        case TextureFormat::BC4:
+            return { 0x8DBB, 0, 0 };
+        case TextureFormat::BC5:
+            return { 0x8DBD, 0, 0 };
+        case TextureFormat::BC6H:
+            return { 0x8E8F, 0, 0 };
+        case TextureFormat::BC7:
+            return { 0x8E8C, 0, 0 };
+        case TextureFormat::BC7Srgb:
+            return { 0x8E8D, 0, 0 };
+        case TextureFormat::ETC2RGB8:
+            return { 0x9274, 0, 0 };
+        case TextureFormat::ETC2RGB8Srgb:
+            return { 0x9275, 0, 0 };
+        case TextureFormat::ETC2RGBA8:
+            return { 0x9278, 0, 0 };
+        case TextureFormat::ETC2RGBA8Srgb:
+            return { 0x9279, 0, 0 };
+        case TextureFormat::EACR11:
+            return { 0x9270, 0, 0 };
+        case TextureFormat::EACRG11:
+            return { 0x9272, 0, 0 };
+        case TextureFormat::ASTC4x4:
+            return { 0x93B0, 0, 0 };
+        case TextureFormat::ASTC4x4Srgb:
+            return { 0x93D0, 0, 0 };
+        case TextureFormat::ASTC6x6:
+            return { 0x93B4, 0, 0 };
+        case TextureFormat::ASTC6x6Srgb:
+            return { 0x93D4, 0, 0 };
+        case TextureFormat::ASTC8x8:
+            return { 0x93B7, 0, 0 };
+        case TextureFormat::ASTC8x8Srgb:
+            return { 0x93D7, 0, 0 };
     }
     return { GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE };
 }
@@ -485,6 +512,28 @@ public:
         caps_.debugOutput = debug_;
         caps_.occlusionQueries = true;
 #ifdef PRISMA_GLES
+        caps_.textureBC = (hasExtension("EXT_texture_compression_s3tc") ||
+                                  hasExtension("WEBGL_compressed_texture_s3tc")) &&
+                          (hasExtension("EXT_texture_compression_s3tc_srgb") ||
+                                  hasExtension("WEBGL_compressed_texture_s3tc_srgb")) &&
+                          hasExtension("EXT_texture_compression_rgtc") &&
+                          hasExtension("EXT_texture_compression_bptc");
+#ifdef __EMSCRIPTEN__
+        caps_.textureETC2 = hasExtension("WEBGL_compressed_texture_etc");
+#else
+        caps_.textureETC2 = true;
+#endif
+        caps_.textureASTC = major > 3 || (major == 3 && minor >= 2) ||
+                            hasExtension("KHR_texture_compression_astc_ldr") ||
+                            hasExtension("WEBGL_compressed_texture_astc");
+#else
+        caps_.textureBC = hasExtension("EXT_texture_compression_s3tc") &&
+                          (hasExtension("EXT_texture_sRGB") ||
+                                  hasExtension("EXT_texture_compression_s3tc_srgb"));
+        caps_.textureETC2 = true;
+        caps_.textureASTC = hasExtension("KHR_texture_compression_astc_ldr");
+#endif
+#ifdef PRISMA_GLES
         caps_.timerQueries = glESExt::EXT_disjoint_timer_query;
 #else
         caps_.timerQueries = true;
@@ -617,6 +666,12 @@ public:
             log("createTexture: invalid format or size");
             return TextureHandle();
         }
+        if (!supportedFormat(desc))
+        {
+            log("createTexture: compressed format not supported, or used as a render target or "
+                "as a 3D texture");
+            return TextureHandle();
+        }
         if (!validSamples(desc, caps_.maxSamples))
         {
             log("createTexture: a multisampled texture must be a 2D render target only, with one "
@@ -675,11 +730,11 @@ public:
         {
             const std::uint32_t images =
                     desc.type == TextureType::Texture3D ? 1 : layerCount(texture, 0);
-            const std::size_t imageBytes =
-                    static_cast<std::size_t>(desc.width) * desc.height * bytesPerPixel(desc.format);
+            const std::size_t imageBytes = levelBytes(desc.format, desc.width, desc.height);
             for (std::uint32_t i = 0; i < images; ++i)
                 uploadLevel(texture, 0, i, static_cast<const char*>(desc.data) + i * imageBytes);
-            if (desc.generateMipmaps && texture.mipLevels > 1) glGenerateMipmap(texture.target);
+            if (desc.generateMipmaps && texture.mipLevels > 1 && !isCompressedFormat(desc.format))
+                glGenerateMipmap(texture.target);
         }
         label(GL_TEXTURE, texture.id, desc.debugName);
         return handleCast<TextureHandle>(textures_.insert(texture));
@@ -699,12 +754,31 @@ public:
         uploadLevel(*texture, mip, layer, data);
     }
 
+    void updateTextureRegion(TextureHandle handle, const TextureRegion& region,
+            const void* data) override
+    {
+        const GLTexture* texture = textures_.get(handleCast<TextureSlot>(handle));
+        if (passActive_ || !texture || !data || isDepthFormat(texture->format) ||
+                texture->samples > 1 || region.mip >= texture->mipLevels ||
+                region.layer >= layerCount(*texture, region.mip) ||
+                !validRegion(texture->format, mipSize(texture->width, region.mip),
+                        mipSize(texture->height, region.mip), region))
+        {
+            log("updateTextureRegion: invalid handle, mip, layer or rectangle, or called inside a "
+                "render pass");
+            return;
+        }
+        upload(*texture, region.mip, region.layer, region.x, region.y, region.width, region.height,
+                1, data);
+    }
+
     void generateMipmaps(TextureHandle handle) override
     {
         const GLTexture* texture = textures_.get(handleCast<TextureSlot>(handle));
-        if (passActive_ || !texture || isDepthFormat(texture->format) || texture->samples > 1)
+        if (passActive_ || !texture || isDepthFormat(texture->format) || texture->samples > 1 ||
+                isCompressedFormat(texture->format))
         {
-            log("generateMipmaps: invalid handle, or called inside a render pass");
+            log("generateMipmaps: invalid handle or format, or called inside a render pass");
             return;
         }
         if (texture->mipLevels < 2) return;
@@ -1339,35 +1413,76 @@ private:
         return false;
     }
 
+
+    bool supportedFormat(const TextureDesc& desc) const
+    {
+        const FormatFamily family = formatFamily(desc.format);
+        if (family == FormatFamily::Plain) return true;
+        if ((desc.usage & kTextureRenderTarget) || desc.type == TextureType::Texture3D)
+            return false;
+        if (family == FormatFamily::BC) return caps_.textureBC;
+        if (family == FormatFamily::ETC2) return caps_.textureETC2;
+        return caps_.textureASTC;
+    }
+
+    static bool hasExtension(const char* name)
+    {
+        GLint count = 0;
+        glGetIntegerv(GL_NUM_EXTENSIONS, &count);
+        for (GLint i = 0; i < count; ++i)
+        {
+            const char* extension = reinterpret_cast<const char*>(
+                    glGetStringi(GL_EXTENSIONS, static_cast<GLuint>(i)));
+            if (!extension) continue;
+            if (strcmp(extension, name) == 0) return true;
+            if (strncmp(extension, "GL_", 3) == 0 && strcmp(extension + 3, name) == 0) return true;
+        }
+        return false;
+    }
+
     void uploadLevel(const GLTexture& texture, std::uint32_t mip, std::uint32_t layer,
             const void* data)
     {
+        const bool volume = texture.type == TextureType::Texture3D;
+        upload(texture, mip, volume ? 0 : layer, 0, 0, mipSize(texture.width, mip),
+                mipSize(texture.height, mip), volume ? mipSize(texture.depth, mip) : 1, data);
+    }
+
+    void upload(const GLTexture& texture, std::uint32_t mip, std::uint32_t layer, std::uint32_t x,
+            std::uint32_t y, std::uint32_t regionWidth, std::uint32_t regionHeight,
+            std::uint32_t slices, const void* data)
+    {
         const GLFormat format = toGLFormat(texture.format);
-        const GLsizei width = static_cast<GLsizei>(mipSize(texture.width, mip));
-        const GLsizei height = static_cast<GLsizei>(mipSize(texture.height, mip));
+        const bool compressed = isCompressedFormat(texture.format);
+        const bool flat =
+                texture.type == TextureType::Texture2D || texture.type == TextureType::TextureCube;
+        const GLenum target = texture.type == TextureType::TextureCube
+                                      ? GL_TEXTURE_CUBE_MAP_POSITIVE_X + layer
+                                      : texture.target;
+        const GLsizei bytes = static_cast<GLsizei>(
+                levelBytes(texture.format, regionWidth, regionHeight) * slices);
         const GLint level = static_cast<GLint>(mip);
+        const GLint left = static_cast<GLint>(x);
+        const GLint bottom = static_cast<GLint>(y);
+        const GLint front = static_cast<GLint>(layer);
+        const GLsizei width = static_cast<GLsizei>(regionWidth);
+        const GLsizei height = static_cast<GLsizei>(regionHeight);
+        const GLsizei depth = static_cast<GLsizei>(slices);
+
         state_.bindTexture(0, texture.target, texture.id);
         glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-        switch (texture.type)
-        {
-            case TextureType::Texture2D:
-                glTexSubImage2D(GL_TEXTURE_2D, level, 0, 0, width, height, format.format,
-                        format.type, data);
-                break;
-            case TextureType::TextureCube:
-                glTexSubImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + layer, level, 0, 0, width, height,
-                        format.format, format.type, data);
-                break;
-            case TextureType::Texture2DArray:
-                glTexSubImage3D(GL_TEXTURE_2D_ARRAY, level, 0, 0, static_cast<GLint>(layer), width,
-                        height, 1, format.format, format.type, data);
-                break;
-            case TextureType::Texture3D:
-                glTexSubImage3D(GL_TEXTURE_3D, level, 0, 0, 0, width, height,
-                        static_cast<GLsizei>(mipSize(texture.depth, mip)), format.format,
-                        format.type, data);
-                break;
-        }
+        if (flat && compressed)
+            glCompressedTexSubImage2D(target, level, left, bottom, width, height, format.internal,
+                    bytes, data);
+        else if (flat)
+            glTexSubImage2D(target, level, left, bottom, width, height, format.format, format.type,
+                    data);
+        else if (compressed)
+            glCompressedTexSubImage3D(target, level, left, bottom, front, width, height, depth,
+                    format.internal, bytes, data);
+        else
+            glTexSubImage3D(target, level, left, bottom, front, width, height, depth, format.format,
+                    format.type, data);
     }
 
     const GLFramebuffer* findFramebuffer(const RenderPassDesc& desc) const

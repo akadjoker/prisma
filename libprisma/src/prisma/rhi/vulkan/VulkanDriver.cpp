@@ -1,4 +1,5 @@
 #include "prisma/rhi/Driver.h"
+#include "prisma/rhi/Format.h"
 #include "prisma/rhi/HandleCast.h"
 
 #include <ct/vector.hpp>
@@ -230,26 +231,6 @@ VkAccessFlags2 layoutAccess(VkImageLayout layout)
     }
 }
 
-bool isDepthFormat(TextureFormat format)
-{
-    return format == TextureFormat::Depth32F || format == TextureFormat::Depth24Stencil8;
-}
-
-std::uint32_t bytesPerPixel(TextureFormat format)
-{
-    switch (format)
-    {
-        case TextureFormat::R8:
-            return 1;
-        case TextureFormat::RG8:
-            return 2;
-        case TextureFormat::RGBA16F:
-            return 8;
-        default:
-            return 4;
-    }
-}
-
 std::uint32_t fullMipCount(std::uint32_t width, std::uint32_t height)
 {
     std::uint32_t size = width > height ? width : height;
@@ -326,6 +307,52 @@ VkFormat toVkFormat(TextureFormat format)
             return VK_FORMAT_D32_SFLOAT;
         case TextureFormat::Depth24Stencil8:
             return VK_FORMAT_D24_UNORM_S8_UINT;
+        case TextureFormat::BC1:
+            return VK_FORMAT_BC1_RGBA_UNORM_BLOCK;
+        case TextureFormat::BC1Srgb:
+            return VK_FORMAT_BC1_RGBA_SRGB_BLOCK;
+        case TextureFormat::BC2:
+            return VK_FORMAT_BC2_UNORM_BLOCK;
+        case TextureFormat::BC2Srgb:
+            return VK_FORMAT_BC2_SRGB_BLOCK;
+        case TextureFormat::BC3:
+            return VK_FORMAT_BC3_UNORM_BLOCK;
+        case TextureFormat::BC3Srgb:
+            return VK_FORMAT_BC3_SRGB_BLOCK;
+        case TextureFormat::BC4:
+            return VK_FORMAT_BC4_UNORM_BLOCK;
+        case TextureFormat::BC5:
+            return VK_FORMAT_BC5_UNORM_BLOCK;
+        case TextureFormat::BC6H:
+            return VK_FORMAT_BC6H_UFLOAT_BLOCK;
+        case TextureFormat::BC7:
+            return VK_FORMAT_BC7_UNORM_BLOCK;
+        case TextureFormat::BC7Srgb:
+            return VK_FORMAT_BC7_SRGB_BLOCK;
+        case TextureFormat::ETC2RGB8:
+            return VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK;
+        case TextureFormat::ETC2RGB8Srgb:
+            return VK_FORMAT_ETC2_R8G8B8_SRGB_BLOCK;
+        case TextureFormat::ETC2RGBA8:
+            return VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK;
+        case TextureFormat::ETC2RGBA8Srgb:
+            return VK_FORMAT_ETC2_R8G8B8A8_SRGB_BLOCK;
+        case TextureFormat::EACR11:
+            return VK_FORMAT_EAC_R11_UNORM_BLOCK;
+        case TextureFormat::EACRG11:
+            return VK_FORMAT_EAC_R11G11_UNORM_BLOCK;
+        case TextureFormat::ASTC4x4:
+            return VK_FORMAT_ASTC_4x4_UNORM_BLOCK;
+        case TextureFormat::ASTC4x4Srgb:
+            return VK_FORMAT_ASTC_4x4_SRGB_BLOCK;
+        case TextureFormat::ASTC6x6:
+            return VK_FORMAT_ASTC_6x6_UNORM_BLOCK;
+        case TextureFormat::ASTC6x6Srgb:
+            return VK_FORMAT_ASTC_6x6_SRGB_BLOCK;
+        case TextureFormat::ASTC8x8:
+            return VK_FORMAT_ASTC_8x8_UNORM_BLOCK;
+        case TextureFormat::ASTC8x8Srgb:
+            return VK_FORMAT_ASTC_8x8_SRGB_BLOCK;
     }
     return VK_FORMAT_UNDEFINED;
 }
@@ -922,6 +949,12 @@ public:
             log("createTexture: invalid format or size");
             return TextureHandle();
         }
+        if (!supportedFormat(desc))
+        {
+            log("createTexture: compressed format not supported, or used as a render target or "
+                "as a 3D texture");
+            return TextureHandle();
+        }
         if (!validSamples(desc, caps_.maxSamples))
         {
             log("createTexture: a multisampled texture must be a 2D render target only, with one "
@@ -1025,11 +1058,10 @@ public:
         if (desc.data && !depth)
         {
             const std::uint32_t images = volume ? 1 : layers;
-            const std::size_t imageBytes =
-                    static_cast<std::size_t>(desc.width) * desc.height * bytesPerPixel(desc.format);
+            const std::size_t imageBytes = levelBytes(desc.format, desc.width, desc.height);
             for (std::uint32_t i = 0; i < images; ++i)
                 recordUpload(texture, 0, i, static_cast<const char*>(desc.data) + i * imageBytes);
-            if (desc.generateMipmaps) recordMipmaps(texture);
+            if (desc.generateMipmaps && !isCompressedFormat(desc.format)) recordMipmaps(texture);
         }
         return handleCast<TextureHandle>(textures_.insert(texture));
     }
@@ -1080,12 +1112,32 @@ public:
         recordUpload(*texture, mip, layer, data);
     }
 
+    void updateTextureRegion(TextureHandle handle, const TextureRegion& region,
+            const void* data) override
+    {
+        const VulkanTexture* texture = textures_.get(handleCast<TextureSlotHandle>(handle));
+        if (passActive_ || !texture || !data || isDepthFormat(texture->format) ||
+                texture->samples > 1 || region.mip >= texture->mipLevels ||
+                region.layer >= layerCount(*texture, region.mip) ||
+                !validRegion(texture->format, mipSize(texture->width, region.mip),
+                        mipSize(texture->height, region.mip), region))
+        {
+            log("updateTextureRegion: invalid handle, mip, layer or rectangle, or called inside a "
+                "render pass");
+            return;
+        }
+        const bool volume = texture->type == TextureType::Texture3D;
+        recordCopy(*texture, region.mip, volume ? 0 : region.layer, region.x, region.y,
+                volume ? region.layer : 0, region.width, region.height, 1, data);
+    }
+
     void generateMipmaps(TextureHandle handle) override
     {
         const VulkanTexture* texture = textures_.get(handleCast<TextureSlotHandle>(handle));
-        if (passActive_ || !texture || isDepthFormat(texture->format) || texture->samples > 1)
+        if (passActive_ || !texture || isDepthFormat(texture->format) || texture->samples > 1 ||
+                isCompressedFormat(texture->format))
         {
-            log("generateMipmaps: invalid handle, or called inside a render pass");
+            log("generateMipmaps: invalid handle or format, or called inside a render pass");
             return;
         }
         recordMipmaps(*texture);
@@ -2131,6 +2183,17 @@ private:
         }
     }
 
+    bool supportedFormat(const TextureDesc& desc) const
+    {
+        const FormatFamily family = formatFamily(desc.format);
+        if (family == FormatFamily::Plain) return true;
+        if ((desc.usage & kTextureRenderTarget) || desc.type == TextureType::Texture3D)
+            return false;
+        if (family == FormatFamily::BC) return caps_.textureBC;
+        if (family == FormatFamily::ETC2) return caps_.textureETC2;
+        return caps_.textureASTC;
+    }
+
     VkImageView attachmentView(VulkanTexture& texture, std::uint32_t mip, std::uint32_t layer)
     {
         for (std::uint32_t i = 0; i < texture.attachmentViewCount; ++i)
@@ -2163,13 +2226,16 @@ private:
             const void* data)
     {
         const bool volume = texture.type == TextureType::Texture3D;
-        const std::uint32_t width = mipSize(texture.width, mip);
-        const std::uint32_t height = mipSize(texture.height, mip);
-        const std::uint32_t depth = volume ? mipSize(texture.depth, mip) : 1;
-        const std::uint32_t firstLayer = volume ? 0 : layer;
+        recordCopy(texture, mip, volume ? 0 : layer, 0, 0, 0, mipSize(texture.width, mip),
+                mipSize(texture.height, mip), volume ? mipSize(texture.depth, mip) : 1, data);
+    }
 
+    void recordCopy(const VulkanTexture& texture, std::uint32_t mip, std::uint32_t firstLayer,
+            std::uint32_t x, std::uint32_t y, std::uint32_t z, std::uint32_t width,
+            std::uint32_t height, std::uint32_t depth, const void* data)
+    {
         VulkanBuffer staging;
-        staging.size = width * height * depth * bytesPerPixel(texture.format);
+        staging.size = levelBytes(texture.format, width, height) * depth;
         staging.vkUsage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
         if (!createVersion(staging, nullptr))
         {
@@ -2191,6 +2257,9 @@ private:
         copy.imageSubresource.mipLevel = mip;
         copy.imageSubresource.baseArrayLayer = firstLayer;
         copy.imageSubresource.layerCount = 1;
+        copy.imageOffset.x = static_cast<std::int32_t>(x);
+        copy.imageOffset.y = static_cast<std::int32_t>(y);
+        copy.imageOffset.z = static_cast<std::int32_t>(z);
         copy.imageExtent.width = width;
         copy.imageExtent.height = height;
         copy.imageExtent.depth = depth;
@@ -2598,6 +2667,9 @@ private:
                                    : (counts & VK_SAMPLE_COUNT_2_BIT) ? 2
                                                                       : 1;
                 caps_.wireframe = features.features.fillModeNonSolid;
+                caps_.textureBC = features.features.textureCompressionBC;
+                caps_.textureETC2 = features.features.textureCompressionETC2;
+                caps_.textureASTC = features.features.textureCompressionASTC_LDR;
                 caps_.occlusionQueries = features12.hostQueryReset;
                 caps_.timerQueries =
                         features12.hostQueryReset && properties.limits.timestampComputeAndGraphics;
@@ -2640,6 +2712,9 @@ private:
         VkPhysicalDeviceFeatures enabled = {};
         enabled.samplerAnisotropy = caps_.maxAnisotropy > 1.0f;
         enabled.fillModeNonSolid = caps_.wireframe;
+        enabled.textureCompressionBC = caps_.textureBC;
+        enabled.textureCompressionETC2 = caps_.textureETC2;
+        enabled.textureCompressionASTC_LDR = caps_.textureASTC;
 
         const char* const extension = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
         VkDeviceCreateInfo info = {};
