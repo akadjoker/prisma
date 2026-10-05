@@ -43,13 +43,18 @@ if(PRISMA_BUILD_DEMOS OR PRISMA_BUILD_TESTS)
   if(PRISMA_SHADER_TOOLS)
     add_library(demo_ibl STATIC demos/common/Prefilter.cpp demos/common/Froxelizer.cpp demos/common/TextOverlay.cpp
             demos/common/GltfModel.cpp demos/common/ObjModel.cpp demos/common/GltfGpu.cpp demos/common/cgltf_impl.cpp
+            demos/common/PostProcess.cpp
             demos/common/third_party/mikktspace.c)
     set_source_files_properties(demos/common/cgltf_impl.cpp demos/common/third_party/mikktspace.c
                                 PROPERTIES COMPILE_OPTIONS -w)
     target_include_directories(demo_ibl PUBLIC demos/common)
     target_link_libraries(demo_ibl PUBLIC prisma ct demo_common)
     prisma_shaders(demo_ibl demos/common/shaders/prefilter.vert demos/common/shaders/prefilter.frag
-                   demos/common/shaders/text.vert demos/common/shaders/text.frag)
+                   demos/common/shaders/text.vert demos/common/shaders/text.frag
+                   demos/common/shaders/fullscreen.vert demos/common/shaders/bloom_down2x.frag
+                   demos/common/shaders/bloom_down13.frag demos/common/shaders/bloom_down9.frag
+                   demos/common/shaders/bloom_up.frag demos/common/shaders/final.frag
+                   demos/common/shaders/fxaa.frag)
   endif()
   if(PRISMA_BUILD_DEMOS)
     add_subdirectory(demos)

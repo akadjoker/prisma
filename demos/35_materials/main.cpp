@@ -3,6 +3,7 @@
 #include "common/Ibl.h"
 #include "common/ObjModel.h"
 #include "common/PbrTextures.h"
+#include "common/PostProcess.h"
 #include "common/Projection.h"
 #include "common/ZenApp.h"
 #include "mathc.h"
@@ -12,8 +13,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "final.frag.h"
-#include "fullscreen.vert.h"
 #include "material.frag.h"
 #include "material.vert.h"
 #include "sky.frag.h"
@@ -136,6 +135,8 @@ int main(int argc, char** argv)
     const float cameraHeight = numberArgument(argc, argv, "height", 7.0f);
     const float cameraDistance = numberArgument(argc, argv, "distance", 9.0f);
     const float swing = numberArgument(argc, argv, "swing", 0.3f);
+    const float bloomStrength = numberArgument(argc, argv, "bloom", 0.10f);
+    const bool fxaaEnabled = numberArgument(argc, argv, "fxaa", 1.0f) > 0.5f;
 
     char modelPath[1024];
     snprintf(modelPath, sizeof(modelPath), "%s/shader_ball/shader_ball.obj", PRISMA_MODELS_DIR);
@@ -368,15 +369,6 @@ int main(int argc, char** argv)
     materialDesc.debugName = "material uniforms";
     const prisma::BufferHandle materialBuffer = driver->createBuffer(materialDesc);
 
-    const bool linear = driver->caps().floatLinearFiltering;
-    prisma::SamplerDesc sceneSamplerDesc;
-    sceneSamplerDesc.minFilter = linear ? prisma::Filter::Linear : prisma::Filter::Nearest;
-    sceneSamplerDesc.magFilter = sceneSamplerDesc.minFilter;
-    sceneSamplerDesc.mipFilter = prisma::MipFilter::None;
-    sceneSamplerDesc.addressU = prisma::AddressMode::ClampToEdge;
-    sceneSamplerDesc.addressV = prisma::AddressMode::ClampToEdge;
-    sceneSamplerDesc.debugName = "scene sampler";
-    const prisma::SamplerHandle sceneSampler = driver->createSampler(sceneSamplerDesc);
     prisma::TextureDesc colorDesc;
     colorDesc.format = prisma::TextureFormat::RGBA16F;
     colorDesc.width = kRenderWidth;
@@ -396,8 +388,6 @@ int main(int argc, char** argv)
     const prisma::ShaderHandle materialFragment = zenapp::createShader(driver, material_frag);
     const prisma::ShaderHandle skyVertex = zenapp::createShader(driver, sky_vert);
     const prisma::ShaderHandle skyFragment = zenapp::createShader(driver, sky_frag);
-    const prisma::ShaderHandle fullscreenVertex = zenapp::createShader(driver, fullscreen_vert);
-    const prisma::ShaderHandle finalFragment = zenapp::createShader(driver, final_frag);
 
     prisma::PipelineDesc materialPipelineDesc;
     materialPipelineDesc.vertexShader = materialVertex;
@@ -436,25 +426,20 @@ int main(int argc, char** argv)
     skyDesc.debugName = "sky";
     const prisma::PipelineHandle skyPipeline = driver->createPipeline(skyDesc);
 
-    prisma::PipelineDesc finalDesc;
-    finalDesc.vertexShader = fullscreenVertex;
-    finalDesc.fragmentShader = finalFragment;
-    finalDesc.depthWrite = false;
-    finalDesc.debugName = "final";
-    const prisma::PipelineHandle finalPipeline = driver->createPipeline(finalDesc);
-
     driver->destroy(materialVertex);
     driver->destroy(materialFragment);
     driver->destroy(skyVertex);
     driver->destroy(skyFragment);
-    driver->destroy(fullscreenVertex);
-    driver->destroy(finalFragment);
 
-    const bool ready = iblReady && gpuReady && whiteTexture.valid() && flatTexture.valid() &&
+    zenapp::PostProcess post;
+    const bool postReady = zenapp::createPostProcess(driver, kRenderWidth, kRenderHeight,
+            bloomStrength, fxaaEnabled, &post);
+
+    const bool ready = postReady && iblReady && gpuReady && whiteTexture.valid() && flatTexture.valid() &&
                        materialSampler.valid() && frameBuffer.valid() && objectBuffer.valid() &&
-                       materialBuffer.valid() && sceneSampler.valid() && sceneColor.valid() &&
+                       materialBuffer.valid() && sceneColor.valid() &&
                        sceneDepth.valid() && materialPipeline.valid() && floorPipeline.valid() &&
-                       skyPipeline.valid() && finalPipeline.valid();
+                       skyPipeline.valid();
     if (!ready) log_error("materials: resource creation failed");
 
     prisma::RenderPassDesc scenePass;
@@ -527,24 +512,19 @@ int main(int argc, char** argv)
         }
         driver->endRenderPass();
 
-        driver->beginRenderPass(windowPass);
-        driver->bindPipeline(finalPipeline);
-        driver->bindTexture(0, sceneColor, sceneSampler);
-        driver->draw(3, 0);
-        driver->endRenderPass();
+        zenapp::renderPostProcess(driver, post, sceneColor, windowPass);
         zenapp::endFrame(driver);
         driver->present();
 
         if (maxFrames > 0 && ++frames >= maxFrames) window_set_should_close(window, true);
     }
 
-    driver->destroy(finalPipeline);
     driver->destroy(skyPipeline);
     driver->destroy(floorPipeline);
     driver->destroy(materialPipeline);
     driver->destroy(sceneDepth);
     driver->destroy(sceneColor);
-    driver->destroy(sceneSampler);
+    zenapp::destroyPostProcess(driver, &post);
     driver->destroy(materialBuffer);
     driver->destroy(objectBuffer);
     driver->destroy(frameBuffer);

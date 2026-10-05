@@ -10,7 +10,7 @@ layout(set = 0, binding = 0, std140) uniform Params
 
 layout(set = 1, binding = 0) uniform sampler2D uColor;
 
-#include "../../common/shaders/fxaa.glsl"
+#include "fxaa.glsl"
 
 layout(location = 0) out vec4 oColor;
 
