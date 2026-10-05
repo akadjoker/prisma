@@ -65,6 +65,20 @@ int main()
         CHECK(near(corner.position[0], 1.0f) && near(corner.uv[0], 1.0f) && near(corner.uv[1], 1.0f));
         CHECK(near(corner.normal[2], 1.0f));
 
+        CHECK(red.hasTangents && !leaf.hasTangents);
+        for (uint32_t i = 0; i < red.vertexCount; ++i)
+        {
+            const zenapp::GltfVertex& v = model.vertices[red.firstVertex + i];
+            CHECK(near(v.tangent[0], 1.0f) && near(v.tangent[1], 0.0f) && near(v.tangent[2], 0.0f));
+            CHECK(near(fabsf(v.tangent[3]), 1.0f));
+        }
+        for (uint32_t i = 0; i < leaf.vertexCount; ++i)
+        {
+            const zenapp::GltfVertex& v = model.vertices[leaf.firstVertex + i];
+            CHECK(v.tangent[0] == 0.0f && v.tangent[1] == 0.0f && v.tangent[2] == 0.0f &&
+                    v.tangent[3] == 0.0f);
+        }
+
         const zenapp::GltfVertex& flat = model.vertices[leaf.firstVertex + 1];
         CHECK(near(flat.position[0], 2.0f) && near(flat.position[2], 2.0f));
         CHECK(near(flat.normal[0], 0.0f) && near(flat.normal[1], 0.0f) && near(flat.normal[2], 1.0f));

@@ -221,7 +221,7 @@ int textureFor(GltfModel* out, const ct::String& path)
     return static_cast<int>(out->textures.size()) - 1;
 }
 
-bool appendPart(const Part& part, const ct::Vector<Vec3f>& positions,
+bool appendPart(const Part& part, bool normalMapped, const ct::Vector<Vec3f>& positions,
         const ct::Vector<Vec3f>& normals, const ct::Vector<Vec2f>& uvs, GltfModel* out)
 {
     ct::HashMap<VertexKey, uint32_t> lookup;
@@ -242,19 +242,7 @@ bool appendPart(const Part& part, const ct::Vector<Vec3f>& positions,
         indices[i] = added;
     }
 
-    GltfPrimitive primitive;
-    primitive.firstVertex = static_cast<uint32_t>(out->vertices.size());
-    primitive.vertexCount = static_cast<uint32_t>(keys.size());
-    primitive.firstIndex = static_cast<uint32_t>(out->indices.size());
-    primitive.indexCount = static_cast<uint32_t>(indices.size());
-    primitive.material = part.material;
-    primitive.hasTangents = false;
-    for (int k = 0; k < 3; ++k)
-    {
-        primitive.boundsMin[k] = 1e30f;
-        primitive.boundsMax[k] = -1e30f;
-    }
-
+    bool hasUvs = false;
     ct::Vector<GltfVertex> vertices;
     vertices.resize(keys.size());
     memset(vertices.data(), 0, sizeof(GltfVertex) * keys.size());
@@ -278,12 +266,7 @@ bool appendPart(const Part& part, const ct::Vector<Vec3f>& positions,
             vertex.uv[0] = uvs[static_cast<size_t>(key.uv)].x;
             vertex.uv[1] = uvs[static_cast<size_t>(key.uv)].y;
         }
-        for (int k = 0; k < 3; ++k)
-        {
-            const float v = vertex.position[k];
-            primitive.boundsMin[k] = v < primitive.boundsMin[k] ? v : primitive.boundsMin[k];
-            primitive.boundsMax[k] = v > primitive.boundsMax[k] ? v : primitive.boundsMax[k];
-        }
+        if (key.uv >= 0) hasUvs = true;
     }
 
     for (size_t i = 0; i + 2 < indices.size(); i += 3)
@@ -309,6 +292,37 @@ bool appendPart(const Part& part, const ct::Vector<Vec3f>& positions,
         else
             n[1] = 1.0f;
     }
+
+    bool tangentsValid = false;
+    if (normalMapped && hasUvs && indices.size() >= 3)
+        tangentsValid = generateTangents(&vertices, &indices);
+    for (size_t i = 0; i < vertices.size(); ++i)
+    {
+        if (tangentsValid)
+            orthogonalizeTangent(&vertices[i]);
+        else
+            memset(vertices[i].tangent, 0, sizeof(float) * 4);
+    }
+
+    GltfPrimitive primitive;
+    primitive.firstVertex = static_cast<uint32_t>(out->vertices.size());
+    primitive.vertexCount = static_cast<uint32_t>(vertices.size());
+    primitive.firstIndex = static_cast<uint32_t>(out->indices.size());
+    primitive.indexCount = static_cast<uint32_t>(indices.size());
+    primitive.material = part.material;
+    primitive.hasTangents = tangentsValid;
+    for (int k = 0; k < 3; ++k)
+    {
+        primitive.boundsMin[k] = 1e30f;
+        primitive.boundsMax[k] = -1e30f;
+    }
+    for (size_t i = 0; i < vertices.size(); ++i)
+        for (int k = 0; k < 3; ++k)
+        {
+            const float v = vertices[i].position[k];
+            primitive.boundsMin[k] = v < primitive.boundsMin[k] ? v : primitive.boundsMin[k];
+            primitive.boundsMax[k] = v > primitive.boundsMax[k] ? v : primitive.boundsMax[k];
+        }
 
     for (size_t i = 0; i < vertices.size(); ++i) out->vertices.push_back(vertices[i]);
     for (size_t i = 0; i < indices.size(); ++i) out->indices.push_back(indices[i]);
@@ -485,7 +499,9 @@ bool loadObj(const char* path, GltfModel* out)
     GltfMesh mesh;
     mesh.firstPrimitive = 0;
     for (size_t i = 0; i < parts.size(); ++i)
-        if (!parts[i].corners.empty()) appendPart(parts[i], positions, normals, uvs, out);
+        if (!parts[i].corners.empty())
+            appendPart(parts[i], out->materials[static_cast<size_t>(parts[i].material)].normalTexture >= 0,
+                    positions, normals, uvs, out);
     mesh.primitiveCount = static_cast<uint32_t>(out->primitives.size());
     if (mesh.primitiveCount == 0)
     {

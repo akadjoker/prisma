@@ -126,4 +126,8 @@ struct GltfModel
 
 bool loadGltf(const char* path, GltfModel* out);
 
+bool generateTangents(ct::Vector<GltfVertex>* vertices, ct::Vector<uint32_t>* indices);
+
+void orthogonalizeTangent(GltfVertex* vertex);
+
 } // namespace zenapp

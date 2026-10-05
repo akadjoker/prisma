@@ -226,6 +226,8 @@ void weldVertices(const ct::Vector<GltfVertex>& corners, ct::Vector<GltfVertex>*
     }
 }
 
+} // namespace
+
 bool generateTangents(ct::Vector<GltfVertex>* vertices, ct::Vector<uint32_t>* indices)
 {
     const size_t faces = indices->size() / 3;
@@ -274,6 +276,9 @@ void orthogonalizeTangent(GltfVertex* vertex)
     for (int k = 0; k < 3; ++k) t[k] = r[k] / length;
     t[3] = t[3] < 0.0f ? -1.0f : 1.0f;
 }
+
+namespace
+{
 
 bool appendPrimitive(const cgltf_data* data, const cgltf_primitive& source, GltfModel* out)
 {
