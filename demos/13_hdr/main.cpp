@@ -44,6 +44,9 @@ enum Range : std::uint32_t
     kRangeCount
 };
 
+const std::uint32_t kRenderWidth = 1280;
+const std::uint32_t kRenderHeight = 720;
+
 struct Targets
 {
     std::uint32_t width = 0;
@@ -295,6 +298,12 @@ int main(int argc, char** argv)
     const float scale = 1.0f / size;
 
     Targets targets;
+    createTargets(driver, kRenderWidth, kRenderHeight, &targets);
+    if (!targets.valid())
+    {
+        log_error("hdr: cannot create the render targets");
+        ready = false;
+    }
     float exposure = 1.0f;
     bool bloom = true;
     double previous = time_seconds();
@@ -319,22 +328,7 @@ int main(int argc, char** argv)
         if (exposure > 8.0f) exposure = 8.0f;
         if (key_pressed(window, KEY_B)) bloom = !bloom;
 
-        const std::uint32_t targetWidth = static_cast<std::uint32_t>(width);
-        const std::uint32_t targetHeight = static_cast<std::uint32_t>(height);
-        if (targetWidth != targets.width || targetHeight != targets.height || !targets.valid())
-        {
-            destroyTargets(driver, &targets);
-            createTargets(driver, targetWidth, targetHeight, &targets);
-            if (!targets.valid())
-            {
-                log_error("hdr: cannot create the render targets");
-                destroyTargets(driver, &targets);
-                ready = false;
-                break;
-            }
-        }
-
-        const float aspect = static_cast<float>(width) / static_cast<float>(height);
+        const float aspect = static_cast<float>(kRenderWidth) / static_cast<float>(kRenderHeight);
         const float time = (still ? 0.0f : static_cast<float>(now)) + 0.6f;
         const float angle = time * 0.25f;
         const Math::Vec3 eye(3.5f * sinf(angle), 0.6f, 3.5f * cosf(angle));
