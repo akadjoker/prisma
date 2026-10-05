@@ -35,7 +35,13 @@ layout(set = 0, binding = 8, std140) uniform SunShadow
     vec4 uSunShadowAxisY;
 };
 
+layout(set = 0, binding = 9, std140) uniform AoParams
+{
+    vec4 uAoParams;
+};
+
 layout(set = 1, binding = 7) uniform sampler2DShadow uSunShadowMap;
+layout(set = 1, binding = 8) uniform sampler2D uAmbientOcclusion;
 layout(set = 1, binding = 2) uniform sampler2D uBaseTexture;
 layout(set = 1, binding = 3) uniform sampler2D uSurfaceTexture;
 layout(set = 1, binding = 4) uniform sampler2D uNormalTexture;
@@ -110,7 +116,13 @@ void main()
     float occlusion = uFlags.w > 0.5 ? texture(uOcclusionTexture, vUv).r : 1.0;
     Light sun = directionalLight(uSunDirection, uSunColorIntensity);
     sun.attenuation *= sunShadow(vWorld, normalize(vNormal));
-    vec3 color = evaluateIbl(surface, n, v) * occlusion + surfaceShading(surface, sun, n, v);
+    float ssao = 1.0;
+    if (uAoParams.x > 0.5)
+        ssao = texture(uAmbientOcclusion, vClip.xy / vClip.z * 0.5 + 0.5).r;
+    float diffuseAo = min(occlusion, ssao);
+    vec3 color = evaluateIblAmbientOcclusion(surface, n, v, diffuseAo) + surfaceShading(surface, sun, n, v);
+    if (uAoParams.y > 0.5)
+        color = vec3(0.3 * pow(diffuseAo, 6.0));
     vec3 emissive = uEmissive.rgb;
     if (uModes.x > 0.5)
         emissive *= texture(uEmissiveTexture, vUv).rgb;

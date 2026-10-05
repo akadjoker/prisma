@@ -89,3 +89,32 @@ vec3 evaluateIbl(PbrSurface surface, vec3 n, vec3 v)
     }
     return color * uIblParams.y;
 }
+
+vec3 multiBounceAo(float visibility, vec3 albedo)
+{
+    vec3 a = 2.0404 * albedo - 0.3324;
+    vec3 b = -4.7951 * albedo + 0.6417;
+    vec3 c = 2.7552 * albedo + 0.6903;
+    return max(vec3(visibility), ((visibility * a + b) * visibility + c) * visibility);
+}
+
+float specularAoLagarde(float noV, float visibility, float roughness)
+{
+    return clamp(pow(noV + visibility, exp2(-16.0 * roughness - 1.0)) - 1.0 + visibility, 0.0, 1.0);
+}
+
+vec3 evaluateIblAmbientOcclusion(PbrSurface surface, vec3 n, vec3 v, float diffuseAo)
+{
+    vec3 r = reflect(-v, n);
+    vec3 e = mix(surface.dfg.xxx, surface.dfg.yyy, surface.f0);
+
+    vec3 dominant = mix(r, n, surface.roughness * surface.roughness);
+    float lod = perceptualRoughnessToLod(surface.perceptualRoughness);
+    vec3 specular = e * textureLod(uIblSpecular, dominant, lod).rgb * surface.energyCompensation;
+    vec3 diffuse = surface.diffuseColor * irradianceSh(n) * (1.0 - e);
+
+    float specularAo = specularAoLagarde(surface.noV, diffuseAo, surface.roughness);
+    specular *= multiBounceAo(specularAo, surface.f0);
+    diffuse *= multiBounceAo(diffuseAo, surface.diffuseColor);
+    return (specular + diffuse) * uIblParams.y;
+}
