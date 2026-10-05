@@ -1,6 +1,7 @@
 #include "common/Equirect.h"
 #include "common/GltfGpu.h"
 #include "common/Ibl.h"
+#include "common/LightShadows.h"
 #include "common/Projection.h"
 #include "common/ZenApp.h"
 #include "mathc.h"
@@ -17,6 +18,8 @@
 #include "drone.frag.h"
 #include "drone.vert.h"
 #include "final.frag.h"
+#include "shadow.frag.h"
+#include "shadow.vert.h"
 #include "fullscreen.vert.h"
 #include "sky.frag.h"
 #include "sky.vert.h"
@@ -32,6 +35,14 @@ struct FrameUniforms
     float exposure[4];
     float sunDirection[4];
     float sunColorIntensity[4];
+};
+
+struct SunShadowUniforms
+{
+    Math::Mat4 matrix;
+    float params[4];
+    float axisX[4];
+    float axisY[4];
 };
 
 struct ObjectUniforms
@@ -77,7 +88,8 @@ Math::Mat4 nodeMatrix(const zenapp::GltfNode& node)
     return m;
 }
 
-void modelBounds(const zenapp::GltfModel& model, Math::Vec3* center, float* radius)
+void modelBounds(const zenapp::GltfModel& model, Math::Vec3* center, float* radius, Math::Vec3* lowOut,
+        Math::Vec3* highOut)
 {
     Math::Vec3 low(1e30f, 1e30f, 1e30f);
     Math::Vec3 high(-1e30f, -1e30f, -1e30f);
@@ -101,6 +113,8 @@ void modelBounds(const zenapp::GltfModel& model, Math::Vec3* center, float* radi
             }
         }
     }
+    *lowOut = low;
+    *highOut = high;
     *center = (low + high) * 0.5f;
     *radius = (high - low).Length() * 0.5f;
 }
@@ -116,7 +130,10 @@ int main(int argc, char** argv)
     const float yaw = numberArgument(argc, argv, "yaw", 0.0f);
     const float turn = numberArgument(argc, argv, "turn", 0.0f);
     const float ev = numberArgument(argc, argv, "ev", 0.0f);
+    const float cameraHeight = numberArgument(argc, argv, "height", 0.08f);
     const float bloomStrength = numberArgument(argc, argv, "bloom", 0.10f);
+    const unsigned shadowSize = static_cast<unsigned>(numberArgument(argc, argv, "shadowsize", 2048.0f));
+    const float normalBias = numberArgument(argc, argv, "normalbias", 1.0f);
 
     char modelPath[1024];
     const char* modelArgument = zenapp::argumentValue(argc, argv, "model");
@@ -146,7 +163,9 @@ int main(int argc, char** argv)
     }
     Math::Vec3 center;
     float radius;
-    modelBounds(model, &center, &radius);
+    Math::Vec3 boundsLow;
+    Math::Vec3 boundsHigh;
+    modelBounds(model, &center, &radius, &boundsLow, &boundsHigh);
 
     if (!platform_init())
     {
@@ -284,6 +303,75 @@ int main(int argc, char** argv)
     postDesc.debugName = "post uniforms";
     const prisma::BufferHandle postBuffer = driver->createBuffer(postDesc);
 
+    const Math::Vec3 toSun(0.0f, 1.0f, 0.0f);
+    const Math::Mat4 lightView = zenapp::shadowView(center + toSun * (radius * 2.0f), toSun * -1.0f);
+    Math::Vec3 lightLow(1e30f, 1e30f, 1e30f);
+    Math::Vec3 lightHigh(-1e30f, -1e30f, -1e30f);
+    for (int corner = 0; corner < 8; ++corner)
+    {
+        const Math::Vec4 world((corner & 1) ? boundsHigh.x : boundsLow.x,
+                (corner & 2) ? boundsHigh.y : boundsLow.y, (corner & 4) ? boundsHigh.z : boundsLow.z,
+                1.0f);
+        const Math::Vec4 inLight = lightView * world;
+        lightLow = Math::Vec3(fminf(lightLow.x, inLight.x), fminf(lightLow.y, inLight.y),
+                fminf(lightLow.z, inLight.z));
+        lightHigh = Math::Vec3(fmaxf(lightHigh.x, inLight.x), fmaxf(lightHigh.y, inLight.y),
+                fmaxf(lightHigh.z, inLight.z));
+    }
+    const float padding = radius * 0.02f;
+    const Math::Mat4 lightViewProjection = zenapp::orthographicZeroToOne(lightLow.x - padding,
+            lightHigh.x + padding, lightLow.y - padding, lightHigh.y + padding,
+            -lightHigh.z - padding, -lightLow.z + padding) * lightView;
+
+    SunShadowUniforms sunShadow;
+    memset(&sunShadow, 0, sizeof(sunShadow));
+    sunShadow.matrix = lightViewProjection;
+    sunShadow.params[0] = static_cast<float>(shadowSize);
+    sunShadow.params[1] = 1.0f / static_cast<float>(shadowSize);
+    sunShadow.params[2] = normalBias * (lightHigh.x - lightLow.x + 2.0f * padding) /
+                          static_cast<float>(shadowSize);
+    sunShadow.params[3] = normalBias * (lightHigh.y - lightLow.y + 2.0f * padding) /
+                          static_cast<float>(shadowSize);
+    const Math::Mat4 lightToWorld = lightView.Inverse();
+    for (int i = 0; i < 3; ++i)
+    {
+        sunShadow.axisX[i] = lightToWorld.Data()[i];
+        sunShadow.axisY[i] = lightToWorld.Data()[4 + i];
+    }
+    prisma::BufferDesc sunShadowDesc;
+    sunShadowDesc.usage = prisma::BufferUsage::Uniform;
+    sunShadowDesc.size = sizeof(sunShadow);
+    sunShadowDesc.data = &sunShadow;
+    sunShadowDesc.debugName = "sun shadow uniforms";
+    const prisma::BufferHandle sunShadowBuffer = driver->createBuffer(sunShadowDesc);
+
+    FrameUniforms lightFrame;
+    memset(&lightFrame, 0, sizeof(lightFrame));
+    lightFrame.viewProjection = lightViewProjection;
+    prisma::BufferDesc lightFrameDesc;
+    lightFrameDesc.usage = prisma::BufferUsage::Uniform;
+    lightFrameDesc.size = sizeof(lightFrame);
+    lightFrameDesc.data = &lightFrame;
+    lightFrameDesc.debugName = "light frame uniforms";
+    const prisma::BufferHandle lightFrameBuffer = driver->createBuffer(lightFrameDesc);
+
+    prisma::TextureDesc shadowMapDesc;
+    shadowMapDesc.format = prisma::TextureFormat::Depth32F;
+    shadowMapDesc.width = shadowSize;
+    shadowMapDesc.height = shadowSize;
+    shadowMapDesc.usage = prisma::kTextureSampled | prisma::kTextureRenderTarget;
+    shadowMapDesc.debugName = "sun shadow map";
+    const prisma::TextureHandle shadowMap = driver->createTexture(shadowMapDesc);
+    prisma::SamplerDesc shadowSamplerDesc;
+    shadowSamplerDesc.mipFilter = prisma::MipFilter::None;
+    shadowSamplerDesc.addressU = prisma::AddressMode::ClampToEdge;
+    shadowSamplerDesc.addressV = prisma::AddressMode::ClampToEdge;
+    shadowSamplerDesc.compare = true;
+    shadowSamplerDesc.compareOp = prisma::CompareOp::LessEqual;
+    shadowSamplerDesc.debugName = "sun shadow sampler";
+    const prisma::SamplerHandle shadowSampler = driver->createSampler(shadowSamplerDesc);
+    const prisma::ShaderHandle shadowVertex = zenapp::createShader(driver, shadow_vert);
+    const prisma::ShaderHandle shadowFragment = zenapp::createShader(driver, shadow_frag);
     const prisma::ShaderHandle down2xFragment = zenapp::createShader(driver, bloom_down2x_frag);
     const prisma::ShaderHandle down13Fragment = zenapp::createShader(driver, bloom_down13_frag);
     const prisma::ShaderHandle down9Fragment = zenapp::createShader(driver, bloom_down9_frag);
@@ -375,6 +463,26 @@ int main(int argc, char** argv)
     upDesc.debugName = "bloom up";
     const prisma::PipelineHandle upPipeline = driver->createPipeline(upDesc);
 
+    prisma::PipelineDesc shadowDesc;
+    shadowDesc.vertexShader = shadowVertex;
+    shadowDesc.fragmentShader = shadowFragment;
+    shadowDesc.vertexBuffers[0].stride = sizeof(zenapp::GltfVertex);
+    shadowDesc.vertexBufferCount = 1;
+    shadowDesc.attributeCount = 1;
+    shadowDesc.attributes[0].location = 0;
+    shadowDesc.attributes[0].format = prisma::VertexFormat::Float3;
+    shadowDesc.attributes[0].offset = offsetof(zenapp::GltfVertex, position);
+    shadowDesc.depthTest = true;
+    shadowDesc.cullMode = prisma::CullMode::None;
+    shadowDesc.colorMask = 0;
+    shadowDesc.targets.window = false;
+    shadowDesc.targets.colorCount = 0;
+    shadowDesc.targets.depth = prisma::TextureFormat::Depth32F;
+    shadowDesc.depthBiasConstant = 2.0f;
+    shadowDesc.depthBiasSlope = 2.0f;
+    shadowDesc.debugName = "sun shadow";
+    const prisma::PipelineHandle shadowPipeline = driver->createPipeline(shadowDesc);
+
     driver->destroy(droneVertex);
     driver->destroy(droneFragment);
     driver->destroy(skyVertex);
@@ -385,13 +493,17 @@ int main(int argc, char** argv)
     driver->destroy(down13Fragment);
     driver->destroy(down9Fragment);
     driver->destroy(upFragment);
+    driver->destroy(shadowVertex);
+    driver->destroy(shadowFragment);
 
     const bool ready = iblReady && gpuReady && frameBuffer.valid() && objectBuffer.valid() &&
                        opaquePipeline.valid() && doublePipeline.valid() && blendPipeline.valid() &&
                        skyPipeline.valid() && finalPipeline.valid() && sceneSampler.valid() &&
                        sceneColor.valid() && sceneDepth.valid() && bloomReady &&
                        postBuffer.valid() && down2xPipeline.valid() && down13Pipeline.valid() &&
-                       down9Pipeline.valid() && upPipeline.valid();
+                       down9Pipeline.valid() && upPipeline.valid() && shadowPipeline.valid() &&
+                       shadowMap.valid() && shadowSampler.valid() && sunShadowBuffer.valid() &&
+                       lightFrameBuffer.valid();
     if (!ready) log_error("drone: resource creation failed");
 
     prisma::RenderPassDesc scenePass;
@@ -403,6 +515,7 @@ int main(int argc, char** argv)
     prisma::RenderPassDesc windowPass;
     windowPass.depthLoad = prisma::LoadOp::DontCare;
 
+    bool shadowDrawn = false;
     int frames = 0;
     while (ready && !window_should_close(window))
     {
@@ -417,7 +530,7 @@ int main(int argc, char** argv)
         const float angle = yaw + (still ? 0.0f : static_cast<float>(time_seconds()) * 0.3f);
 
         const float distance = radius * 2.2f;
-        const Math::Vec3 eye(center.x + distance * sinf(angle), center.y + radius * 0.08f,
+        const Math::Vec3 eye(center.x + distance * sinf(angle), center.y + radius * cameraHeight,
                 center.z - distance * cosf(angle));
         const Math::Mat4 projection = zenapp::perspectiveZeroToOne(0.6f, aspect, radius * 0.1f,
                 radius * 20.0f);
@@ -439,6 +552,34 @@ int main(int argc, char** argv)
 
         driver->beginFrame();
         driver->updateBuffer(frameBuffer, 0, &frame, sizeof(frame));
+        if (!shadowDrawn)
+        {
+            prisma::RenderPassDesc shadowPass;
+            shadowPass.depth.texture = shadowMap;
+            driver->beginRenderPass(shadowPass);
+            driver->bindPipeline(shadowPipeline);
+            driver->bindUniformBuffer(0, lightFrameBuffer, 0, sizeof(FrameUniforms));
+            zenapp::bindGltfGeometry(driver, gpu);
+            for (size_t n = 0; n < model.nodes.size(); ++n)
+            {
+                if (model.nodes[n].mesh < 0) continue;
+                const zenapp::GltfMesh& mesh = model.meshes[static_cast<size_t>(model.nodes[n].mesh)];
+                driver->bindUniformBuffer(2, objectBuffer, static_cast<std::uint32_t>(n * objectStride),
+                        sizeof(ObjectUniforms));
+                for (unsigned p = 0; p < mesh.primitiveCount; ++p)
+                {
+                    const zenapp::GltfPrimitive& primitive = model.primitives[mesh.firstPrimitive + p];
+                    if (primitive.material >= 0 &&
+                            model.materials[static_cast<size_t>(primitive.material)].alpha ==
+                                    zenapp::GltfMaterial::Alpha::Blend)
+                        continue;
+                    zenapp::drawGltfPrimitive(driver, gpu, primitive);
+                }
+            }
+            driver->endRenderPass();
+            shadowDrawn = true;
+        }
+
         driver->beginRenderPass(scenePass);
 
         driver->bindPipeline(skyPipeline);
@@ -466,6 +607,8 @@ int main(int argc, char** argv)
                                                                          : opaquePipeline));
                     driver->bindUniformBuffer(0, frameBuffer, 0, sizeof(FrameUniforms));
                     zenapp::bindIbl(driver, ibl);
+                    driver->bindUniformBuffer(8, sunShadowBuffer, 0, sizeof(SunShadowUniforms));
+                    driver->bindTexture(7, shadowMap, shadowSampler);
                     driver->bindUniformBuffer(2, objectBuffer, static_cast<std::uint32_t>(n * objectStride),
                             sizeof(ObjectUniforms));
                     zenapp::bindGltfMaterial(driver, gpu, model, primitive.material);
@@ -527,6 +670,7 @@ int main(int argc, char** argv)
         if (maxFrames > 0 && ++frames >= maxFrames) window_set_should_close(window, true);
     }
 
+    driver->destroy(shadowPipeline);
     driver->destroy(upPipeline);
     driver->destroy(down9Pipeline);
     driver->destroy(down13Pipeline);
@@ -537,6 +681,10 @@ int main(int argc, char** argv)
     driver->destroy(doublePipeline);
     driver->destroy(opaquePipeline);
     for (unsigned level = 0; level < kBloomLevels; ++level) driver->destroy(bloomTexture[level]);
+    driver->destroy(shadowSampler);
+    driver->destroy(shadowMap);
+    driver->destroy(lightFrameBuffer);
+    driver->destroy(sunShadowBuffer);
     driver->destroy(postBuffer);
     driver->destroy(sceneDepth);
     driver->destroy(sceneColor);
