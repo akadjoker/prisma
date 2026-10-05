@@ -53,5 +53,6 @@ done <<LIST
 31_gltf_viewer gltf_viewer 10
 32_ibl_clear_coat ibl_clear_coat 10
 33_flight_helmet flight_helmet 10
+34_drone drone 10
 LIST
 exit $status
