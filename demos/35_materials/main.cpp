@@ -5,6 +5,9 @@
 #include "common/PbrTextures.h"
 #include "common/PostProcess.h"
 #include "common/Projection.h"
+#include "common/Ssao.h"
+#include "common/SunShadow.h"
+#include "common/SunShadowFit.h"
 #include "common/ZenApp.h"
 #include "mathc.h"
 
@@ -97,6 +100,7 @@ const unsigned kRows = 5;
 const float kSpacing = 3.3f;
 const unsigned kRenderWidth = 1280;
 const unsigned kRenderHeight = 720;
+const float kSunLux = 110000.0f;
 const float kIblLuminance = 40000.0f;
 const float kAperture = 16.0f;
 const float kShutter = 1.0f / 125.0f;
@@ -130,13 +134,17 @@ int main(int argc, char** argv)
     const prisma::DriverType driverType = zenapp::driverType(argc, argv);
     const bool still = zenapp::hasArgument(argc, argv, "still");
     const float blur = numberArgument(argc, argv, "blur", 2.0f);
-    const float ev = numberArgument(argc, argv, "ev", 0.0f);
+    const float ev = numberArgument(argc, argv, "ev", -0.3f);
     const float divisor = numberArgument(argc, argv, "texdiv", 2.0f);
-    const float cameraHeight = numberArgument(argc, argv, "height", 7.0f);
+    const float cameraHeight = numberArgument(argc, argv, "height", 6.5f);
     const float cameraDistance = numberArgument(argc, argv, "distance", 9.0f);
     const float swing = numberArgument(argc, argv, "swing", 0.3f);
     const float bloomStrength = numberArgument(argc, argv, "bloom", 0.10f);
     const bool fxaaEnabled = numberArgument(argc, argv, "fxaa", 1.0f) > 0.5f;
+    const bool ssaoEnabled = numberArgument(argc, argv, "ssao", 1.0f) > 0.5f;
+    const bool ssaoDebug = zenapp::hasArgument(argc, argv, "aodebug");
+    const float sunScale = numberArgument(argc, argv, "sun", 1.0f);
+    const unsigned shadowSize = static_cast<unsigned>(numberArgument(argc, argv, "shadowsize", 2048.0f));
 
     char modelPath[1024];
     snprintf(modelPath, sizeof(modelPath), "%s/shader_ball/shader_ball.obj", PRISMA_MODELS_DIR);
@@ -246,7 +254,7 @@ int main(int argc, char** argv)
     {
         const bool isFloor = m == kMaterialCount;
         const MaterialDef floorDef = { "Sandy_gravel_01", false, true, nullptr, nullptr,
-            { 0.55f, 0.55f, 0.55f }, 0.0f, 1.0f, 24.0f, 1.0f };
+            { 0.2f, 0.17f, 0.13f }, 0.0f, 1.0f, 6.0f, 1.0f };
         const MaterialDef& def = isFloor ? floorDef : kMaterials[m];
         ownerOf[m] = -1;
         if (def.set)
@@ -297,7 +305,7 @@ int main(int argc, char** argv)
         u.flags[0] = sets[m].base.valid() ? 1.0f : 0.0f;
         u.flags[1] = sets[m].normal.valid() ? 1.0f : 0.0f;
         u.flags[2] = sets[m].orm.valid() ? 1.0f : 0.0f;
-        u.flags[3] = isFloor ? 0.12f : 1.0f;
+        u.flags[3] = isFloor ? 0.6f : 1.0f;
     }
     log_info("materials: %u texture sets loaded, %u materials", loadedSets, kMaterialCount);
 
@@ -435,7 +443,48 @@ int main(int argc, char** argv)
     const bool postReady = zenapp::createPostProcess(driver, kRenderWidth, kRenderHeight,
             bloomStrength, fxaaEnabled, &post);
 
-    const bool ready = postReady && iblReady && gpuReady && whiteTexture.valid() && flatTexture.valid() &&
+    const float aoNear = 0.1f;
+    const float aoFar = 200.0f;
+    const float aspect = static_cast<float>(kRenderWidth) / static_cast<float>(kRenderHeight);
+    const Math::Mat4 projection = zenapp::perspectiveZeroToOne(1.0f, aspect, aoNear, aoFar);
+    const Math::Mat4 inverseProjection = projection.Inverse();
+    zenapp::SsaoDesc ssaoDesc;
+    ssaoDesc.width = kRenderWidth;
+    ssaoDesc.height = kRenderHeight;
+    ssaoDesc.projection = projection.Data();
+    ssaoDesc.inverseProjection = inverseProjection.Data();
+    ssaoDesc.farPlane = aoFar;
+    ssaoDesc.enabled = ssaoEnabled;
+    ssaoDesc.debug = ssaoDebug;
+    zenapp::Ssao ssao;
+    const bool ssaoReady = zenapp::createSsao(driver, ssaoDesc, &ssao);
+
+    Math::Vec3 sunLow(1e30f, 0.0f, 1e30f);
+    Math::Vec3 sunHigh(-1e30f, 3.2f, -1e30f);
+    for (unsigned j = 0; j < kRows; ++j)
+    {
+        for (unsigned i = 0; i < kColumns; ++i)
+        {
+            const float x = (static_cast<float>(i) - (kColumns - 1) * 0.5f) * kSpacing +
+                            ((j & 1) ? kSpacing * 0.5f : -kSpacing * 0.25f);
+            const float z = -static_cast<float>(j) * kSpacing;
+            sunLow.x = fminf(sunLow.x, x - 2.0f);
+            sunLow.z = fminf(sunLow.z, z - 2.0f);
+            sunHigh.x = fmaxf(sunHigh.x, x + 2.0f);
+            sunHigh.z = fmaxf(sunHigh.z, z + 2.0f);
+        }
+    }
+    const float toSunRaw[3] = { -0.6f, 1.0f, 0.5f };
+    const float toSunLength = sqrtf(toSunRaw[0] * toSunRaw[0] + toSunRaw[1] * toSunRaw[1] +
+                                    toSunRaw[2] * toSunRaw[2]);
+    const Math::Vec3 toSun(toSunRaw[0] / toSunLength, toSunRaw[1] / toSunLength,
+            toSunRaw[2] / toSunLength);
+    zenapp::SunShadowParams sunParams;
+    zenapp::fitSunShadow(sunLow, sunHigh, toSun, shadowSize, 1.0f, &sunParams);
+    zenapp::SunShadow sunShadow;
+    const bool sunShadowReady = zenapp::createSunShadow(driver, shadowSize, sunParams, &sunShadow);
+
+    const bool ready = sunShadowReady && ssaoReady && postReady && iblReady && gpuReady && whiteTexture.valid() && flatTexture.valid() &&
                        materialSampler.valid() && frameBuffer.valid() && objectBuffer.valid() &&
                        materialBuffer.valid() && sceneColor.valid() &&
                        sceneDepth.valid() && materialPipeline.valid() && floorPipeline.valid() &&
@@ -461,12 +510,10 @@ int main(int argc, char** argv)
         window_get_framebuffer_size(window, &width, &height);
         if (width < 2 || height < 2) continue;
 
-        const float aspect = static_cast<float>(kRenderWidth) / static_cast<float>(kRenderHeight);
         const float sway = still ? 0.0f : sinf(static_cast<float>(time_seconds()) * 0.25f) * swing;
         const Math::Vec3 target(0.0f, 1.2f, -static_cast<float>(kRows - 1) * kSpacing * 0.5f);
         const Math::Vec3 eye(target.x + sinf(sway) * cameraDistance, cameraHeight,
                 target.z + cosf(sway) * cameraDistance);
-        const Math::Mat4 projection = zenapp::perspectiveZeroToOne(1.0f, aspect, 0.1f, 200.0f);
         const Math::Mat4 view = Math::Mat4::LookAt(eye, target, Math::Vec3(0.0f, 1.0f, 0.0f));
 
         FrameUniforms frame;
@@ -479,10 +526,40 @@ int main(int argc, char** argv)
         frame.camera[3] = 1.0f;
         frame.exposure[0] = kIblLuminance * exposure;
         frame.exposure[1] = blur;
-        frame.sunDirection[1] = 1.0f;
+        frame.sunDirection[0] = toSun.x;
+        frame.sunDirection[1] = toSun.y;
+        frame.sunDirection[2] = toSun.z;
+        frame.sunColorIntensity[0] = frame.sunColorIntensity[1] = frame.sunColorIntensity[2] = 1.0f;
+        frame.sunColorIntensity[3] = kSunLux * exposure * sunScale;
 
         driver->beginFrame();
         driver->updateBuffer(frameBuffer, 0, &frame, sizeof(frame));
+        zenapp::renderSunShadow(driver, &sunShadow, [&](prisma::PipelineHandle) {
+            zenapp::bindGltfGeometry(driver, gpu);
+            for (unsigned instance = 0; instance < instanceCount; ++instance)
+            {
+                driver->bindUniformBuffer(2, objectBuffer, instance * objectStride, sizeof(ObjectUniforms));
+                for (unsigned p = 0; p < ballPrimitives; ++p)
+                    zenapp::drawGltfPrimitive(driver, gpu, model.primitives[p]);
+            }
+        });
+
+        zenapp::renderSsao(driver, ssao, [&](prisma::PipelineHandle single, prisma::PipelineHandle doubled) {
+            zenapp::bindGltfGeometry(driver, gpu);
+            for (unsigned instance = 0; instance <= instanceCount; ++instance)
+            {
+                const bool isFloor = instance == instanceCount;
+                driver->bindPipeline(isFloor ? doubled : single);
+                driver->bindUniformBuffer(0, frameBuffer, 0, sizeof(FrameUniforms));
+                driver->bindUniformBuffer(2, objectBuffer, instance * objectStride, sizeof(ObjectUniforms));
+                if (isFloor)
+                    zenapp::drawGltfPrimitive(driver, gpu, model.primitives[floorPrimitive]);
+                else
+                    for (unsigned p = 0; p < ballPrimitives; ++p)
+                        zenapp::drawGltfPrimitive(driver, gpu, model.primitives[p]);
+            }
+        });
+
         driver->beginRenderPass(scenePass);
 
         driver->bindPipeline(skyPipeline);
@@ -499,6 +576,8 @@ int main(int argc, char** argv)
             driver->bindPipeline(isFloor ? floorPipeline : materialPipeline);
             driver->bindUniformBuffer(0, frameBuffer, 0, sizeof(FrameUniforms));
             zenapp::bindIbl(driver, ibl);
+            zenapp::bindSsao(driver, ssao);
+            zenapp::bindSunShadow(driver, sunShadow);
             driver->bindUniformBuffer(2, objectBuffer, instance * objectStride, sizeof(ObjectUniforms));
             driver->bindUniformBuffer(7, materialBuffer, materialIndex * materialStride, sizeof(MaterialUniforms));
             driver->bindTexture(2, set.base.valid() ? set.base : whiteTexture, materialSampler);
@@ -524,6 +603,8 @@ int main(int argc, char** argv)
     driver->destroy(materialPipeline);
     driver->destroy(sceneDepth);
     driver->destroy(sceneColor);
+    zenapp::destroySunShadow(driver, &sunShadow);
+    zenapp::destroySsao(driver, &ssao);
     zenapp::destroyPostProcess(driver, &post);
     driver->destroy(materialBuffer);
     driver->destroy(objectBuffer);

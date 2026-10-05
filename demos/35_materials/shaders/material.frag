@@ -5,6 +5,7 @@ layout(location = 0) in vec3 vNormal;
 layout(location = 1) in vec3 vWorld;
 layout(location = 2) in vec4 vTangent;
 layout(location = 3) in vec2 vUv;
+layout(location = 4) in vec3 vClip;
 
 layout(set = 0, binding = 0, std140) uniform Frame
 {
@@ -23,12 +24,19 @@ layout(set = 0, binding = 7, std140) uniform Material
     vec4 uFlags;
 };
 
+layout(set = 0, binding = 9, std140) uniform AoParams
+{
+    vec4 uAoParams;
+};
+
 layout(set = 1, binding = 2) uniform sampler2D uBaseTexture;
+layout(set = 1, binding = 8) uniform sampler2D uAmbientOcclusion;
 layout(set = 1, binding = 3) uniform sampler2D uNormalTexture;
 layout(set = 1, binding = 4) uniform sampler2D uOrmTexture;
 
 #include "../../common/shaders/pbr.glsl"
 #include "../../common/shaders/lighting.glsl"
+#include "../../common/shaders/sun_shadow.glsl"
 
 layout(location = 0) out vec4 oColor;
 
@@ -55,8 +63,18 @@ void main()
     float metallic = uParams.x * orm.b;
     PbrSurface surface = makeSurface(baseColor, metallic, roughness, n, v);
 
-    vec3 color = evaluateIbl(surface, n, v) * orm.r;
+    float ssao = 1.0;
+    if (uAoParams.x > 0.5)
+        ssao = texture(uAmbientOcclusion, vClip.xy / vClip.z * 0.5 + 0.5).r;
+    float diffuseAo = min(orm.r, ssao);
+    vec3 color = evaluateIblAmbientOcclusion(surface, n, v, diffuseAo);
     if (uSunColorIntensity.w > 0.0)
-        color += surfaceShading(surface, directionalLight(uSunDirection, uSunColorIntensity), n, v);
+    {
+        Light sun = directionalLight(uSunDirection, uSunColorIntensity);
+        sun.attenuation *= sunShadow(vWorld, normalize(vNormal));
+        color += surfaceShading(surface, sun, n, v);
+    }
+    if (uAoParams.y > 0.5)
+        color = vec3(0.3 * pow(diffuseAo, 6.0));
     oColor = vec4(color, 1.0);
 }

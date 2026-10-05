@@ -1,9 +1,11 @@
 #include "common/Equirect.h"
 #include "common/GltfGpu.h"
 #include "common/Ibl.h"
-#include "common/LightShadows.h"
+#include "common/SunShadow.h"
+#include "common/SunShadowFit.h"
 #include "common/PostProcess.h"
 #include "common/Projection.h"
+#include "common/Ssao.h"
 #include "common/ZenApp.h"
 #include "mathc.h"
 
@@ -14,12 +16,6 @@
 
 #include "drone.frag.h"
 #include "drone.vert.h"
-#include "mipmap_depth.frag.h"
-#include "sao.frag.h"
-#include "ssao_blur.frag.h"
-#include "shadow.frag.h"
-#include "shadow.vert.h"
-#include "fullscreen.vert.h"
 #include "sky.frag.h"
 #include "sky.vert.h"
 
@@ -34,14 +30,6 @@ struct FrameUniforms
     float exposure[4];
     float sunDirection[4];
     float sunColorIntensity[4];
-};
-
-struct SunShadowUniforms
-{
-    Math::Mat4 matrix;
-    float params[4];
-    float axisX[4];
-    float axisY[4];
 };
 
 struct ObjectUniforms
@@ -70,14 +58,6 @@ void setTargetFormats(prisma::PipelineDesc* desc, bool depth)
     desc->targets.colorCount = 1;
     desc->targets.colors[0] = prisma::TextureFormat::RGBA16F;
     desc->targets.depth = depth ? prisma::TextureFormat::Depth32F : prisma::TextureFormat::None;
-}
-
-void setLdrTargetFormats(prisma::PipelineDesc* desc)
-{
-    desc->targets.window = false;
-    desc->targets.colorCount = 1;
-    desc->targets.colors[0] = prisma::TextureFormat::RGBA8;
-    desc->targets.depth = prisma::TextureFormat::None;
 }
 
 float numberArgument(int argc, char** argv, const char* name, float fallback)
@@ -268,189 +248,27 @@ int main(int argc, char** argv)
     const bool postReady = zenapp::createPostProcess(driver, kRenderWidth, kRenderHeight,
             bloomStrength, fxaaEnabled > 0.5f, &post);
 
-    const Math::Vec3 toSun(0.0f, 1.0f, 0.0f);
-    const Math::Mat4 lightView = zenapp::shadowView(center + toSun * (radius * 2.0f), toSun * -1.0f);
-    Math::Vec3 lightLow(1e30f, 1e30f, 1e30f);
-    Math::Vec3 lightHigh(-1e30f, -1e30f, -1e30f);
-    for (int corner = 0; corner < 8; ++corner)
-    {
-        const Math::Vec4 world((corner & 1) ? boundsHigh.x : boundsLow.x,
-                (corner & 2) ? boundsHigh.y : boundsLow.y, (corner & 4) ? boundsHigh.z : boundsLow.z,
-                1.0f);
-        const Math::Vec4 inLight = lightView * world;
-        lightLow = Math::Vec3(fminf(lightLow.x, inLight.x), fminf(lightLow.y, inLight.y),
-                fminf(lightLow.z, inLight.z));
-        lightHigh = Math::Vec3(fmaxf(lightHigh.x, inLight.x), fmaxf(lightHigh.y, inLight.y),
-                fmaxf(lightHigh.z, inLight.z));
-    }
-    const float padding = radius * 0.02f;
-    const Math::Mat4 lightViewProjection = zenapp::orthographicZeroToOne(lightLow.x - padding,
-            lightHigh.x + padding, lightLow.y - padding, lightHigh.y + padding,
-            -lightHigh.z - padding, -lightLow.z + padding) * lightView;
-
-    SunShadowUniforms sunShadow;
-    memset(&sunShadow, 0, sizeof(sunShadow));
-    sunShadow.matrix = lightViewProjection;
-    sunShadow.params[0] = static_cast<float>(shadowSize);
-    sunShadow.params[1] = 1.0f / static_cast<float>(shadowSize);
-    sunShadow.params[2] = normalBias * (lightHigh.x - lightLow.x + 2.0f * padding) /
-                          static_cast<float>(shadowSize);
-    sunShadow.params[3] = normalBias * (lightHigh.y - lightLow.y + 2.0f * padding) /
-                          static_cast<float>(shadowSize);
-    const Math::Mat4 lightToWorld = lightView.Inverse();
-    for (int i = 0; i < 3; ++i)
-    {
-        sunShadow.axisX[i] = lightToWorld.Data()[i];
-        sunShadow.axisY[i] = lightToWorld.Data()[4 + i];
-    }
-    prisma::BufferDesc sunShadowDesc;
-    sunShadowDesc.usage = prisma::BufferUsage::Uniform;
-    sunShadowDesc.size = sizeof(sunShadow);
-    sunShadowDesc.data = &sunShadow;
-    sunShadowDesc.debugName = "sun shadow uniforms";
-    const prisma::BufferHandle sunShadowBuffer = driver->createBuffer(sunShadowDesc);
-
-    FrameUniforms lightFrame;
-    memset(&lightFrame, 0, sizeof(lightFrame));
-    lightFrame.viewProjection = lightViewProjection;
-    prisma::BufferDesc lightFrameDesc;
-    lightFrameDesc.usage = prisma::BufferUsage::Uniform;
-    lightFrameDesc.size = sizeof(lightFrame);
-    lightFrameDesc.data = &lightFrame;
-    lightFrameDesc.debugName = "light frame uniforms";
-    const prisma::BufferHandle lightFrameBuffer = driver->createBuffer(lightFrameDesc);
-
-    prisma::TextureDesc shadowMapDesc;
-    shadowMapDesc.format = prisma::TextureFormat::Depth32F;
-    shadowMapDesc.width = shadowSize;
-    shadowMapDesc.height = shadowSize;
-    shadowMapDesc.usage = prisma::kTextureSampled | prisma::kTextureRenderTarget;
-    shadowMapDesc.debugName = "sun shadow map";
-    const prisma::TextureHandle shadowMap = driver->createTexture(shadowMapDesc);
-    prisma::SamplerDesc shadowSamplerDesc;
-    shadowSamplerDesc.mipFilter = prisma::MipFilter::None;
-    shadowSamplerDesc.addressU = prisma::AddressMode::ClampToEdge;
-    shadowSamplerDesc.addressV = prisma::AddressMode::ClampToEdge;
-    shadowSamplerDesc.compare = true;
-    shadowSamplerDesc.compareOp = prisma::CompareOp::LessEqual;
-    shadowSamplerDesc.debugName = "sun shadow sampler";
-    const prisma::SamplerHandle shadowSampler = driver->createSampler(shadowSamplerDesc);
-    const prisma::ShaderHandle shadowVertex = zenapp::createShader(driver, shadow_vert);
-    const prisma::ShaderHandle shadowFragment = zenapp::createShader(driver, shadow_frag);
-    const unsigned structWidth = static_cast<unsigned>(ceilf(static_cast<float>(kRenderWidth) * 0.5f));
-    const unsigned structHeight = static_cast<unsigned>(ceilf(static_cast<float>(kRenderHeight) * 0.5f));
-    unsigned maxStructLevels = 1;
-    for (unsigned m = structWidth > structHeight ? structWidth : structHeight; m > 1; m >>= 1)
-        ++maxStructLevels;
-    const unsigned structLevels = maxStructLevels - 5 < 8 ? maxStructLevels - 5 : 8;
-
-    const unsigned kStructLevels = 5;
-    prisma::TextureHandle structDepth[kStructLevels];
-    bool aoReady = structLevels == kStructLevels;
-    for (unsigned level = 0; level < kStructLevels; ++level)
-    {
-        prisma::TextureDesc structDesc;
-        structDesc.format = prisma::TextureFormat::Depth32F;
-        structDesc.width = (structWidth >> level) > 1 ? (structWidth >> level) : 1;
-        structDesc.height = (structHeight >> level) > 1 ? (structHeight >> level) : 1;
-        structDesc.usage = prisma::kTextureSampled | prisma::kTextureRenderTarget;
-        structDesc.debugName = "structure depth";
-        structDepth[level] = driver->createTexture(structDesc);
-        aoReady = aoReady && structDepth[level].valid();
-    }
-    prisma::TextureHandle aoTexture[3];
-    for (int i = 0; i < 3; ++i)
-    {
-        prisma::TextureDesc aoDesc;
-        aoDesc.format = prisma::TextureFormat::RGBA8;
-        aoDesc.width = structWidth;
-        aoDesc.height = structHeight;
-        aoDesc.usage = prisma::kTextureSampled | prisma::kTextureRenderTarget;
-        aoDesc.debugName = "ssao";
-        aoTexture[i] = driver->createTexture(aoDesc);
-        aoReady = aoReady && aoTexture[i].valid();
-    }
-    prisma::SamplerDesc depthSamplerDesc;
-    depthSamplerDesc.minFilter = prisma::Filter::Nearest;
-    depthSamplerDesc.magFilter = prisma::Filter::Nearest;
-    depthSamplerDesc.mipFilter = prisma::MipFilter::Nearest;
-    depthSamplerDesc.addressU = prisma::AddressMode::ClampToEdge;
-    depthSamplerDesc.addressV = prisma::AddressMode::ClampToEdge;
-    depthSamplerDesc.debugName = "structure sampler";
-    const prisma::SamplerHandle depthSampler = driver->createSampler(depthSamplerDesc);
-    prisma::SamplerDesc aoNearestDesc = depthSamplerDesc;
-    aoNearestDesc.mipFilter = prisma::MipFilter::None;
-    aoNearestDesc.debugName = "ssao nearest sampler";
-    const prisma::SamplerHandle aoNearestSampler = driver->createSampler(aoNearestDesc);
-    prisma::SamplerDesc aoLinearDesc = aoNearestDesc;
-    aoLinearDesc.minFilter = prisma::Filter::Linear;
-    aoLinearDesc.magFilter = prisma::Filter::Linear;
-    aoLinearDesc.debugName = "ssao linear sampler";
-    const prisma::SamplerHandle aoLinearSampler = driver->createSampler(aoLinearDesc);
-
-    const float tau = 6.28318531f;
-    const float aoNear = radius * 0.1f;
     const float aoFar = radius * 20.0f;
     const Math::Mat4 aoProjection = zenapp::perspectiveZeroToOne(0.6f,
-            static_cast<float>(kRenderWidth) / static_cast<float>(kRenderHeight), aoNear, aoFar);
+            static_cast<float>(kRenderWidth) / static_cast<float>(kRenderHeight), radius * 0.1f, aoFar);
     const Math::Mat4 aoInverseProjection = aoProjection.Inverse();
-    const float* ip = aoInverseProjection.Data();
-    const float aoRadius = 0.3f;
-    const float aoSampleCount = 7.0f;
-    const float aoSpiralTurns = 3.0f;
-    const float aoPeak = 0.1f * aoRadius;
-    const float aoIncrement = (1.0f / (aoSampleCount - 0.5f)) * aoSpiralTurns * tau;
-    const float projectionScale = fminf(0.5f * aoProjection.Data()[0] * static_cast<float>(structWidth),
-            0.5f * aoProjection.Data()[5] * static_cast<float>(structHeight));
+    zenapp::SsaoDesc ssaoDesc;
+    ssaoDesc.width = kRenderWidth;
+    ssaoDesc.height = kRenderHeight;
+    ssaoDesc.projection = aoProjection.Data();
+    ssaoDesc.inverseProjection = aoInverseProjection.Data();
+    ssaoDesc.farPlane = aoFar;
+    ssaoDesc.enabled = ssaoEnabled > 0.5f;
+    ssaoDesc.debug = ssaoDebug > 0.5f;
+    zenapp::Ssao ssao;
+    const bool ssaoReady = zenapp::createSsao(driver, ssaoDesc, &ssao);
 
-    const unsigned aoStride = (sizeof(float) * 28 + alignment - 1) / alignment * alignment;
-    const unsigned aoRanges = 3 + structLevels;
-    ct::Vector<unsigned char> aoBytes;
-    aoBytes.resize(static_cast<size_t>(aoStride) * aoRanges);
-    memset(aoBytes.data(), 0, aoBytes.size());
-    float sao[28] = {
-        ip[10], ip[14], ip[11], ip[15],
-        static_cast<float>(structWidth), static_cast<float>(structHeight),
-        1.0f / static_cast<float>(structWidth), 1.0f / static_cast<float>(structHeight),
-        ip[0] * 2.0f, ip[5] * 2.0f, 1.0f / (aoRadius * aoRadius), 0.0f,
-        aoPeak * aoPeak, projectionScale, projectionScale * aoRadius, 0.0005f,
-        2.0f, (tau * aoPeak) / aoSampleCount, aoSpiralTurns, -1.0f / aoFar,
-        aoSampleCount, 1.0f / (aoSampleCount - 0.5f), cosf(aoIncrement), sinf(aoIncrement),
-        static_cast<float>(structLevels - 1), 0.0f, 0.0f, 0.0f };
-    memcpy(aoBytes.data(), sao, sizeof(sao));
-    const float blurStandardDeviation = 4.0f;
-    float ssaoBlur[24];
-    memset(ssaoBlur, 0, sizeof(ssaoBlur));
-    const unsigned blurTaps = 6;
-    for (unsigned i = 0; i < blurTaps; ++i)
-        ssaoBlur[8 + i] = expf(-(static_cast<float>(i) * static_cast<float>(i)) /
-                           (2.0f * blurStandardDeviation * blurStandardDeviation));
-    ssaoBlur[4] = static_cast<float>(blurTaps);
-    ssaoBlur[5] = -aoFar / 0.05f;
-    ssaoBlur[0] = 2.0f / static_cast<float>(structWidth);
-    memcpy(aoBytes.data() + static_cast<size_t>(aoStride), ssaoBlur, sizeof(ssaoBlur));
-    ssaoBlur[0] = 0.0f;
-    ssaoBlur[1] = 2.0f / static_cast<float>(structHeight);
-    memcpy(aoBytes.data() + static_cast<size_t>(aoStride) * 2, ssaoBlur, sizeof(ssaoBlur));
-    for (unsigned level = 0; level + 1 < structLevels; ++level)
-    {
-        const float source[4] = { static_cast<float>(level), 0.0f, 0.0f, 0.0f };
-        memcpy(aoBytes.data() + static_cast<size_t>(aoStride) * (3 + level), source, sizeof(source));
-    }
-    const float aoParams[4] = { ssaoEnabled, ssaoDebug, 0.0f, 0.0f };
-    memcpy(aoBytes.data() + static_cast<size_t>(aoStride) * (2 + structLevels), aoParams,
-            sizeof(aoParams));
-    prisma::BufferDesc aoDesc;
-    aoDesc.usage = prisma::BufferUsage::Uniform;
-    aoDesc.size = static_cast<std::uint32_t>(aoBytes.size());
-    aoDesc.data = aoBytes.data();
-    aoDesc.debugName = "ssao uniforms";
-    const prisma::BufferHandle aoBuffer = driver->createBuffer(aoDesc);
+    zenapp::SunShadowParams sunParams;
+    zenapp::fitSunShadow(boundsLow, boundsHigh, Math::Vec3(0.0f, 1.0f, 0.0f), shadowSize, normalBias,
+            &sunParams);
+    zenapp::SunShadow sunShadow;
+    const bool sunShadowReady = zenapp::createSunShadow(driver, shadowSize, sunParams, &sunShadow);
 
-    const prisma::ShaderHandle mipDepthFragment = zenapp::createShader(driver, mipmap_depth_frag);
-    const prisma::ShaderHandle saoFragment = zenapp::createShader(driver, sao_frag);
-    const prisma::ShaderHandle blurFragment = zenapp::createShader(driver, ssao_blur_frag);
-    const prisma::ShaderHandle fullscreenVertex = zenapp::createShader(driver, fullscreen_vert);
     const prisma::ShaderHandle droneVertex = zenapp::createShader(driver, drone_vert);
     const prisma::ShaderHandle droneFragment = zenapp::createShader(driver, drone_frag);
     const prisma::ShaderHandle skyVertex = zenapp::createShader(driver, sky_vert);
@@ -504,81 +322,15 @@ int main(int argc, char** argv)
     setTargetFormats(&skyDesc, true);
     const prisma::PipelineHandle skyPipeline = driver->createPipeline(skyDesc);
 
-    prisma::PipelineDesc shadowDesc;
-    shadowDesc.vertexShader = shadowVertex;
-    shadowDesc.fragmentShader = shadowFragment;
-    shadowDesc.vertexBuffers[0].stride = sizeof(zenapp::GltfVertex);
-    shadowDesc.vertexBufferCount = 1;
-    shadowDesc.attributeCount = 1;
-    shadowDesc.attributes[0].location = 0;
-    shadowDesc.attributes[0].format = prisma::VertexFormat::Float3;
-    shadowDesc.attributes[0].offset = offsetof(zenapp::GltfVertex, position);
-    shadowDesc.depthTest = true;
-    shadowDesc.cullMode = prisma::CullMode::None;
-    shadowDesc.colorMask = 0;
-    shadowDesc.targets.window = false;
-    shadowDesc.targets.colorCount = 0;
-    shadowDesc.targets.depth = prisma::TextureFormat::Depth32F;
-    shadowDesc.depthBiasConstant = 2.0f;
-    shadowDesc.depthBiasSlope = 2.0f;
-    shadowDesc.debugName = "sun shadow";
-    const prisma::PipelineHandle shadowPipeline = driver->createPipeline(shadowDesc);
-
-    prisma::PipelineDesc structDepthDesc = shadowDesc;
-    structDepthDesc.cullMode = prisma::CullMode::Back;
-    structDepthDesc.depthBiasConstant = 0.0f;
-    structDepthDesc.depthBiasSlope = 0.0f;
-    structDepthDesc.debugName = "structure";
-    const prisma::PipelineHandle structPipeline = driver->createPipeline(structDepthDesc);
-    structDepthDesc.cullMode = prisma::CullMode::None;
-    structDepthDesc.debugName = "structure double sided";
-    const prisma::PipelineHandle structDoublePipeline = driver->createPipeline(structDepthDesc);
-
-    prisma::PipelineDesc mipDepthDesc;
-    mipDepthDesc.vertexShader = fullscreenVertex;
-    mipDepthDesc.fragmentShader = mipDepthFragment;
-    mipDepthDesc.depthTest = true;
-    mipDepthDesc.depthWrite = true;
-    mipDepthDesc.depthCompare = prisma::CompareOp::Always;
-    mipDepthDesc.colorMask = 0;
-    mipDepthDesc.targets.window = false;
-    mipDepthDesc.targets.colorCount = 0;
-    mipDepthDesc.targets.depth = prisma::TextureFormat::Depth32F;
-    mipDepthDesc.debugName = "structure mip";
-    const prisma::PipelineHandle mipDepthPipeline = driver->createPipeline(mipDepthDesc);
-
-    prisma::PipelineDesc saoDesc;
-    saoDesc.vertexShader = fullscreenVertex;
-    saoDesc.fragmentShader = saoFragment;
-    saoDesc.depthWrite = false;
-    setLdrTargetFormats(&saoDesc);
-    saoDesc.debugName = "sao";
-    const prisma::PipelineHandle saoPipeline = driver->createPipeline(saoDesc);
-    prisma::PipelineDesc ssaoBlurDesc = saoDesc;
-    ssaoBlurDesc.fragmentShader = blurFragment;
-    ssaoBlurDesc.debugName = "ssao blur";
-    const prisma::PipelineHandle ssaoBlurPipeline = driver->createPipeline(ssaoBlurDesc);
-
     driver->destroy(droneVertex);
     driver->destroy(droneFragment);
     driver->destroy(skyVertex);
     driver->destroy(skyFragment);
-    driver->destroy(fullscreenVertex);
-    driver->destroy(mipDepthFragment);
-    driver->destroy(saoFragment);
-    driver->destroy(blurFragment);
-    driver->destroy(shadowVertex);
-    driver->destroy(shadowFragment);
 
     const bool ready = iblReady && gpuReady && frameBuffer.valid() && objectBuffer.valid() &&
                        opaquePipeline.valid() && doublePipeline.valid() && blendPipeline.valid() &&
                        skyPipeline.valid() && sceneColor.valid() && sceneDepth.valid() &&
-                       postReady && shadowPipeline.valid() &&
-                       shadowMap.valid() && shadowSampler.valid() && sunShadowBuffer.valid() &&
-                       lightFrameBuffer.valid() && aoReady && aoBuffer.valid() && depthSampler.valid() &&
-                       aoNearestSampler.valid() && aoLinearSampler.valid() &&
-                       structPipeline.valid() && structDoublePipeline.valid() &&
-                       mipDepthPipeline.valid() && saoPipeline.valid() && ssaoBlurPipeline.valid();
+                       postReady && sunShadowReady && ssaoReady;
     if (!ready) log_error("drone: resource creation failed");
 
     prisma::RenderPassDesc scenePass;
@@ -590,7 +342,6 @@ int main(int argc, char** argv)
     prisma::RenderPassDesc windowPass;
     windowPass.depthLoad = prisma::LoadOp::DontCare;
 
-    bool shadowDrawn = false;
     int frames = 0;
     while (ready && !window_should_close(window))
     {
@@ -627,13 +378,7 @@ int main(int argc, char** argv)
 
         driver->beginFrame();
         driver->updateBuffer(frameBuffer, 0, &frame, sizeof(frame));
-        if (!shadowDrawn)
-        {
-            prisma::RenderPassDesc shadowPass;
-            shadowPass.depth.texture = shadowMap;
-            driver->beginRenderPass(shadowPass);
-            driver->bindPipeline(shadowPipeline);
-            driver->bindUniformBuffer(0, lightFrameBuffer, 0, sizeof(FrameUniforms));
+        zenapp::renderSunShadow(driver, &sunShadow, [&](prisma::PipelineHandle) {
             zenapp::bindGltfGeometry(driver, gpu);
             for (size_t n = 0; n < model.nodes.size(); ++n)
             {
@@ -651,23 +396,14 @@ int main(int argc, char** argv)
                     zenapp::drawGltfPrimitive(driver, gpu, primitive);
                 }
             }
-            driver->endRenderPass();
-            shadowDrawn = true;
-        }
+        });
 
-        if (ssaoEnabled > 0.5f)
-        {
-            prisma::RenderPassDesc structPass;
-            structPass.depth.texture = structDepth[0];
-            driver->beginRenderPass(structPass);
+        zenapp::renderSsao(driver, ssao, [&](prisma::PipelineHandle single, prisma::PipelineHandle doubled) {
             zenapp::bindGltfGeometry(driver, gpu);
-            driver->bindUniformBuffer(0, frameBuffer, 0, sizeof(FrameUniforms));
             for (size_t n = 0; n < model.nodes.size(); ++n)
             {
                 if (model.nodes[n].mesh < 0) continue;
                 const zenapp::GltfMesh& mesh = model.meshes[static_cast<size_t>(model.nodes[n].mesh)];
-                driver->bindUniformBuffer(2, objectBuffer, static_cast<std::uint32_t>(n * objectStride),
-                        sizeof(ObjectUniforms));
                 for (unsigned p = 0; p < mesh.primitiveCount; ++p)
                 {
                     const zenapp::GltfPrimitive& primitive = model.primitives[mesh.firstPrimitive + p];
@@ -675,53 +411,14 @@ int main(int argc, char** argv)
                     const zenapp::GltfMaterial& material =
                             model.materials[static_cast<size_t>(primitive.material)];
                     if (material.alpha == zenapp::GltfMaterial::Alpha::Blend) continue;
-                    driver->bindPipeline(material.doubleSided ? structDoublePipeline : structPipeline);
+                    driver->bindPipeline(material.doubleSided ? doubled : single);
                     driver->bindUniformBuffer(0, frameBuffer, 0, sizeof(FrameUniforms));
                     driver->bindUniformBuffer(2, objectBuffer,
                             static_cast<std::uint32_t>(n * objectStride), sizeof(ObjectUniforms));
                     zenapp::drawGltfPrimitive(driver, gpu, primitive);
                 }
             }
-            driver->endRenderPass();
-
-            for (unsigned level = 1; level < structLevels; ++level)
-            {
-                prisma::RenderPassDesc mipPass;
-                mipPass.depth.texture = structDepth[level];
-                mipPass.depthLoad = prisma::LoadOp::DontCare;
-                driver->beginRenderPass(mipPass);
-                driver->bindPipeline(mipDepthPipeline);
-                driver->bindUniformBuffer(0, aoBuffer, (3 + level - 1) * aoStride, sizeof(float) * 4);
-                driver->bindTexture(0, structDepth[level - 1], depthSampler);
-                driver->draw(3, 0);
-                driver->endRenderPass();
-            }
-
-            prisma::RenderPassDesc aoPass;
-            aoPass.colorCount = 1;
-            aoPass.depthLoad = prisma::LoadOp::DontCare;
-            aoPass.stencilLoad = prisma::LoadOp::DontCare;
-            aoPass.clearColor[0] = aoPass.clearColor[1] = aoPass.clearColor[2] = 1.0f;
-            aoPass.colors[0].texture = aoTexture[0];
-            driver->beginRenderPass(aoPass);
-            driver->bindPipeline(saoPipeline);
-            driver->bindUniformBuffer(0, aoBuffer, 0, sizeof(float) * 28);
-            for (unsigned level = 0; level < kStructLevels; ++level)
-                driver->bindTexture(level, structDepth[level], depthSampler);
-            driver->draw(3, 0);
-            driver->endRenderPass();
-
-            for (int pass = 0; pass < 2; ++pass)
-            {
-                aoPass.colors[0].texture = aoTexture[pass + 1];
-                driver->beginRenderPass(aoPass);
-                driver->bindPipeline(ssaoBlurPipeline);
-                driver->bindUniformBuffer(0, aoBuffer, (1 + pass) * aoStride, sizeof(float) * 24);
-                driver->bindTexture(0, aoTexture[pass], aoNearestSampler);
-                driver->draw(3, 0);
-                driver->endRenderPass();
-            }
-        }
+        });
 
         driver->beginRenderPass(scenePass);
 
@@ -750,10 +447,8 @@ int main(int argc, char** argv)
                                                                          : opaquePipeline));
                     driver->bindUniformBuffer(0, frameBuffer, 0, sizeof(FrameUniforms));
                     zenapp::bindIbl(driver, ibl);
-                    driver->bindUniformBuffer(8, sunShadowBuffer, 0, sizeof(SunShadowUniforms));
-                    driver->bindTexture(7, shadowMap, shadowSampler);
-                    driver->bindUniformBuffer(9, aoBuffer, (2 + structLevels) * aoStride, sizeof(float) * 4);
-                    driver->bindTexture(8, aoTexture[2], aoLinearSampler);
+                    zenapp::bindSunShadow(driver, sunShadow);
+                    zenapp::bindSsao(driver, ssao);
                     driver->bindUniformBuffer(2, objectBuffer, static_cast<std::uint32_t>(n * objectStride),
                             sizeof(ObjectUniforms));
                     zenapp::bindGltfMaterial(driver, gpu, model, primitive.material);
@@ -770,26 +465,12 @@ int main(int argc, char** argv)
         if (maxFrames > 0 && ++frames >= maxFrames) window_set_should_close(window, true);
     }
 
-    driver->destroy(ssaoBlurPipeline);
-    driver->destroy(saoPipeline);
-    driver->destroy(mipDepthPipeline);
-    driver->destroy(structDoublePipeline);
-    driver->destroy(structPipeline);
-    driver->destroy(shadowPipeline);
     driver->destroy(skyPipeline);
     driver->destroy(blendPipeline);
     driver->destroy(doublePipeline);
     driver->destroy(opaquePipeline);
-    for (int i = 0; i < 3; ++i) driver->destroy(aoTexture[i]);
-    for (unsigned level = 0; level < kStructLevels; ++level) driver->destroy(structDepth[level]);
-    driver->destroy(aoBuffer);
-    driver->destroy(aoLinearSampler);
-    driver->destroy(aoNearestSampler);
-    driver->destroy(depthSampler);
-    driver->destroy(shadowSampler);
-    driver->destroy(shadowMap);
-    driver->destroy(lightFrameBuffer);
-    driver->destroy(sunShadowBuffer);
+    zenapp::destroySsao(driver, &ssao);
+    zenapp::destroySunShadow(driver, &sunShadow);
     zenapp::destroyPostProcess(driver, &post);
     driver->destroy(sceneDepth);
     driver->destroy(sceneColor);

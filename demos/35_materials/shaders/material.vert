@@ -25,6 +25,7 @@ layout(location = 0) out vec3 vNormal;
 layout(location = 1) out vec3 vWorld;
 layout(location = 2) out vec4 vTangent;
 layout(location = 3) out vec2 vUv;
+layout(location = 4) out vec3 vClip;
 
 void main()
 {
@@ -34,4 +35,5 @@ void main()
     vTangent = vec4(mat3(uModel) * aTangent.xyz, aTangent.w);
     vUv = aUv;
     gl_Position = uViewProjection * world;
+    vClip = gl_Position.xyw;
 }
