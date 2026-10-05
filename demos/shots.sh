@@ -55,5 +55,6 @@ done <<LIST
 33_flight_helmet flight_helmet 10
 34_drone drone 10
 35_materials materials 6
+36_refraction refraction 6
 LIST
 exit $status

@@ -44,6 +44,7 @@ if(PRISMA_BUILD_DEMOS OR PRISMA_BUILD_TESTS)
     add_library(demo_ibl STATIC demos/common/Prefilter.cpp demos/common/Froxelizer.cpp demos/common/TextOverlay.cpp
             demos/common/GltfModel.cpp demos/common/ObjModel.cpp demos/common/GltfGpu.cpp demos/common/cgltf_impl.cpp
             demos/common/PostProcess.cpp demos/common/Ssao.cpp demos/common/SunShadow.cpp
+            demos/common/ColorPyramid.cpp
             demos/common/third_party/mikktspace.c)
     set_source_files_properties(demos/common/cgltf_impl.cpp demos/common/third_party/mikktspace.c
                                 PROPERTIES COMPILE_OPTIONS -w)
@@ -56,7 +57,8 @@ if(PRISMA_BUILD_DEMOS OR PRISMA_BUILD_TESTS)
                    demos/common/shaders/bloom_up.frag demos/common/shaders/final.frag
                    demos/common/shaders/fxaa.frag demos/common/shaders/depth_only.vert
                    demos/common/shaders/depth_only.frag demos/common/shaders/mipmap_depth.frag
-                   demos/common/shaders/sao.frag demos/common/shaders/ssao_blur.frag)
+                   demos/common/shaders/sao.frag demos/common/shaders/ssao_blur.frag
+                   demos/common/shaders/gaussian_blur.frag)
   endif()
   if(PRISMA_BUILD_DEMOS)
     add_subdirectory(demos)
