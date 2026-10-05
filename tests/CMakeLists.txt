@@ -50,6 +50,11 @@ if(TARGET demo_ibl)
   target_compile_definitions(test_gltf PRIVATE
     PRISMA_MODELS_DIR="${PRISMA_MODELS_DIR}")
   add_test(NAME gltf COMMAND test_gltf)
+
+  add_executable(test_obj test_obj.cpp)
+  target_include_directories(test_obj PRIVATE ${PROJECT_SOURCE_DIR}/demos/common)
+  target_link_libraries(test_obj PRIVATE demo_ibl ct)
+  add_test(NAME obj COMMAND test_obj)
 endif()
 
 if(TARGET mathc)

@@ -42,7 +42,7 @@ if(PRISMA_BUILD_DEMOS OR PRISMA_BUILD_TESTS)
   target_compile_options(demo_common PRIVATE -w)
   if(PRISMA_SHADER_TOOLS)
     add_library(demo_ibl STATIC demos/common/Prefilter.cpp demos/common/Froxelizer.cpp demos/common/TextOverlay.cpp
-            demos/common/GltfModel.cpp demos/common/GltfGpu.cpp demos/common/cgltf_impl.cpp
+            demos/common/GltfModel.cpp demos/common/ObjModel.cpp demos/common/GltfGpu.cpp demos/common/cgltf_impl.cpp
             demos/common/third_party/mikktspace.c)
     set_source_files_properties(demos/common/cgltf_impl.cpp demos/common/third_party/mikktspace.c
                                 PROPERTIES COMPILE_OPTIONS -w)
