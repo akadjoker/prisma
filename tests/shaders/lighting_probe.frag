@@ -37,10 +37,7 @@ void main()
         vec3 n = normalize(uA.xyz);
         vec3 v = normalize(uB.xyz);
         PbrSurface surface;
-        surface.diffuseColor = uD.xyz * (1.0 - uA.w);
-        surface.f0 = uD.xyz * uA.w + vec3(0.04 * (1.0 - uA.w));
-        surface.perceptualRoughness = uB.w;
-        surface.roughness = uB.w * uB.w;
+        setClearCoatSurface(surface, uD.xyz, uA.w, uB.w, uC.w, uD.w);
         surface.noV = max(dot(n, v), kMinNoV);
         surface.dfg = vec3(0.0);
         surface.energyCompensation = vec3(1.0);

@@ -62,11 +62,20 @@ float referenceFalloff(float distance, float radius)
     return window * window / (distance * distance);
 }
 
-void referenceShade(const float* n, const float* v, const float* l, const float* baseColor,
-        float metallic, float perceptualRoughness, const float* radiance, float attenuation,
-        float* out)
+float referenceF0ClearCoat(float f0)
 {
-    const float alpha = perceptualRoughness * perceptualRoughness;
+    float value = f0 * (f0 * (0.941892f - 0.263008f * f0) + 0.346479f) - 0.0285998f;
+    return clamp01(value);
+}
+
+void referenceShade(const float* n, const float* v, const float* l, const float* baseColor,
+        float metallic, float perceptualRoughness, float clearCoat, float clearCoatRoughness,
+        const float* radiance, float attenuation, float* out)
+{
+    const float coatPerceptual = fminf(fmaxf(clearCoatRoughness, 0.045f), 1.0f);
+    float basePerceptual = fminf(fmaxf(perceptualRoughness, 0.045f), 1.0f);
+    basePerceptual += (fmaxf(basePerceptual, coatPerceptual) - basePerceptual) * clearCoat;
+    const float alpha = basePerceptual * basePerceptual;
     float h[3] = { v[0] + l[0], v[1] + l[1], v[2] + l[2] };
     normalize3(h);
     const float noL = clamp01(dot3(n, l));
@@ -75,15 +84,25 @@ void referenceShade(const float* n, const float* v, const float* l, const float*
     const float loH = clamp01(dot3(l, h));
     const float d = referenceD(alpha, noH);
     const float visibility = referenceV(alpha, noV, noL);
+    float f0[3];
     float f0Sum = 0.0f;
-    for (int c = 0; c < 3; ++c) f0Sum += baseColor[c] * metallic + 0.04f * (1.0f - metallic);
-    const float f90 = clamp01(f0Sum * 50.0f * 0.33f);
     for (int c = 0; c < 3; ++c)
     {
-        const float f0 = baseColor[c] * metallic + 0.04f * (1.0f - metallic);
-        const float fresnel = f0 + (f90 - f0) * powf(1.0f - loH, 5.0f);
+        const float dielectric = baseColor[c] * metallic + 0.04f * (1.0f - metallic);
+        f0[c] = dielectric + (referenceF0ClearCoat(dielectric) - dielectric) * clearCoat;
+        f0Sum += f0[c];
+    }
+    const float f90 = clamp01(f0Sum * 50.0f * 0.33f);
+    const float coatD = referenceD(coatPerceptual * coatPerceptual, noH);
+    const float coatV = 0.25f / fmaxf(loH * loH, 0.0000039f);
+    const float coatF = (0.04f + 0.96f * powf(1.0f - loH, 5.0f)) * clearCoat;
+    for (int c = 0; c < 3; ++c)
+    {
+        const float fresnel = f0[c] + (f90 - f0[c]) * powf(1.0f - loH, 5.0f);
         const float diffuse = baseColor[c] * (1.0f - metallic) / kPi;
-        out[c] += (diffuse + d * visibility * fresnel) * radiance[c] * attenuation * noL;
+        float color = diffuse + d * visibility * fresnel;
+        if (clearCoat > 0.0f) color = color * (1.0f - coatF) + coatD * coatV * coatF;
+        out[c] += color * radiance[c] * attenuation * noL;
     }
 }
 
@@ -241,6 +260,8 @@ int main(int argc, char** argv)
         float baseColor[3];
         float metallic;
         float roughness;
+        float clearCoat;
+        float clearCoatRoughness;
     };
     const Case cases[] = {
         { { 0.0f, 0.0f, 0.0f }, { 0, 1, 0 }, { 0.2f, 0.8f, 0.6f }, { 0.8f, 0.1f, 0.1f }, 0.0f, 0.5f },
@@ -250,6 +271,9 @@ int main(int argc, char** argv)
         { { 3.5f, 0.0f, 3.5f }, { 0, 1, 0 }, { 0.0f, 1.0f, 0.2f }, { 0.5f, 0.5f, 0.5f }, 0.0f, 0.6f },
         { { -0.5f, 0.0f, 0.2f }, { 0.3f, 0.7f, 0.2f }, { 0.5f, 0.6f, 0.3f }, { 0.7f, 0.7f, 0.2f }, 1.0f, 0.4f },
         { { 0.2f, 0.0f, 0.1f }, { 0.1f, 1.0f, 0.2f }, { 0.9f, 0.3f, 0.2f }, { 0.004f, 0.003f, 0.005f }, 1.0f, 0.3f },
+        { { 0.0f, 0.0f, 0.0f }, { 0, 1, 0 }, { 0.2f, 0.8f, 0.6f }, { 0.7f, 0.0f, 0.0f }, 1.0f, 0.65f, 1.0f, 0.1f },
+        { { 0.5f, 0.0f, 0.2f }, { 0.3f, 0.9f, 0.1f }, { -0.4f, 0.7f, 0.5f }, { 0.8f, 0.5f, 0.2f }, 1.0f, 0.3f, 0.5f, 0.4f },
+        { { 1.0f, 0.2f, 1.2f }, { 0, 1, 0 }, { 0.5f, 0.6f, 0.4f }, { 0.2f, 0.5f, 0.3f }, 0.0f, 0.2f, 1.0f, 0.8f },
     };
 
     float worstShading = 0.0f;
@@ -266,7 +290,7 @@ int main(int argc, char** argv)
         normalize3(sunL);
         const float sunRadiance[3] = { sunColor[0] * 2.0f, sunColor[1] * 2.0f, sunColor[2] * 2.0f };
         referenceShade(n, v, sunL, scenario.baseColor, scenario.metallic, scenario.roughness,
-                sunRadiance, 1.0f, expected);
+                scenario.clearCoat, scenario.clearCoatRoughness, sunRadiance, 1.0f, expected);
 
         float toPoint[3] = { pointPosition[0] - scenario.position[0],
             pointPosition[1] - scenario.position[1], pointPosition[2] - scenario.position[2] };
@@ -275,7 +299,7 @@ int main(int argc, char** argv)
         const float pointRadiance[3] = { pointColor[0] * 12.0f, pointColor[1] * 12.0f,
             pointColor[2] * 12.0f };
         referenceShade(n, v, toPoint, scenario.baseColor, scenario.metallic, scenario.roughness,
-                pointRadiance, referenceFalloff(pointDistance, pointRadius), expected);
+                scenario.clearCoat, scenario.clearCoatRoughness, pointRadiance, referenceFalloff(pointDistance, pointRadius), expected);
 
         float toSpot[3] = { spotPosition[0] - scenario.position[0],
             spotPosition[1] - scenario.position[1], spotPosition[2] - scenario.position[2] };
@@ -290,7 +314,7 @@ int main(int argc, char** argv)
         const float spotRadiance[3] = { spotColor[0] * 18.0f, spotColor[1] * 18.0f,
             spotColor[2] * 18.0f };
         referenceShade(n, v, toSpot, scenario.baseColor, scenario.metallic, scenario.roughness,
-                spotRadiance, referenceFalloff(spotDistance, spotRadius) * cone * cone, expected);
+                scenario.clearCoat, scenario.clearCoatRoughness, spotRadiance, referenceFalloff(spotDistance, spotRadius) * cone * cone, expected);
 
         for (int channel = 0; channel < 3; ++channel)
         {
@@ -308,6 +332,8 @@ int main(int argc, char** argv)
             }
             probe.a[3] = scenario.metallic;
             probe.b[3] = scenario.roughness;
+            probe.c[3] = scenario.clearCoat;
+            probe.d[3] = scenario.clearCoatRoughness;
             const float got = run(probe);
             const float error = fabsf(got - expected[channel]) /
                                 fmaxf(expected[channel], 0.05f);

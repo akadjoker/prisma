@@ -41,6 +41,9 @@ void main()
         surface.noV = max(dot(n, v), kMinNoV);
         surface.dfg = vec3(0.0);
         surface.energyCompensation = vec3(1.0);
+        surface.clearCoat = 0.0;
+        surface.clearCoatPerceptualRoughness = 1.0;
+        surface.clearCoatRoughness = 1.0;
         vec3 color = mode == 0 ? evaluateLights(surface, n, v, uC.xyz, uE.xyz)
                                : evaluateAllLights(surface, n, v, uC.xyz);
         result = color.r + color.g + color.b;

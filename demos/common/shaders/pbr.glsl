@@ -25,6 +25,18 @@ PbrSurface makeSurface(vec3 baseColor, float metallic, float perceptualRoughness
     surface.f0 = baseColor * metallic + vec3(0.04 * (1.0 - metallic));
     surface.perceptualRoughness = clamp(perceptualRoughness, kMinPerceptualRoughness, 1.0);
     surface.roughness = surface.perceptualRoughness * surface.perceptualRoughness;
+    surface.clearCoat = 0.0;
+    surface.clearCoatPerceptualRoughness = 1.0;
+    surface.clearCoatRoughness = 1.0;
+    return finishSurface(surface, n, v);
+}
+
+PbrSurface makeClearCoatSurface(vec3 baseColor, float metallic, float perceptualRoughness,
+        float clearCoat, float clearCoatPerceptualRoughness, vec3 n, vec3 v)
+{
+    PbrSurface surface;
+    setClearCoatSurface(surface, baseColor, metallic, perceptualRoughness, clearCoat,
+            clearCoatPerceptualRoughness);
     return finishSurface(surface, n, v);
 }
 
@@ -37,6 +49,9 @@ PbrSurface makeSpecularGlossinessSurface(vec3 diffuse, vec3 specular, float glos
     surface.f0 = specular;
     surface.perceptualRoughness = clamp(1.0 - glossiness, kMinPerceptualRoughness, 1.0);
     surface.roughness = surface.perceptualRoughness * surface.perceptualRoughness;
+    surface.clearCoat = 0.0;
+    surface.clearCoatPerceptualRoughness = 1.0;
+    surface.clearCoatRoughness = 1.0;
     return finishSurface(surface, n, v);
 }
 
@@ -64,5 +79,13 @@ vec3 evaluateIbl(PbrSurface surface, vec3 n, vec3 v)
     float lod = perceptualRoughnessToLod(surface.perceptualRoughness);
     vec3 specular = e * textureLod(uIblSpecular, dominant, lod).rgb * surface.energyCompensation;
     vec3 diffuse = surface.diffuseColor * irradianceSh(n) * (1.0 - e);
-    return (specular + diffuse) * uIblParams.y;
+    vec3 color = specular + diffuse;
+    if (surface.clearCoat > 0.0)
+    {
+        float x = 1.0 - surface.noV;
+        float fc = (0.04 + 0.96 * (x * x) * (x * x) * x) * surface.clearCoat;
+        float lod = perceptualRoughnessToLod(surface.clearCoatPerceptualRoughness);
+        color = color * (1.0 - fc) + textureLod(uIblSpecular, r, lod).rgb * fc;
+    }
+    return color * uIblParams.y;
 }

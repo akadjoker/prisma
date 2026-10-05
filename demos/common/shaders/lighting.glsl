@@ -99,7 +99,15 @@ vec3 surfaceShading(PbrSurface surface, Light light, vec3 n, vec3 v)
     vec3 f = fresnelSchlick(surface.f0, f90, loH);
     vec3 fr = (d * vis) * f * surface.energyCompensation;
     vec3 fd = surface.diffuseColor * (1.0 / kPi);
-    return (fd + fr) * light.radiance * (light.attenuation * noL);
+    vec3 color = fd + fr;
+    if (surface.clearCoat > 0.0)
+    {
+        float dc = distributionGgx(surface.clearCoatRoughness, noH);
+        float vc = 0.25 / max(loH * loH, 0.0000039);
+        float fc = (0.04 + 0.96 * pow5(1.0 - loH)) * surface.clearCoat;
+        color = color * (1.0 - fc) + dc * vc * fc;
+    }
+    return color * light.radiance * (light.attenuation * noL);
 }
 
 #endif
