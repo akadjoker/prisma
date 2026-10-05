@@ -31,6 +31,5 @@ void main()
             uMaterial.z, uMaterial.w, n, v);
     vec3 color = evaluateIbl(surface, n, v) +
                  surfaceShading(surface, directionalLight(uSunDirection, uSunColorIntensity), n, v);
-    color = tonemapFilmic(color);
-    oColor = vec4(pow(color, vec3(1.0 / 2.2)), 1.0);
+    oColor = vec4(linearToSrgb(tonemapAcesLegacy(color)), 1.0);
 }

@@ -79,6 +79,5 @@ void main()
     color += emissive;
 
     float alpha = uModes.w > 1.5 ? base.a : 1.0;
-    color = tonemapFilmic(color);
-    oColor = vec4(pow(color, vec3(1.0 / 2.2)), alpha);
+    oColor = vec4(linearToSrgb(tonemapAcesLegacy(color)), alpha);
 }
