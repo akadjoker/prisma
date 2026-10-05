@@ -18,5 +18,6 @@ layout(location = 0) out vec4 oColor;
 void main()
 {
     vec3 color = texture(uScene, vUv).rgb + texture(uBloom, vUv).rgb * uParams.x;
-    oColor = vec4(linearToSrgb(tonemapAcesLegacy(color)), 1.0);
+    vec3 encoded = linearToSrgb(tonemapAcesLegacy(color));
+    oColor = vec4(encoded, dot(encoded, vec3(0.2126, 0.7152, 0.0722)));
 }

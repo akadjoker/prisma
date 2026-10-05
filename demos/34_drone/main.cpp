@@ -18,6 +18,7 @@
 #include "drone.frag.h"
 #include "drone.vert.h"
 #include "final.frag.h"
+#include "fxaa.frag.h"
 #include "shadow.frag.h"
 #include "shadow.vert.h"
 #include "fullscreen.vert.h"
@@ -132,6 +133,7 @@ int main(int argc, char** argv)
     const float ev = numberArgument(argc, argv, "ev", 0.0f);
     const float cameraHeight = numberArgument(argc, argv, "height", 0.08f);
     const float bloomStrength = numberArgument(argc, argv, "bloom", 0.10f);
+    const float fxaaEnabled = numberArgument(argc, argv, "fxaa", 1.0f);
     const unsigned shadowSize = static_cast<unsigned>(numberArgument(argc, argv, "shadowsize", 2048.0f));
     const float normalBias = numberArgument(argc, argv, "normalbias", 1.0f);
 
@@ -257,6 +259,14 @@ int main(int argc, char** argv)
     depthDesc.debugName = "scene depth";
     const prisma::TextureHandle sceneDepth = driver->createTexture(depthDesc);
 
+    prisma::TextureDesc ldrDesc;
+    ldrDesc.format = prisma::TextureFormat::RGBA8;
+    ldrDesc.width = kRenderWidth;
+    ldrDesc.height = kRenderHeight;
+    ldrDesc.usage = prisma::kTextureSampled | prisma::kTextureRenderTarget;
+    ldrDesc.debugName = "ldr color";
+    const prisma::TextureHandle ldrColor = driver->createTexture(ldrDesc);
+
     unsigned bloomWidth[kBloomLevels];
     unsigned bloomHeightAt[kBloomLevels];
     prisma::TextureHandle bloomTexture[kBloomLevels];
@@ -279,7 +289,7 @@ int main(int argc, char** argv)
     }
 
     const unsigned postStride = (sizeof(float) * 4 + alignment - 1) / alignment * alignment;
-    const unsigned postRanges = 2 + kBloomLevels;
+    const unsigned postRanges = 3 + kBloomLevels;
     ct::Vector<unsigned char> postBytes;
     postBytes.resize(static_cast<size_t>(postStride) * postRanges);
     memset(postBytes.data(), 0, postBytes.size());
@@ -296,6 +306,9 @@ int main(int argc, char** argv)
     const float finalParams[4] = { bloomStrength, 0.0f, 0.0f, 0.0f };
     memcpy(postBytes.data() + static_cast<size_t>(1 + kBloomLevels) * postStride, finalParams,
             sizeof(finalParams));
+    const float fxaaParams[4] = { fxaaEnabled, 0.0f, 0.0f, 0.0f };
+    memcpy(postBytes.data() + static_cast<size_t>(2 + kBloomLevels) * postStride, fxaaParams,
+            sizeof(fxaaParams));
     prisma::BufferDesc postDesc;
     postDesc.usage = prisma::BufferUsage::Uniform;
     postDesc.size = static_cast<std::uint32_t>(postBytes.size());
@@ -377,6 +390,7 @@ int main(int argc, char** argv)
     const prisma::ShaderHandle down9Fragment = zenapp::createShader(driver, bloom_down9_frag);
     const prisma::ShaderHandle upFragment = zenapp::createShader(driver, bloom_up_frag);
     const prisma::ShaderHandle fullscreenVertex = zenapp::createShader(driver, fullscreen_vert);
+    const prisma::ShaderHandle fxaaFragment = zenapp::createShader(driver, fxaa_frag);
     const prisma::ShaderHandle finalFragment = zenapp::createShader(driver, final_frag);
     const prisma::ShaderHandle droneVertex = zenapp::createShader(driver, drone_vert);
     const prisma::ShaderHandle droneFragment = zenapp::createShader(driver, drone_frag);
@@ -435,8 +449,19 @@ int main(int argc, char** argv)
     finalDesc.vertexShader = fullscreenVertex;
     finalDesc.fragmentShader = finalFragment;
     finalDesc.depthWrite = false;
+    finalDesc.targets.window = false;
+    finalDesc.targets.colorCount = 1;
+    finalDesc.targets.colors[0] = prisma::TextureFormat::RGBA8;
+    finalDesc.targets.depth = prisma::TextureFormat::None;
     finalDesc.debugName = "final pipeline";
     const prisma::PipelineHandle finalPipeline = driver->createPipeline(finalDesc);
+
+    prisma::PipelineDesc fxaaDesc;
+    fxaaDesc.vertexShader = fullscreenVertex;
+    fxaaDesc.fragmentShader = fxaaFragment;
+    fxaaDesc.depthWrite = false;
+    fxaaDesc.debugName = "fxaa pipeline";
+    const prisma::PipelineHandle fxaaPipeline = driver->createPipeline(fxaaDesc);
 
     prisma::PipelineDesc down2xDesc;
     down2xDesc.vertexShader = fullscreenVertex;
@@ -489,6 +514,7 @@ int main(int argc, char** argv)
     driver->destroy(skyFragment);
     driver->destroy(fullscreenVertex);
     driver->destroy(finalFragment);
+    driver->destroy(fxaaFragment);
     driver->destroy(down2xFragment);
     driver->destroy(down13Fragment);
     driver->destroy(down9Fragment);
@@ -503,7 +529,7 @@ int main(int argc, char** argv)
                        postBuffer.valid() && down2xPipeline.valid() && down13Pipeline.valid() &&
                        down9Pipeline.valid() && upPipeline.valid() && shadowPipeline.valid() &&
                        shadowMap.valid() && shadowSampler.valid() && sunShadowBuffer.valid() &&
-                       lightFrameBuffer.valid();
+                       lightFrameBuffer.valid() && fxaaPipeline.valid() && ldrColor.valid();
     if (!ready) log_error("drone: resource creation failed");
 
     prisma::RenderPassDesc scenePass;
@@ -657,11 +683,23 @@ int main(int argc, char** argv)
             }
         }
 
-        driver->beginRenderPass(windowPass);
+        prisma::RenderPassDesc ldrPass;
+        ldrPass.colors[0].texture = ldrColor;
+        ldrPass.colorCount = 1;
+        ldrPass.depthLoad = prisma::LoadOp::DontCare;
+        ldrPass.stencilLoad = prisma::LoadOp::DontCare;
+        driver->beginRenderPass(ldrPass);
         driver->bindPipeline(finalPipeline);
         driver->bindUniformBuffer(0, postBuffer, (1 + kBloomLevels) * postStride, sizeof(float) * 4);
         driver->bindTexture(0, sceneColor, sceneSampler);
         driver->bindTexture(1, bloomTexture[0], sceneSampler);
+        driver->draw(3, 0);
+        driver->endRenderPass();
+
+        driver->beginRenderPass(windowPass);
+        driver->bindPipeline(fxaaPipeline);
+        driver->bindUniformBuffer(0, postBuffer, (2 + kBloomLevels) * postStride, sizeof(float) * 4);
+        driver->bindTexture(0, ldrColor, sceneSampler);
         driver->draw(3, 0);
         driver->endRenderPass();
         zenapp::endFrame(driver);
@@ -675,6 +713,7 @@ int main(int argc, char** argv)
     driver->destroy(down9Pipeline);
     driver->destroy(down13Pipeline);
     driver->destroy(down2xPipeline);
+    driver->destroy(fxaaPipeline);
     driver->destroy(finalPipeline);
     driver->destroy(skyPipeline);
     driver->destroy(blendPipeline);
@@ -686,6 +725,7 @@ int main(int argc, char** argv)
     driver->destroy(lightFrameBuffer);
     driver->destroy(sunShadowBuffer);
     driver->destroy(postBuffer);
+    driver->destroy(ldrColor);
     driver->destroy(sceneDepth);
     driver->destroy(sceneColor);
     driver->destroy(sceneSampler);
