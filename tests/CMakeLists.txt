@@ -55,6 +55,11 @@ if(TARGET demo_ibl)
   target_include_directories(test_obj PRIVATE ${PROJECT_SOURCE_DIR}/demos/common)
   target_link_libraries(test_obj PRIVATE demo_ibl ct)
   add_test(NAME obj COMMAND test_obj)
+
+  add_executable(test_equirect test_equirect.cpp)
+  target_include_directories(test_equirect PRIVATE ${PROJECT_SOURCE_DIR}/demos/common)
+  target_link_libraries(test_equirect PRIVATE demo_ibl ct)
+  add_test(NAME equirect COMMAND test_equirect)
 endif()
 
 if(TARGET mathc)
