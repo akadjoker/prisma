@@ -40,7 +40,7 @@ The same test, with checks made by reading pixels back, runs on OpenGL 4.6, Open
 
 Requires CMake 3.21, a C++14 compiler and the OpenGL development files. The Vulkan backend is built when the Vulkan SDK is found.
 
-The demos and the GPU tests also need `glslangValidator` (it comes with the Vulkan SDK and with the `glslang-tools` package) to compile their shaders. `spirv-cross` is taken from the system when installed and built from the submodule otherwise. The library itself needs neither.
+The GPU tests also need `glslangValidator` (it comes with the Vulkan SDK and with the `glslang-tools` package) to compile their shaders. `spirv-cross` is taken from the system when installed and built from the submodule otherwise. The library itself needs neither.
 
 ```sh
 git clone --recursive https://github.com/akadjoker/prisma.git
@@ -55,7 +55,6 @@ ctest --test-dir build
 | `PRISMA_OPENGL` | `ON` | Build the OpenGL backend |
 | `PRISMA_GLES` | `OFF` | Build the OpenGL backend for OpenGL ES 3 instead of OpenGL 4.6 |
 | `PRISMA_VULKAN` | `ON` when Vulkan is found | Build the Vulkan backend |
-| `PRISMA_BUILD_DEMOS` | `ON` | Build the demos |
 | `PRISMA_BUILD_TESTS` | `ON` | Build the tests |
 
 ## Shaders
@@ -77,55 +76,13 @@ prisma::ShaderHandle shader = driver->createShader(prisma::shaderDesc(mesh_vert,
 
 ## Demos
 
-Numbered, one concept each. Run any of them on Vulkan with the `vulkan` argument; a number sets the number of frames; `still` freezes time.
-
-| Demo | Shows |
-|---|---|
-| `01_clear` | a window cleared to one colour |
-| `02_triangle` | one triangle |
-| `03_cube` | a textured cube, `offscreen` draws it to an HDR target first |
-| `04_two_cubes` | depth testing, several draws sharing one uniform buffer |
-| `05_lighting` | two directional lights |
-| `06_texture` | a DDS texture with mip chain and anisotropy |
-| `07_model` | a mesh file with materials and textures |
-| `08_reflection` | cube map reflection |
-| `09_blend_stencil` | blend modes and stencil masks |
-| `10_instancing` | 4000 cubes in one draw |
-| `11_offscreen_msaa` | multisampled offscreen target with resolve |
-| `12_particles` | 16384 particles simulated by a compute shader |
-| `13_hdr` | HDR scene, bloom and tone mapping |
-| `14_shadow_map` | shadow mapping with a comparison sampler |
-| `15_soldier` | animated skinned characters |
-| `16_tessellation` | a Bezier surface on the tessellator |
-| `17_point_sprites` | a geometry shader turns points into quads |
-| `18_cascaded_shadows` | four shadow cascades over a power plant (C tints the cascades, T switches scene) |
-| `19_variance_shadows` | blurred depth moments and Chebyshev shadows (up and down change the blur) |
-| `20_contact_hardening` | soft shadows that widen with distance from the caster (up and down change the light size) |
-| `21_pn_triangles` | curved PN triangles on the tessellator (up and down, W, P) |
-| `22_displacement` | displacement mapping with crack-free tessellation levels (up and down, W) |
-| `23_fluid` | a 2D smoothed-particle hydrodynamics fluid in compute shaders |
-| `24_nbody` | 8192 bodies attracting each other, shared-memory tiles in compute |
-| `25_oit` | order-independent transparency with per-pixel linked lists (O toggles) |
-| `26_basic_compute` | a compute shader adds two buffers, the result is read back and checked on the CPU, then drawn as a grid |
-| `27_compute_sort` | bitonic sort of 65536 values in shared memory with matrix transposes, one dispatch per step shown on screen, checked against the CPU sort |
-| `28_shadow_volume` | stencil shadow volumes of a mesh with welded vertices, extruded in the vertex shader from an orbiting point light and counted with a two-sided depth-fail stencil (T shows the volume) |
-| `29_hdr_tonemap_compute` | HDR scene with auto exposure in compute shaders: log-luminance reduction in shared memory, time-based adaptation kept in a storage buffer, bright pass and separable blur into storage images, then a tone-mapping pass (L cycles the scene brightness, B toggles bloom) |
-| `30_pbr_ibl` | Physically based shading with image based lighting and direct lights: spherical harmonics irradiance, GGX-prefiltered specular cube map built on the GPU one face and mip at a time, a precomputed BRDF table and energy compensation, plus a sun, orbiting point lights, a spot light and 48 small colour lights assigned to a froxel grid (clustered lighting) with Cook-Torrance GGX highlights, on a grid of dielectric, gold and silver spheres with roughness from 0 to 1 (L toggles the lights, `nolights` starts without them, `grace`, `stpeters`, `galileo` and `rnl` pick another probe) |
-| `31_gltf_viewer` | glTF 2.0 viewer on the PBR and image based lighting shaders: metal-roughness and specular-glossiness materials, base colour, normal, occlusion and emissive maps with generated tangents, alpha test and blend, frustum culling, draw sorting, the clustered lights of the file and shadows from the point and spot lights in view; the default model is the damaged helmet (`model=path` opens another one, `camera` uses the camera stored in the file and turns on a fly camera (WASD and Q/E to move, shift to go faster, arrow keys or the right mouse button to look; `autowalk` moves it by itself, `novsync` turns vertical sync off and `prepass` turns on a depth pre-pass, `minpixels=` (default 12) skips objects smaller than that on screen, `aniso=` sets the texture anisotropy (default 4), `nomask` skips alpha-tested materials, `shadows=` is the number of lights that may cast shadows at a time (default and maximum 32, 0 turns them off; they are the lights inside the view nearest to the camera, chosen again as it moves, and the maps of at most two new lights are drawn in a frame), `shadowsize=` the size of a shadow map (default 256) and `shadownear=` the distance from a light below which nothing casts a shadow (default 0.3, so a lamp's own bulb and glass do not block it); `shadowdistance=` the distance from the camera beyond which a light casts no shadow (default 30, 0 for no limit; a light keeps its shadow until it is 15% farther than that, and gets it back as the camera comes closer); every run writes `gltf_viewer_report.txt` with the time of each frame; a panel in the window shows the fps, the time of each phase and a graph of the last 160 frame times, F1 hides it and `nostats` starts without it), `exposure=`, `ibl=`, `sky=`, `sunscale=`, `lightscale=` and `skipmips=` tune it) |
-
-See [demos/README.md](demos/README.md) for pictures of each demo. The demos that load meshes and textures read them from a media folder: set `PRISMA_MEDIA` or the CMake option `PRISMA_MEDIA_DIR`. A demo whose feature is missing on the GPU prints a line and exits.
-
-```sh
-./build/demos/cube
-./build/demos/particles vulkan
-```
+The demos live in [prisma-samples](https://github.com/akadjoker/prisma-samples), which uses this repository as a submodule; it has the pictures and the instructions for each one.
 
 ## Layout
 
 ```text
 libprisma/include/prisma/rhi/   public headers: Driver.h, Types.h, Caps.h
 libprisma/src/prisma/rhi/       backends: gl/, vulkan/, null/
-demos/                          numbered demos and their loaders
 tests/                          tests
 external/                       submodules
 ```
@@ -162,9 +119,8 @@ The library never calls the window library. The application fills `GLPlatform` o
 | Submodule | Used by |
 |---|---|
 | `external/containers` | the library |
-| `external/zen_plataform` | demos and tests (window and input) |
-| `external/math` | demos |
-| `external/SPIRV-Cross` | the build only: turns SPIR-V into GLSL for the demos and tests (Apache-2.0) |
+| `external/zen_plataform` | the tests (window and input) |
+| `external/SPIRV-Cross` | the build only: turns SPIR-V into GLSL for the tests and for the shaders of projects that use prisma (Apache-2.0) |
 
 ## License
 

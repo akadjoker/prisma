@@ -2,7 +2,7 @@ if(NOT PRISMA_ROOT_DIR)
   set(PRISMA_ROOT_DIR ${PROJECT_SOURCE_DIR})
 endif()
 if(NOT PRISMA_SHADER_INCLUDE_DIR)
-  set(PRISMA_SHADER_INCLUDE_DIR ${PRISMA_ROOT_DIR}/demos/common/shaders)
+  set(PRISMA_SHADER_INCLUDE_DIR ${PRISMA_ROOT_DIR}/tests/shaders)
 endif()
 
 find_program(PRISMA_GLSLANG NAMES glslangValidator glslang
