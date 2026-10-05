@@ -54,5 +54,6 @@ done <<LIST
 32_ibl_clear_coat ibl_clear_coat 10
 33_flight_helmet flight_helmet 10
 34_drone drone 10
+35_materials materials 6
 LIST
 exit $status

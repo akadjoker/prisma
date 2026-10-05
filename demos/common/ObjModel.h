@@ -5,6 +5,6 @@
 namespace zenapp
 {
 
-bool loadObj(const char* path, GltfModel* out);
+bool loadObj(const char* path, GltfModel* out, bool allTangents = false);
 
 } // namespace zenapp

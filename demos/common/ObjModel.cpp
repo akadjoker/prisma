@@ -332,7 +332,7 @@ bool appendPart(const Part& part, bool normalMapped, const ct::Vector<Vec3f>& po
 
 } // namespace
 
-bool loadObj(const char* path, GltfModel* out)
+bool loadObj(const char* path, GltfModel* out, bool allTangents)
 {
     *out = GltfModel();
     directoryOf(path, &out->directory);
@@ -500,7 +500,9 @@ bool loadObj(const char* path, GltfModel* out)
     mesh.firstPrimitive = 0;
     for (size_t i = 0; i < parts.size(); ++i)
         if (!parts[i].corners.empty())
-            appendPart(parts[i], out->materials[static_cast<size_t>(parts[i].material)].normalTexture >= 0,
+            appendPart(parts[i],
+                    allTangents ||
+                            out->materials[static_cast<size_t>(parts[i].material)].normalTexture >= 0,
                     positions, normals, uvs, out);
     mesh.primitiveCount = static_cast<uint32_t>(out->primitives.size());
     if (mesh.primitiveCount == 0)
