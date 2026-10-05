@@ -52,7 +52,7 @@ inline void sampleEquirect(const EquirectImage& image, const float* direction, f
         const float top = row0[x0 * 3 + c] * (1.0f - tx) + row0[x1 * 3 + c] * tx;
         const float bottom = row1[x0 * 3 + c] * (1.0f - tx) + row1[x1 * 3 + c] * tx;
         float value = top * (1.0f - ty) + bottom * ty;
-        value = value < 0.0f ? 0.0f : (value > 65536.0f ? 65536.0f : value);
+        value = value < 0.0f ? 0.0f : (value > 65504.0f ? 65504.0f : value);
         out[c] += value;
     }
 }
