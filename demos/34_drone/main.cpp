@@ -10,6 +10,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "bloom_down13.frag.h"
+#include "bloom_down2x.frag.h"
+#include "bloom_down9.frag.h"
+#include "bloom_up.frag.h"
 #include "drone.frag.h"
 #include "drone.vert.h"
 #include "final.frag.h"
@@ -38,6 +42,8 @@ struct ObjectUniforms
 
 const float kSunLux = 100000.0f;
 const float kIblLuminance = 30000.0f;
+const unsigned kBloomLevels = 6;
+const unsigned kBloomHeight = 384;
 const std::uint32_t kRenderWidth = 1280;
 const std::uint32_t kRenderHeight = 720;
 const float kAperture = 16.0f;
@@ -110,6 +116,7 @@ int main(int argc, char** argv)
     const float yaw = numberArgument(argc, argv, "yaw", 0.0f);
     const float turn = numberArgument(argc, argv, "turn", 0.0f);
     const float ev = numberArgument(argc, argv, "ev", 0.0f);
+    const float bloomStrength = numberArgument(argc, argv, "bloom", 0.10f);
 
     char modelPath[1024];
     const char* modelArgument = zenapp::argumentValue(argc, argv, "model");
@@ -231,6 +238,56 @@ int main(int argc, char** argv)
     depthDesc.debugName = "scene depth";
     const prisma::TextureHandle sceneDepth = driver->createTexture(depthDesc);
 
+    unsigned bloomWidth[kBloomLevels];
+    unsigned bloomHeightAt[kBloomLevels];
+    prisma::TextureHandle bloomTexture[kBloomLevels];
+    bool bloomReady = true;
+    const unsigned baseBloomWidth = static_cast<unsigned>(
+            floorf(static_cast<float>(kBloomHeight) * static_cast<float>(kRenderWidth) /
+                   static_cast<float>(kRenderHeight)));
+    for (unsigned level = 0; level < kBloomLevels; ++level)
+    {
+        bloomWidth[level] = baseBloomWidth >> level > 1 ? baseBloomWidth >> level : 1;
+        bloomHeightAt[level] = kBloomHeight >> level > 1 ? kBloomHeight >> level : 1;
+        prisma::TextureDesc bloomDesc;
+        bloomDesc.format = prisma::TextureFormat::RGBA16F;
+        bloomDesc.width = bloomWidth[level];
+        bloomDesc.height = bloomHeightAt[level];
+        bloomDesc.usage = prisma::kTextureSampled | prisma::kTextureRenderTarget;
+        bloomDesc.debugName = "bloom";
+        bloomTexture[level] = driver->createTexture(bloomDesc);
+        bloomReady = bloomReady && bloomTexture[level].valid();
+    }
+
+    const unsigned postStride = (sizeof(float) * 4 + alignment - 1) / alignment * alignment;
+    const unsigned postRanges = 2 + kBloomLevels;
+    ct::Vector<unsigned char> postBytes;
+    postBytes.resize(static_cast<size_t>(postStride) * postRanges);
+    memset(postBytes.data(), 0, postBytes.size());
+    const float downParams[4] = { 1.0f, 1.0f, 1.0f / 1000.0f, 0.0f };
+    memcpy(postBytes.data(), downParams, sizeof(downParams));
+    for (unsigned level = 0; level + 1 < kBloomLevels; ++level)
+    {
+        const float w = static_cast<float>(bloomWidth[level]);
+        const float h = static_cast<float>(bloomHeightAt[level]);
+        const float resolution[4] = { w, h, 1.0f / w, 1.0f / h };
+        memcpy(postBytes.data() + static_cast<size_t>(1 + level) * postStride, resolution,
+                sizeof(resolution));
+    }
+    const float finalParams[4] = { bloomStrength, 0.0f, 0.0f, 0.0f };
+    memcpy(postBytes.data() + static_cast<size_t>(1 + kBloomLevels) * postStride, finalParams,
+            sizeof(finalParams));
+    prisma::BufferDesc postDesc;
+    postDesc.usage = prisma::BufferUsage::Uniform;
+    postDesc.size = static_cast<std::uint32_t>(postBytes.size());
+    postDesc.data = postBytes.data();
+    postDesc.debugName = "post uniforms";
+    const prisma::BufferHandle postBuffer = driver->createBuffer(postDesc);
+
+    const prisma::ShaderHandle down2xFragment = zenapp::createShader(driver, bloom_down2x_frag);
+    const prisma::ShaderHandle down13Fragment = zenapp::createShader(driver, bloom_down13_frag);
+    const prisma::ShaderHandle down9Fragment = zenapp::createShader(driver, bloom_down9_frag);
+    const prisma::ShaderHandle upFragment = zenapp::createShader(driver, bloom_up_frag);
     const prisma::ShaderHandle fullscreenVertex = zenapp::createShader(driver, fullscreen_vert);
     const prisma::ShaderHandle finalFragment = zenapp::createShader(driver, final_frag);
     const prisma::ShaderHandle droneVertex = zenapp::createShader(driver, drone_vert);
@@ -293,17 +350,48 @@ int main(int argc, char** argv)
     finalDesc.debugName = "final pipeline";
     const prisma::PipelineHandle finalPipeline = driver->createPipeline(finalDesc);
 
+    prisma::PipelineDesc down2xDesc;
+    down2xDesc.vertexShader = fullscreenVertex;
+    down2xDesc.fragmentShader = down2xFragment;
+    down2xDesc.depthWrite = false;
+    setTargetFormats(&down2xDesc, false);
+    down2xDesc.debugName = "bloom down 2x";
+    const prisma::PipelineHandle down2xPipeline = driver->createPipeline(down2xDesc);
+    prisma::PipelineDesc down13Desc = down2xDesc;
+    down13Desc.fragmentShader = down13Fragment;
+    down13Desc.debugName = "bloom down 13";
+    const prisma::PipelineHandle down13Pipeline = driver->createPipeline(down13Desc);
+    prisma::PipelineDesc down9Desc = down2xDesc;
+    down9Desc.fragmentShader = down9Fragment;
+    down9Desc.debugName = "bloom down 9";
+    const prisma::PipelineHandle down9Pipeline = driver->createPipeline(down9Desc);
+    prisma::PipelineDesc upDesc = down2xDesc;
+    upDesc.fragmentShader = upFragment;
+    upDesc.blend = true;
+    upDesc.srcColor = prisma::BlendFactor::One;
+    upDesc.dstColor = prisma::BlendFactor::One;
+    upDesc.srcAlpha = prisma::BlendFactor::One;
+    upDesc.dstAlpha = prisma::BlendFactor::One;
+    upDesc.debugName = "bloom up";
+    const prisma::PipelineHandle upPipeline = driver->createPipeline(upDesc);
+
     driver->destroy(droneVertex);
     driver->destroy(droneFragment);
     driver->destroy(skyVertex);
     driver->destroy(skyFragment);
     driver->destroy(fullscreenVertex);
     driver->destroy(finalFragment);
+    driver->destroy(down2xFragment);
+    driver->destroy(down13Fragment);
+    driver->destroy(down9Fragment);
+    driver->destroy(upFragment);
 
     const bool ready = iblReady && gpuReady && frameBuffer.valid() && objectBuffer.valid() &&
                        opaquePipeline.valid() && doublePipeline.valid() && blendPipeline.valid() &&
                        skyPipeline.valid() && finalPipeline.valid() && sceneSampler.valid() &&
-                       sceneColor.valid() && sceneDepth.valid();
+                       sceneColor.valid() && sceneDepth.valid() && bloomReady &&
+                       postBuffer.valid() && down2xPipeline.valid() && down13Pipeline.valid() &&
+                       down9Pipeline.valid() && upPipeline.valid();
     if (!ready) log_error("drone: resource creation failed");
 
     prisma::RenderPassDesc scenePass;
@@ -387,9 +475,50 @@ int main(int argc, char** argv)
         }
         driver->endRenderPass();
 
+        if (bloomStrength > 0.0f)
+        {
+            prisma::RenderPassDesc bloomPass;
+            bloomPass.colorCount = 1;
+            bloomPass.depthLoad = prisma::LoadOp::DontCare;
+            bloomPass.stencilLoad = prisma::LoadOp::DontCare;
+
+            bloomPass.colors[0].texture = bloomTexture[0];
+            driver->beginRenderPass(bloomPass);
+            driver->bindPipeline(down2xPipeline);
+            driver->bindUniformBuffer(0, postBuffer, 0, sizeof(float) * 4);
+            driver->bindTexture(0, sceneColor, sceneSampler);
+            driver->draw(3, 0);
+            driver->endRenderPass();
+
+            for (unsigned level = 1; level < kBloomLevels; ++level)
+            {
+                const bool odd = (bloomWidth[level - 1] & 1) || (bloomHeightAt[level - 1] & 1);
+                bloomPass.colors[0].texture = bloomTexture[level];
+                driver->beginRenderPass(bloomPass);
+                driver->bindPipeline(odd ? down13Pipeline : down9Pipeline);
+                driver->bindTexture(0, bloomTexture[level - 1], sceneSampler);
+                driver->draw(3, 0);
+                driver->endRenderPass();
+            }
+
+            bloomPass.colorLoad = prisma::LoadOp::Load;
+            for (unsigned level = kBloomLevels - 1; level >= 1; --level)
+            {
+                bloomPass.colors[0].texture = bloomTexture[level - 1];
+                driver->beginRenderPass(bloomPass);
+                driver->bindPipeline(upPipeline);
+                driver->bindUniformBuffer(0, postBuffer, level * postStride, sizeof(float) * 4);
+                driver->bindTexture(0, bloomTexture[level], sceneSampler);
+                driver->draw(3, 0);
+                driver->endRenderPass();
+            }
+        }
+
         driver->beginRenderPass(windowPass);
         driver->bindPipeline(finalPipeline);
+        driver->bindUniformBuffer(0, postBuffer, (1 + kBloomLevels) * postStride, sizeof(float) * 4);
         driver->bindTexture(0, sceneColor, sceneSampler);
+        driver->bindTexture(1, bloomTexture[0], sceneSampler);
         driver->draw(3, 0);
         driver->endRenderPass();
         zenapp::endFrame(driver);
@@ -398,11 +527,17 @@ int main(int argc, char** argv)
         if (maxFrames > 0 && ++frames >= maxFrames) window_set_should_close(window, true);
     }
 
+    driver->destroy(upPipeline);
+    driver->destroy(down9Pipeline);
+    driver->destroy(down13Pipeline);
+    driver->destroy(down2xPipeline);
     driver->destroy(finalPipeline);
     driver->destroy(skyPipeline);
     driver->destroy(blendPipeline);
     driver->destroy(doublePipeline);
     driver->destroy(opaquePipeline);
+    for (unsigned level = 0; level < kBloomLevels; ++level) driver->destroy(bloomTexture[level]);
+    driver->destroy(postBuffer);
     driver->destroy(sceneDepth);
     driver->destroy(sceneColor);
     driver->destroy(sceneSampler);
