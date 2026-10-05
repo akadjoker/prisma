@@ -51,5 +51,6 @@ done <<LIST
 29_hdr_tonemap_compute hdr_tonemap_compute 10
 30_pbr_ibl pbr_ibl 10
 31_gltf_viewer gltf_viewer 10
+32_ibl_clear_coat ibl_clear_coat 10
 LIST
 exit $status
