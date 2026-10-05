@@ -163,6 +163,7 @@ int main(int argc, char** argv)
     const unsigned shadowSize =
             static_cast<unsigned>(numberArgument(argc, argv, "shadowsize", 256.0f));
     const float shadowNear = numberArgument(argc, argv, "shadownear", 0.3f);
+    const float shadowDistance = numberArgument(argc, argv, "shadowdistance", 30.0f);
 
     zenapp::GltfModel model;
     if (!zenapp::loadGltf(modelPath, &model))
@@ -710,7 +711,8 @@ int main(int argc, char** argv)
                     });
 
         if (shadowSlots.count > 0 &&
-                zenapp::chooseShadowLights(&lights, frustum, eye, shadowNear, &shadowSlots))
+                zenapp::chooseShadowLights(&lights, frustum, eye, shadowNear, shadowDistance,
+                        &shadowSlots))
             lightsDirty = true;
         const bool lightsMoved = !clusteredValid || lightsDirty || width != clusteredWidth ||
                                  height != clusteredHeight ||

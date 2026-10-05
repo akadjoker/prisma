@@ -204,21 +204,46 @@ int main()
         zenapp::ShadowSlots slots;
         zenapp::clearShadowSlots(&slots, 2);
         CHECK(slots.count == 2);
-        CHECK(zenapp::chooseShadowLights(&many, forward, Math::Vec3(0, 0, 0), 0.3f, &slots));
+        CHECK(zenapp::chooseShadowLights(&many, forward, Math::Vec3(0, 0, 0), 0.3f, 0.0f, &slots));
         CHECK(slots.light[0] == lightClose && slots.light[1] == lightAhead);
         CHECK(!slots.drawn[0] && !slots.drawn[1]);
         slots.drawn[0] = slots.drawn[1] = true;
         many.lights[lightClose].spot[3] = 1.0f;
         many.lights[lightAhead].spot[3] = 7.0f;
-        CHECK(!zenapp::chooseShadowLights(&many, forward, Math::Vec3(0, 0, 0), 0.3f, &slots));
+        CHECK(!zenapp::chooseShadowLights(&many, forward, Math::Vec3(0, 0, 0), 0.3f, 0.0f, &slots));
         CHECK(slots.drawn[0] && slots.drawn[1]);
 
-        CHECK(zenapp::chooseShadowLights(&many, backward, Math::Vec3(0, 0, 0), 0.3f, &slots));
+        CHECK(zenapp::chooseShadowLights(&many, backward, Math::Vec3(0, 0, 0), 0.3f, 0.0f, &slots));
         CHECK(slots.light[0] == lightBehind && !slots.drawn[0]);
         CHECK(slots.light[1] == lightAhead && slots.drawn[1]);
         CHECK(many.lights[lightClose].spot[3] == 0.0f);
         CHECK(many.lights[lightAhead].spot[3] == 7.0f);
         CHECK(slots.light[0] != lightLeft && slots.light[1] != lightLeft);
+
+        zenapp::clearShadowSlots(&slots, 2);
+        many.lights[lightClose].spot[3] = 0.0f;
+        many.lights[lightAhead].spot[3] = 0.0f;
+        CHECK(zenapp::chooseShadowLights(&many, forward, Math::Vec3(0, 0, 0), 0.3f, 5.0f, &slots));
+        CHECK(slots.light[0] == lightClose && slots.light[1] == -1);
+        many.lights[lightClose].spot[3] = 1.0f;
+        slots.drawn[0] = true;
+
+        const Math::Vec3 walked(0.0f, 0.0f, -8.0f);
+        CHECK(zenapp::chooseShadowLights(&many, forward, walked, 0.3f, 4.5f, &slots));
+        CHECK(slots.light[0] == lightClose && slots.drawn[0]);
+        CHECK(slots.light[1] == lightAhead && !slots.drawn[1]);
+        CHECK(many.lights[lightClose].spot[3] == 1.0f);
+        slots.drawn[1] = true;
+        many.lights[lightAhead].spot[3] = 7.0f;
+
+        CHECK(zenapp::chooseShadowLights(&many, forward, walked, 0.3f, 3.0f, &slots));
+        CHECK(slots.light[0] == -1 && !slots.drawn[0]);
+        CHECK(many.lights[lightClose].spot[3] == 0.0f);
+        CHECK(slots.light[1] == lightAhead && slots.drawn[1]);
+        CHECK(many.lights[lightAhead].spot[3] == 7.0f);
+
+        CHECK(zenapp::chooseShadowLights(&many, forward, Math::Vec3(0, 0, 0), 0.3f, 0.0f, &slots));
+        CHECK(slots.light[0] == lightClose && !slots.drawn[0] && slots.light[1] == lightAhead);
 
         zenapp::clearShadowSlots(&slots, 1000);
         CHECK(slots.count == zenapp::ShadowSlots::kMaxSlots);
