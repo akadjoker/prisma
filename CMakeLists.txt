@@ -15,8 +15,10 @@ option(PRISMA_VULKAN "Build the Vulkan backend" ${Vulkan_FOUND})
 option(PRISMA_BUILD_TESTS "Build the prisma tests" ON)
 option(PRISMA_WINDOW_TESTS "Also run the GPU tests in a real window" OFF)
 
-add_library(ct INTERFACE)
-target_include_directories(ct INTERFACE external/containers/include)
+if(NOT TARGET ct)
+  add_library(ct INTERFACE)
+  target_include_directories(ct INTERFACE external/containers/include)
+endif()
 
 add_subdirectory(libprisma)
 
