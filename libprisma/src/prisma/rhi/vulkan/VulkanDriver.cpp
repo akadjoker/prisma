@@ -2731,7 +2731,7 @@ public:
         }
         if (done)
             copyRows(static_cast<const unsigned char*>(staging.versions[0].mapped), rect.width,
-                    rect.height, read.fromTexture, read.swapRedBlue, rgba);
+                    rect.height, false, read.swapRedBlue, rgba);
         vkDestroyBuffer(device_, staging.versions[0].buffer, nullptr);
         memory_.free(staging.versions[0].allocation);
         return done;
@@ -2759,7 +2759,7 @@ public:
         readback.frame = frameNumber_;
         readback.width = rect.width;
         readback.height = rect.height;
-        readback.flip = read.fromTexture;
+        readback.flip = false;
         readback.swapRedBlue = read.swapRedBlue;
         return handleCast<ReadbackHandle>(readbacks_.insert(readback));
     }
@@ -2932,10 +2932,7 @@ public:
         copy.imageSubresource.baseArrayLayer = read.layer;
         copy.imageSubresource.layerCount = 1;
         copy.imageOffset.x = rect.x;
-        copy.imageOffset.y = read.fromTexture
-                                     ? static_cast<std::int32_t>(read.height) -
-                                               (rect.y + static_cast<std::int32_t>(rect.height))
-                                     : rect.y;
+        copy.imageOffset.y = rect.y;
         copy.imageOffset.z = read.slice;
         copy.imageExtent.width = rect.width;
         copy.imageExtent.height = rect.height;
@@ -3903,8 +3900,8 @@ private:
             for (std::uint32_t i = 0; i < layerCount; ++i)
                 if (strcmp(layers[i].layerName, kValidationLayer) == 0) validation = true;
             utils = hasInstanceExtension(nullptr, VK_EXT_DEBUG_UTILS_EXTENSION_NAME) ||
-                    (validation &&
-                            hasInstanceExtension(kValidationLayer, VK_EXT_DEBUG_UTILS_EXTENSION_NAME));
+                    (validation && hasInstanceExtension(kValidationLayer,
+                                           VK_EXT_DEBUG_UTILS_EXTENSION_NAME));
             if (utils) extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
         }
 

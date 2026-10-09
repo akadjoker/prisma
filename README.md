@@ -17,7 +17,7 @@ A rendering backend library in C++14. It gives one interface over OpenGL 4.6, Op
 - Shaders written once: the build turns each one into SPIR-V, GLSL 4.60 and GLSL ES, together with the list of resources it binds.
 - Readback of pixels (window or texture) and of buffers (for example what a compute shader wrote), blocking or collected a frame later without waiting.
 - Several windows drawn by one driver.
-- Viewport and scissor with a top-left origin.
+- Viewport, scissor and pixel readback with a top-left origin: rows come back top first, from the window and from textures alike.
 - The same conventions on every backend: clip depth from 0 to 1, linear colour with sRGB encoding on sRGB targets.
 - Driver debug messages delivered to the application's log function.
 - No window library inside the library: the application passes a few platform functions in a small struct.

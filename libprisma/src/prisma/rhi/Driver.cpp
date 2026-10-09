@@ -76,6 +76,8 @@ const char* driverErrorText(DriverError error)
             return "could not load the graphics functions";
         case DriverError::VersionTooLow:
             return "graphics API version too low";
+        case DriverError::ShaderLanguageTooLow:
+            return "shading language version too low";
     }
     return "unknown error";
 }

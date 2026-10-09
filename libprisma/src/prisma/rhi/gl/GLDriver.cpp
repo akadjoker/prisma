@@ -315,6 +315,7 @@ struct GLReadback
     std::uint32_t width = 0;
     std::uint32_t height = 0;
     std::uint32_t bytes = 0;
+    bool flip = false;
 };
 
 struct GLQuery
@@ -1990,7 +1991,8 @@ public:
     bool readPixels(const RenderTarget& source, const Rect& rect, void* rgba) override
     {
         if (!rgba || !readRows(source, rect, rgba, 0)) return false;
-        flipRows(static_cast<unsigned char*>(rgba), rect.width, rect.height);
+        if (!source.texture.valid())
+            flipRows(static_cast<unsigned char*>(rgba), rect.width, rect.height);
         return true;
     }
 
@@ -2000,6 +2002,7 @@ public:
         readback.width = rect.width;
         readback.height = rect.height;
         readback.bytes = rect.width * rect.height * 4;
+        readback.flip = !source.texture.valid();
         glGenBuffers(1, &readback.buffer);
         glBindBuffer(GL_PIXEL_PACK_BUFFER, readback.buffer);
         glBufferData(GL_PIXEL_PACK_BUFFER,
@@ -2089,7 +2092,7 @@ public:
         glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
 #endif
         glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
-        if (readback->height > 0)
+        if (readback->flip && readback->height > 0)
             flipRows(static_cast<unsigned char*>(rgba), readback->width, readback->height);
         return true;
     }
@@ -2163,10 +2166,13 @@ public:
         {
             glPixelStorei(GL_PACK_ALIGNMENT, 1);
             if (packBuffer) glBindBuffer(GL_PIXEL_PACK_BUFFER, packBuffer);
-            glReadPixels(rect.x,
-                    static_cast<GLint>(height) - (rect.y + static_cast<GLint>(rect.height)),
-                    static_cast<GLsizei>(rect.width), static_cast<GLsizei>(rect.height), GL_RGBA,
-                    GL_UNSIGNED_BYTE, packBuffer ? nullptr : rgba);
+            const GLint row = source.texture.valid()
+                                      ? rect.y
+                                      : static_cast<GLint>(height) -
+                                                (rect.y + static_cast<GLint>(rect.height));
+            glReadPixels(rect.x, row, static_cast<GLsizei>(rect.width),
+                    static_cast<GLsizei>(rect.height), GL_RGBA, GL_UNSIGNED_BYTE,
+                    packBuffer ? nullptr : rgba);
             if (packBuffer) glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
         }
         else
@@ -2703,9 +2709,8 @@ private:
                         target.func[3]);
                 memcpy(cached.func, target.func, sizeof(target.func));
             }
-            if (!known ||
-                    (target.blend &&
-                            memcmp(cached.equation, target.equation, sizeof(target.equation))))
+            if (!known || (target.blend && memcmp(cached.equation, target.equation,
+                                                   sizeof(target.equation))))
             {
                 glBlendEquationSeparatei(i, target.equation[0], target.equation[1]);
                 memcpy(cached.equation, target.equation, sizeof(target.equation));
@@ -2932,6 +2937,21 @@ Driver* createGLDriver(const DriverDesc& desc, DriverError* error)
     if (!versionOk)
     {
         *error = DriverError::VersionTooLow;
+        return nullptr;
+    }
+    int languageMajor = 0;
+    int languageMinor = 0;
+    const char* language = reinterpret_cast<const char*>(glGetString(GL_SHADING_LANGUAGE_VERSION));
+#ifdef PRISMA_GLES
+    const int languageNeeded = 300;
+    if (language && strncmp(language, "OpenGL ES GLSL ES ", 18) == 0) language += 18;
+#else
+    const int languageNeeded = 460;
+#endif
+    if (!language || sscanf(language, "%d.%d", &languageMajor, &languageMinor) != 2 ||
+            languageMajor * 100 + languageMinor < languageNeeded)
+    {
+        *error = DriverError::ShaderLanguageTooLow;
         return nullptr;
     }
     *error = DriverError::None;

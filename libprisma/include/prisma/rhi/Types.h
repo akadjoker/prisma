@@ -21,7 +21,8 @@ enum class DriverError : std::uint8_t
     MissingPlatform,
     ContextFailed,
     LoaderFailed,
-    VersionTooLow
+    VersionTooLow,
+    ShaderLanguageTooLow
 };
 
 struct GLPlatform
