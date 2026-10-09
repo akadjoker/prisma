@@ -1487,7 +1487,7 @@ public:
 
     bool queryResult(QueryHandle handle, std::uint64_t* result) override
     {
-        const GLQuery* query = queries_.get(handleCast<QuerySlot>(handle));
+        GLQuery* query = queries_.get(handleCast<QuerySlot>(handle));
         if (!query || !result) return false;
 
         const int last = query->type == QueryType::Occlusion ? 0 : 1;
@@ -1510,6 +1510,7 @@ public:
         }
         else
             *result = readTimestamp(query->ids[best][1]) - readTimestamp(query->ids[best][0]);
+        query->sequence[best] = 0;
         return true;
     }
 

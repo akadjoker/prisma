@@ -13,7 +13,7 @@ A rendering backend library in C++14. It gives one interface over OpenGL 4.6, Op
 - Multisampled render targets resolved at the end of the pass.
 - Geometry shaders, adjacency topologies and tessellation (control and evaluation shaders, patch topology) where the GPU has them (`Caps::geometryShaders`, `Caps::tessellation`; not on WebGL or OpenGL ES before 3.2).
 - Compute pipelines, storage buffers and storage textures, indirect draws and indirect dispatch.
-- Occlusion queries and GPU time queries whose results never block.
+- Occlusion queries and GPU time queries whose results never block; each result is handed out once, so a poll that says ready refers to a measurement not yet read.
 - Shaders written once: the build turns each one into SPIR-V, GLSL 4.60 and GLSL ES, together with the list of resources it binds.
 - Readback of pixels (window or texture) and of buffers (for example what a compute shader wrote), blocking or collected a frame later without waiting.
 - Several windows drawn by one driver.

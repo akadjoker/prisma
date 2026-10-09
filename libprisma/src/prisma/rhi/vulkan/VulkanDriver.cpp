@@ -1853,12 +1853,13 @@ public:
 
     bool queryResult(QueryHandle handle, std::uint64_t* result) override
     {
-        const VulkanQuery* query = queries_.get(handleCast<QuerySlotHandle>(handle));
+        VulkanQuery* query = queries_.get(handleCast<QuerySlotHandle>(handle));
         if (!query || !result) return false;
 
         const bool time = query->type == QueryType::Time;
         const std::uint32_t count = time ? 2 : 1;
         std::uint64_t bestSequence = 0;
+        std::uint32_t bestSlot = 0;
         bool found = false;
         for (std::uint32_t slot = 0; slot < kQuerySlots; ++slot)
         {
@@ -1873,12 +1874,14 @@ public:
 
             found = true;
             bestSequence = query->sequence[slot];
+            bestSlot = slot;
             if (time)
                 *result = static_cast<std::uint64_t>(
                         static_cast<double>(data[2] - data[0]) * timestampPeriod_);
             else
                 *result = data[0] ? 1 : 0;
         }
+        if (found) query->sequence[bestSlot] = 0;
         return found;
     }
 
