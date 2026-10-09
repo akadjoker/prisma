@@ -288,7 +288,7 @@ struct ShaderDesc
 {
     enum : std::uint32_t
     {
-        kMaxBindings = 24
+        kMaxBindings = 64
     };
 
     ShaderStage stage = ShaderStage::Vertex;
@@ -524,8 +524,8 @@ struct PipelineDesc
         kMaxAttributes = 16,
         kMaxVertexBuffers = 4,
         kMaxUniformBlocks = 12,
-        kMaxTextures = 16,
-        kMaxStorageBuffers = 4
+        kMaxTextures = 24,
+        kMaxStorageBuffers = 11
     };
 
     ShaderHandle vertexShader;

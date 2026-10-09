@@ -11,7 +11,7 @@ public:
     enum : std::uint32_t
     {
         kMaxUniformSlots = 16,
-        kMaxTextureUnits = 16
+        kMaxTextureUnits = 24
     };
 
     struct Stencil

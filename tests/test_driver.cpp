@@ -18,6 +18,7 @@
 #include "flat.vert.h"
 #include "instanced.frag.h"
 #include "instanced.vert.h"
+#include "limits.frag.h"
 #include "lod.frag.h"
 #include <ct/vector.hpp>
 
@@ -2717,6 +2718,79 @@ int main(int argc, char** argv)
                 driver->draw(3, 0);
                 driver->endRenderPass();
                 CHECK(pixelIs(160, 120, 0, 0, 255));
+            }
+
+            if (driver->caps().storageBuffersInGraphics)
+            {
+                const ShaderHandle limitsVertex = makeShader(driver, flat_vert);
+                const ShaderHandle limitsFragment = makeShader(driver, limits_frag);
+                PipelineDesc limitsDesc = wideDesc;
+                limitsDesc.vertexBuffers[0].stride = sizeof(float) * 2;
+                limitsDesc.vertexShader = limitsVertex;
+                limitsDesc.fragmentShader = limitsFragment;
+                static char textureNames[PipelineDesc::kMaxTextures][16];
+                static char bufferNames[PipelineDesc::kMaxStorageBuffers][16];
+                limitsDesc.textureCount = PipelineDesc::kMaxTextures;
+                for (std::uint32_t i = 0; i < PipelineDesc::kMaxTextures; ++i)
+                {
+                    snprintf(textureNames[i], sizeof(textureNames[i]), "uTexture%u", i);
+                    limitsDesc.textures[i].name = textureNames[i];
+                    limitsDesc.textures[i].slot = i;
+                }
+                limitsDesc.storageBufferCount = PipelineDesc::kMaxStorageBuffers;
+                for (std::uint32_t i = 0; i < PipelineDesc::kMaxStorageBuffers; ++i)
+                {
+                    snprintf(bufferNames[i], sizeof(bufferNames[i]), "Buffer%u", i);
+                    limitsDesc.storageBuffers[i].name = bufferNames[i];
+                    limitsDesc.storageBuffers[i].slot = i;
+                }
+                CHECK(PipelineDesc::kMaxTextures == 24 && PipelineDesc::kMaxStorageBuffers == 11);
+                const PipelineHandle limitsPipeline = driver->createPipeline(limitsDesc);
+                CHECK(limitsPipeline.valid());
+
+                TextureHandle limitTextures[PipelineDesc::kMaxTextures];
+                for (std::uint32_t i = 0; i < PipelineDesc::kMaxTextures; ++i)
+                {
+                    const std::uint8_t texel[4] = { static_cast<std::uint8_t>(i + 1), 0, 0, 255 };
+                    TextureDesc limitTextureDesc;
+                    limitTextureDesc.format = TextureFormat::RGBA8;
+                    limitTextureDesc.width = 1;
+                    limitTextureDesc.height = 1;
+                    limitTextureDesc.data = texel;
+                    limitTextures[i] = driver->createTexture(limitTextureDesc);
+                    CHECK(limitTextures[i].valid());
+                }
+                BufferHandle limitBuffers[PipelineDesc::kMaxStorageBuffers];
+                for (std::uint32_t i = 0; i < PipelineDesc::kMaxStorageBuffers; ++i)
+                {
+                    const std::uint32_t value = i + 1;
+                    BufferDesc limitBufferDesc;
+                    limitBufferDesc.usage = BufferUsage::Storage;
+                    limitBufferDesc.size = sizeof(value);
+                    limitBufferDesc.data = &value;
+                    limitBuffers[i] = driver->createBuffer(limitBufferDesc);
+                    CHECK(limitBuffers[i].valid());
+                }
+
+                driver->beginRenderPass(black);
+                driver->bindUniformBuffer(2, params, kParamGreen * stride, sizeof(Params));
+                driver->bindPipeline(limitsPipeline);
+                driver->bindVertexBuffer(0, buffer, 0);
+                for (std::uint32_t i = 0; i < PipelineDesc::kMaxTextures; ++i)
+                    driver->bindTexture(i, limitTextures[i], nearest);
+                for (std::uint32_t i = 0; i < PipelineDesc::kMaxStorageBuffers; ++i)
+                    driver->bindStorageBuffer(i, limitBuffers[i], 0, sizeof(std::uint32_t));
+                driver->draw(3, 0);
+                driver->endRenderPass();
+                CHECK(pixelIs(160, 120, 255, 255, 0));
+
+                for (std::uint32_t i = 0; i < PipelineDesc::kMaxTextures; ++i)
+                    driver->destroy(limitTextures[i]);
+                for (std::uint32_t i = 0; i < PipelineDesc::kMaxStorageBuffers; ++i)
+                    driver->destroy(limitBuffers[i]);
+                driver->destroy(limitsPipeline);
+                driver->destroy(limitsFragment);
+                driver->destroy(limitsVertex);
             }
             driver->endFrame();
             driver->present();

@@ -4495,7 +4495,7 @@ private:
 
     enum : std::uint32_t
     {
-        kMaxTextureSlots = 16
+        kMaxTextureSlots = PipelineDesc::kMaxTextures
     };
     TextureSlot textureBindings_[kMaxTextureSlots];
     bool textureDirty_ = true;

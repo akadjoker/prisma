@@ -84,6 +84,8 @@ struct GLFramebuffer
 const GLenum kStorageBufferOffsetAlignment = 0x90DF;
 const GLenum kTextureMaxAnisotropy = 0x84FE;
 const GLenum kMaxTextureMaxAnisotropy = 0x84FF;
+static_assert(GLState::kMaxTextureUnits >= PipelineDesc::kMaxTextures,
+        "the GL texture units must cover the texture slots of a pipeline");
 
 bool sameAttachment(const GLAttachment& attachment, const RenderTarget& target)
 {
