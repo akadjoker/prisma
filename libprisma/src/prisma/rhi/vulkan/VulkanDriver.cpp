@@ -1885,6 +1885,30 @@ public:
         return found;
     }
 
+    void setVSync(bool enabled) override
+    {
+        if (vsync_ == enabled) return;
+        vsync_ = enabled;
+        presentModeDirty_ = true;
+    }
+
+    VkPresentModeKHR choosePresentMode(VkSurfaceKHR surface) const
+    {
+        if (vsync_) return VK_PRESENT_MODE_FIFO_KHR;
+        std::uint32_t count = 0;
+        vkGetPhysicalDeviceSurfacePresentModesKHR(physicalDevice_, surface, &count, nullptr);
+        ct::Vector<VkPresentModeKHR> modes;
+        modes.resize(count);
+        vkGetPhysicalDeviceSurfacePresentModesKHR(physicalDevice_, surface, &count, modes.data());
+        bool mailbox = false;
+        for (std::uint32_t i = 0; i < count; ++i)
+        {
+            if (modes[i] == VK_PRESENT_MODE_IMMEDIATE_KHR) return VK_PRESENT_MODE_IMMEDIATE_KHR;
+            if (modes[i] == VK_PRESENT_MODE_MAILBOX_KHR) mailbox = true;
+        }
+        return mailbox ? VK_PRESENT_MODE_MAILBOX_KHR : VK_PRESENT_MODE_FIFO_KHR;
+    }
+
     void beginFrame() override
     {
         if (frameReady_)
@@ -1900,8 +1924,9 @@ public:
         window_->platform.framebufferSize(window_->platform.user, &width, &height);
         if (width == 0 || height == 0) return;
         if (!window_->swapchain || width != window_->requestedWidth ||
-                height != window_->requestedHeight)
+                height != window_->requestedHeight || presentModeDirty_)
         {
+            presentModeDirty_ = false;
             window_->requestedWidth = width;
             window_->requestedHeight = height;
             if (!rebuildSwapchain()) return;
@@ -4349,7 +4374,7 @@ private:
                         ? VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR
                         : capabilities.currentTransform;
         info.compositeAlpha = alpha;
-        info.presentMode = VK_PRESENT_MODE_FIFO_KHR;
+        info.presentMode = choosePresentMode(window_->surface);
         info.clipped = VK_TRUE;
         info.oldSwapchain = old;
 
@@ -4447,6 +4472,8 @@ private:
     std::uint32_t frameIndex_ = 0;
     bool slotOverflow_ = false;
     bool frameReady_ = false;
+    bool vsync_ = true;
+    bool presentModeDirty_ = false;
     bool passActive_ = false;
     bool computeActive_ = false;
     bool storageUsedInPass_ = false;

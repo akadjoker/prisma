@@ -53,6 +53,8 @@ public:
     virtual void endQuery(QueryHandle handle) = 0;
     virtual bool queryResult(QueryHandle handle, std::uint64_t* result) = 0;
 
+    virtual void setVSync(bool enabled) { (void) enabled; }
+
     virtual void beginFrame() = 0;
     virtual void beginRenderPass(const RenderPassDesc& desc) = 0;
     virtual void setViewport(const Viewport& viewport) = 0;
