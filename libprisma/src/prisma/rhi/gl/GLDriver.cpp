@@ -1303,7 +1303,11 @@ public:
             const GLint location = glGetUniformLocation(pipeline.program, binding.name);
             if (location < 0)
             {
-                log("createPipeline: texture not found in the shaders");
+                char message[256];
+                snprintf(message, sizeof(message),
+                        "createPipeline: texture %s not found in the shaders of %s", binding.name,
+                        desc.debugName ? desc.debugName : "?");
+                log(message);
                 continue;
             }
             glUniform1i(location, static_cast<GLint>(binding.slot));
