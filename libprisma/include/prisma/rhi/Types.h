@@ -488,7 +488,7 @@ struct ComputePipelineDesc
     enum : std::uint32_t
     {
         kMaxUniformBlocks = 12,
-        kMaxTextures = 16,
+        kMaxTextures = 24,
         kMaxStorageBuffers = 4,
         kMaxStorageTextures = 4
     };
