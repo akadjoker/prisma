@@ -17,6 +17,16 @@ public:
     virtual BufferHandle createBuffer(const BufferDesc& desc) = 0;
     virtual ShaderHandle createShader(const ShaderDesc& desc) = 0;
     virtual PipelineHandle createPipeline(const PipelineDesc& desc) = 0;
+    // Like createPipeline, but may return while the pipeline is still being built: bind it only
+    // once pipelineStatus says Ready. The names in desc must stay valid until then.
+    virtual PipelineHandle createPipelineDeferred(const PipelineDesc& desc)
+    {
+        return createPipeline(desc);
+    }
+    virtual PipelineStatus pipelineStatus(PipelineHandle handle)
+    {
+        return handle.valid() ? PipelineStatus::Ready : PipelineStatus::Failed;
+    }
     virtual PipelineHandle createComputePipeline(const ComputePipelineDesc& desc) = 0;
     virtual TextureHandle createTexture(const TextureDesc& desc) = 0;
     virtual SamplerHandle createSampler(const SamplerDesc& desc) = 0;

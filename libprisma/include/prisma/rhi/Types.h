@@ -32,6 +32,9 @@ struct GLPlatform
     void (*swapBuffers)(void* user) = nullptr;
     void (*framebufferSize)(void* user, std::uint32_t* width, std::uint32_t* height) = nullptr;
     void* (*getProcAddress)(const char* name) = nullptr;
+    // Optional. Queues job(arg) to run once on a thread whose current context shares objects with
+    // the main one; false when it could not be queued.
+    bool (*runShared)(void* user, void (*job)(void* arg), void* arg) = nullptr;
 };
 
 struct VulkanPlatform
@@ -49,6 +52,13 @@ struct DriverDesc
     const VulkanPlatform* vulkan = nullptr;
     void (*log)(const char* message) = nullptr;
     bool debug = false;
+};
+
+enum class PipelineStatus : std::uint8_t
+{
+    Ready,
+    Pending,
+    Failed
 };
 
 struct BufferTag;

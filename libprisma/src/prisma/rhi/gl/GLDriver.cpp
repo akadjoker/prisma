@@ -6,6 +6,7 @@
 
 #include <ct/vector.hpp>
 
+#include <atomic>
 #include <stdio.h>
 #include <string.h>
 
@@ -337,9 +338,29 @@ struct GLBlendTarget
     std::uint8_t mask = kColorAll;
 };
 
+// A program being linked on the shared context thread; the main thread finishes the pipeline
+// once done is set.
+struct GLPendingLink
+{
+    PipelineDesc desc;
+    GLuint program = 0;
+    std::atomic<bool> done{ false };
+
+    static void run(void* arg)
+    {
+        GLPendingLink* link = static_cast<GLPendingLink*>(arg);
+        glLinkProgram(link->program);
+        GLint linked = GL_FALSE;
+        glGetProgramiv(link->program, GL_LINK_STATUS, &linked);
+        glFinish();
+        link->done.store(true, std::memory_order_release);
+    }
+};
+
 struct GLPipeline
 {
     GLuint program = 0;
+    GLPendingLink* pending = nullptr;
     GLuint vertexArray = 0;
     bool compute = false;
     bool vertexBinding = false;
@@ -697,6 +718,7 @@ public:
         if (debug_) glDebugMessageCallback(nullptr, nullptr);
         for (GLPipeline& pipeline: pipelines_)
         {
+            waitForLink(pipeline);
             glDeleteProgram(pipeline.program);
             glDeleteVertexArrays(1, &pipeline.vertexArray);
         }
@@ -1156,7 +1178,8 @@ public:
         return handleCast<SamplerHandle>(samplers_.insert(sampler));
     }
 
-    PipelineHandle createPipeline(const PipelineDesc& desc) override
+    // Validates desc and attaches its shaders to a new program, which is left to be linked.
+    bool beginPipeline(const PipelineDesc& desc, GLPipeline& pipeline)
     {
         const GLShader* vertex = shaders_.get(handleCast<ShaderSlot>(desc.vertexShader));
         const GLShader* fragment = shaders_.get(handleCast<ShaderSlot>(desc.fragmentShader));
@@ -1176,7 +1199,7 @@ public:
         if (desc.independentBlend && !caps_.independentBlend)
         {
             log("createPipeline: a blend state for each target is not supported");
-            return PipelineHandle();
+            return false;
         }
         const bool badGeometry =
                 (desc.geometryShader.valid() &&
@@ -1199,10 +1222,9 @@ public:
                 desc.targets.colorCount > TargetFormats::kMaxColors || !validVertexInput(desc))
         {
             log("createPipeline: invalid shader handle or too many attributes or uniform blocks");
-            return PipelineHandle();
+            return false;
         }
 
-        GLPipeline pipeline;
         pipeline.program = glCreateProgram();
         const bool extraStages = geometry || control;
         const GLuint vertexId = extraStages && vertex->innerId ? vertex->innerId : vertex->id;
@@ -1215,7 +1237,41 @@ public:
         if (geometry) glAttachShader(pipeline.program, geometry->id);
         if (control) glAttachShader(pipeline.program, control->id);
         if (evaluation) glAttachShader(pipeline.program, evaluationId);
-        glLinkProgram(pipeline.program);
+        return true;
+    }
+
+    // Everything after the link: checks it and sets up the bindings and the vertex array.
+    bool finishPipeline(const PipelineDesc& desc, GLPipeline& pipeline)
+    {
+        const GLShader* vertex = shaders_.get(handleCast<ShaderSlot>(desc.vertexShader));
+        const GLShader* fragment = shaders_.get(handleCast<ShaderSlot>(desc.fragmentShader));
+        const GLShader* geometry =
+                desc.geometryShader.valid()
+                        ? shaders_.get(handleCast<ShaderSlot>(desc.geometryShader))
+                        : nullptr;
+        const GLShader* control =
+                desc.tessControlShader.valid()
+                        ? shaders_.get(handleCast<ShaderSlot>(desc.tessControlShader))
+                        : nullptr;
+        const GLShader* evaluation =
+                desc.tessEvalShader.valid()
+                        ? shaders_.get(handleCast<ShaderSlot>(desc.tessEvalShader))
+                        : nullptr;
+        if (!vertex || !fragment || (desc.geometryShader.valid() && !geometry) ||
+                (desc.tessControlShader.valid() && !control) ||
+                (desc.tessEvalShader.valid() && !evaluation))
+        {
+            log("createPipeline: a shader was destroyed before the pipeline was linked");
+            glDeleteProgram(pipeline.program);
+            return false;
+        }
+        const bool patches = desc.topology == Topology::Patches;
+        const bool extraStages = geometry || control;
+        const GLuint vertexId = extraStages && vertex->innerId ? vertex->innerId : vertex->id;
+        const GLuint evaluationId = evaluation && geometry && evaluation->innerId
+                                            ? evaluation->innerId
+                                    : evaluation ? evaluation->id
+                                                 : 0;
         glDetachShader(pipeline.program, vertexId);
         glDetachShader(pipeline.program, fragment->id);
         if (geometry) glDetachShader(pipeline.program, geometry->id);
@@ -1230,7 +1286,7 @@ public:
             glGetProgramInfoLog(pipeline.program, sizeof(message), nullptr, message);
             log(message);
             glDeleteProgram(pipeline.program);
-            return PipelineHandle();
+            return false;
         }
 
         pipeline.topology = toGLTopology(desc.topology);
@@ -1322,7 +1378,7 @@ public:
         {
             state_.programDeleted(pipeline.program);
             glDeleteProgram(pipeline.program);
-            return PipelineHandle();
+            return false;
         }
         glGenVertexArrays(1, &pipeline.vertexArray);
         state_.bindVertexArray(pipeline.vertexArray);
@@ -1352,7 +1408,60 @@ public:
         }
         for (std::uint32_t i = 0; pipeline.vertexBinding && i < desc.vertexBufferCount; ++i)
             glVertexBindingDivisor(i, desc.vertexBuffers[i].step == VertexStep::Instance ? 1 : 0);
+        return true;
+    }
+
+    PipelineHandle createPipeline(const PipelineDesc& desc) override
+    {
+        GLPipeline pipeline;
+        if (!beginPipeline(desc, pipeline)) return PipelineHandle();
+        glLinkProgram(pipeline.program);
+        if (!finishPipeline(desc, pipeline)) return PipelineHandle();
         return handleCast<PipelineHandle>(pipelines_.insert(pipeline));
+    }
+
+    PipelineHandle createPipelineDeferred(const PipelineDesc& desc) override
+    {
+        if (!platform_.runShared) return createPipeline(desc);
+        GLPipeline pipeline;
+        if (!beginPipeline(desc, pipeline)) return PipelineHandle();
+        GLPendingLink* link = new GLPendingLink();
+        link->desc = desc;
+        link->program = pipeline.program;
+        // The other context only sees the program and its shaders once they are flushed.
+        glFlush();
+        if (!platform_.runShared(platform_.user, GLPendingLink::run, link))
+        {
+            delete link;
+            glLinkProgram(pipeline.program);
+            if (!finishPipeline(desc, pipeline)) return PipelineHandle();
+            return handleCast<PipelineHandle>(pipelines_.insert(pipeline));
+        }
+        pipeline.pending = link;
+        return handleCast<PipelineHandle>(pipelines_.insert(pipeline));
+    }
+
+    PipelineStatus pipelineStatus(PipelineHandle handle) override
+    {
+        GLPipeline* pipeline = pipelines_.get(handleCast<PipelineSlot>(handle));
+        if (!pipeline || !pipeline->program) return PipelineStatus::Failed;
+        GLPendingLink* link = pipeline->pending;
+        if (!link) return PipelineStatus::Ready;
+        if (!link->done.load(std::memory_order_acquire)) return PipelineStatus::Pending;
+        pipeline->pending = nullptr;
+        const bool finished = finishPipeline(link->desc, *pipeline);
+        delete link;
+        if (finished) return PipelineStatus::Ready;
+        pipeline->program = 0;
+        return PipelineStatus::Failed;
+    }
+
+    static void waitForLink(GLPipeline& pipeline)
+    {
+        if (!pipeline.pending) return;
+        while (!pipeline.pending->done.load(std::memory_order_acquire)) {}
+        delete pipeline.pending;
+        pipeline.pending = nullptr;
     }
 
     void destroy(BufferHandle handle) override
@@ -1382,8 +1491,9 @@ public:
     void destroy(PipelineHandle handle) override
     {
         const PipelineSlot slot = handleCast<PipelineSlot>(handle);
-        const GLPipeline* pipeline = pipelines_.get(slot);
+        GLPipeline* pipeline = pipelines_.get(slot);
         if (!pipeline) return;
+        waitForLink(*pipeline);
         glDeleteProgram(pipeline->program);
         glDeleteVertexArrays(1, &pipeline->vertexArray);
         state_.programDeleted(pipeline->program);
@@ -1653,6 +1763,12 @@ public:
 
     void bindPipeline(PipelineHandle handle) override
     {
+        const GLPipeline* pipeline = pipelines_.get(handleCast<PipelineSlot>(handle));
+        if (pipeline && pipeline->pending)
+        {
+            log("bindPipeline: the pipeline is still being built");
+            handle = PipelineHandle();
+        }
         pipeline_ = handle;
         vertexDirty_ = true;
         indexDirty_ = true;
