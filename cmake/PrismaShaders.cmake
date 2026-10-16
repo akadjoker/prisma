@@ -8,6 +8,7 @@ endif()
 find_program(PRISMA_GLSLANG NAMES glslangValidator glslang
              HINTS ${Vulkan_GLSLANG_VALIDATOR_EXECUTABLE})
 find_program(PRISMA_SPIRV_CROSS spirv-cross)
+option(PRISMA_SHADER_ESSL "Embed the OpenGL ES sources in the shader headers" ON)
 
 set(PRISMA_SPIRV_CROSS_COMMAND ${PRISMA_SPIRV_CROSS})
 set(PRISMA_SPIRV_CROSS_DEPENDS)
@@ -47,6 +48,7 @@ function(prisma_shaders target)
               -DWORK=${directory}/${name}
               -DNAME=${variable}
               -DOUTPUT=${output}
+              -DESSL=${PRISMA_SHADER_ESSL}
               -P ${PRISMA_ROOT_DIR}/cmake/ShaderHeader.cmake
       DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/${shader}
               ${PRISMA_SHADER_INCLUDES}

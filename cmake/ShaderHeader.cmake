@@ -1,5 +1,9 @@
 cmake_minimum_required(VERSION 3.21)
 
+if(NOT DEFINED ESSL)
+  set(ESSL ON)
+endif()
+
 file(MAKE_DIRECTORY ${WORK})
 set(spv ${WORK}/shader.spv)
 
@@ -96,6 +100,9 @@ set(text "#pragma once\n\n#include \"prisma/rhi/ShaderBlob.h\"\n\n")
 string(APPEND text "static const std::uint32_t ${NAME}_spirv[] = {\n${words}};\n\n")
 string(APPEND text "static const char ${NAME}_glsl[] = R\"prisma(${glsl})prisma\";\n\n")
 
+if(NOT ESSL)
+  set(min_es 1000)
+endif()
 foreach(version 300 310 320)
   set(essl${version} "nullptr")
   if(version LESS min_es)
@@ -115,7 +122,7 @@ foreach(version 300 310 320)
 endforeach()
 
 set(essl320_inner "nullptr")
-if(stage STREQUAL "Vertex" OR stage STREQUAL "TessEval")
+if(ESSL AND (stage STREQUAL "Vertex" OR stage STREQUAL "TessEval"))
   execute_process(COMMAND ${SPIRV_CROSS} ${spv} --es --version 320
                   RESULT_VARIABLE result OUTPUT_VARIABLE inner ERROR_VARIABLE log)
   if(result EQUAL 0)
