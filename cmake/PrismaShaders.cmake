@@ -49,11 +49,13 @@ function(prisma_shaders target)
               -DNAME=${variable}
               -DOUTPUT=${output}
               -DESSL=${PRISMA_SHADER_ESSL}
+              -DPACKER=${PRISMA_SHADER_PACKER}
               -P ${PRISMA_ROOT_DIR}/cmake/ShaderHeader.cmake
       DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/${shader}
               ${PRISMA_SHADER_INCLUDES}
               ${PRISMA_ROOT_DIR}/cmake/ShaderHeader.cmake
               ${PRISMA_SPIRV_CROSS_DEPENDS}
+              ${PRISMA_SHADER_PACKER_DEPENDS}
       VERBATIM)
     target_sources(${target} PRIVATE ${output})
   endforeach()

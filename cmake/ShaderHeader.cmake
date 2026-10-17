@@ -96,6 +96,12 @@ string(REGEX REPLACE "(..)(..)(..)(..)" "0x\\4\\3\\2\\1, " words "${hex}")
 string(REGEX REPLACE "((0x[0-9a-f]+, )(0x[0-9a-f]+, )?(0x[0-9a-f]+, )?(0x[0-9a-f]+, )?(0x[0-9a-f]+, )?(0x[0-9a-f]+, )?(0x[0-9a-f]+, )?(0x[0-9a-f]+, )?)"
        "    \\1\n" words "${words}")
 
+set(packed_files)
+if(PACKER)
+  file(WRITE ${WORK}/shader.glsl "${glsl}")
+  list(APPEND packed_files --glsl ${WORK}/shader.glsl)
+endif()
+
 set(text "#pragma once\n\n#include \"prisma/rhi/ShaderBlob.h\"\n\n")
 string(APPEND text "static const std::uint32_t ${NAME}_spirv[] = {\n${words}};\n\n")
 string(APPEND text "static const char ${NAME}_glsl[] = R\"prisma(${glsl})prisma\";\n\n")
@@ -119,6 +125,10 @@ foreach(version 300 310 320)
   string(APPEND text
          "static const char ${NAME}_essl${version}[] = R\"prisma(${essl})prisma\";\n\n")
   set(essl${version} "${NAME}_essl${version}")
+  if(PACKER)
+    file(WRITE ${WORK}/shader.essl${version} "${essl}")
+    list(APPEND packed_files --essl${version} ${WORK}/shader.essl${version})
+  endif()
 endforeach()
 
 set(essl320_inner "nullptr")
@@ -129,6 +139,10 @@ if(ESSL AND (stage STREQUAL "Vertex" OR stage STREQUAL "TessEval"))
     string(APPEND text
            "static const char ${NAME}_essl320_inner[] = R\"prisma(${inner})prisma\";\n\n")
     set(essl320_inner "${NAME}_essl320_inner")
+    if(PACKER)
+      file(WRITE ${WORK}/shader.essl320inner "${inner}")
+      list(APPEND packed_files --essl320-inner ${WORK}/shader.essl320inner)
+    endif()
   endif()
 endif()
 
@@ -137,6 +151,18 @@ if(binding_count GREATER 0)
   string(APPEND text
          "static const prisma::ShaderBinding ${NAME}_bindings[] = {\n${bindings}};\n\n")
   set(binding_table "${NAME}_bindings")
+endif()
+
+if(PACKER)
+  file(WRITE ${WORK}/bindings.inc "${bindings}")
+  execute_process(COMMAND ${PACKER} --name ${NAME} --stage ${stage} --spirv ${spv}
+                          --bindings ${WORK}/bindings.inc --binding-count ${binding_count}
+                          ${packed_files} --output ${OUTPUT}
+                  RESULT_VARIABLE result OUTPUT_VARIABLE log ERROR_VARIABLE log)
+  if(NOT result EQUAL 0)
+    message(FATAL_ERROR "${SOURCE}: packing failed\n${log}")
+  endif()
+  return()
 endif()
 
 string(APPEND text

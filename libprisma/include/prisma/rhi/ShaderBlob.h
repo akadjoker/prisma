@@ -8,6 +8,17 @@ namespace prisma
 
 struct ShaderBlob
 {
+    enum : std::uint32_t
+    {
+        kPackedSpirv = 0,
+        kPackedGlsl = 1,
+        kPackedEssl300 = 2,
+        kPackedEssl310 = 3,
+        kPackedEssl320 = 4,
+        kPackedEssl320Inner = 5,
+        kPackedCount = 6
+    };
+
     ShaderStage stage;
     const std::uint32_t* spirv;
     std::uint32_t spirvSize;
@@ -18,7 +29,22 @@ struct ShaderBlob
     const char* essl320Inner;
     const ShaderBinding* bindings;
     std::uint32_t bindingCount;
+    const std::uint8_t* packed = nullptr;
+    std::uint32_t packedSize = 0;
+    std::uint32_t unpackedSizes[kPackedCount] = { 0, 0, 0, 0, 0, 0 };
 };
+
+inline bool shaderBlobPacked(const ShaderBlob& blob)
+{
+    return blob.packed != nullptr && blob.packedSize != 0;
+}
+
+inline std::uint32_t shaderBlobUnpackedSize(const ShaderBlob& blob)
+{
+    std::uint32_t total = 0;
+    for (std::uint32_t i = 0; i < ShaderBlob::kPackedCount; ++i) total += blob.unpackedSizes[i];
+    return total;
+}
 
 inline ShaderDesc shaderDesc(const ShaderBlob& blob, const Caps& caps)
 {
