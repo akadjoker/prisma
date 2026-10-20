@@ -16,8 +16,8 @@
 #   include <windows.h>
 #   include <stddef.h>
 #   define GLAPI __declspec( dllimport )
-#   define GLAPIENTRY _stdcall
-#   define GLAPIENTRYP _stdcall *
+#   define GLAPIENTRY __stdcall
+#   define GLAPIENTRYP __stdcall *
 #else
 #   include <stddef.h>
 #   define GLAPI
