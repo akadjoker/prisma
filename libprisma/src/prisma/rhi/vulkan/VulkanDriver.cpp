@@ -4198,14 +4198,14 @@ private:
     bool createDescriptorPools()
     {
         const VkDescriptorPoolSize sizes[4] = {
-            { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 8192 },
-            { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 8192 },
-            { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2048 },
-            { VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1024 },
+            { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 32768 },
+            { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 32768 },
+            { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 4096 },
+            { VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 2048 },
         };
         VkDescriptorPoolCreateInfo info = {};
         info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-        info.maxSets = 2048;
+        info.maxSets = 16384;
         info.poolSizeCount = 4;
         info.pPoolSizes = sizes;
         for (std::uint32_t i = 0; i < kFramesInFlight; ++i)
