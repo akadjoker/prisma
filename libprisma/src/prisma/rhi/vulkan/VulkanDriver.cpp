@@ -1885,10 +1885,11 @@ public:
         return found;
     }
 
-    void setVSync(bool enabled) override
+    void setVSync(bool enabled, bool mailbox) override
     {
-        if (vsync_ == enabled) return;
+        if (vsync_ == enabled && mailbox_ == mailbox) return;
         vsync_ = enabled;
+        mailbox_ = mailbox;
         presentModeDirty_ = true;
     }
 
@@ -1901,11 +1902,15 @@ public:
         modes.resize(count);
         vkGetPhysicalDeviceSurfacePresentModesKHR(physicalDevice_, surface, &count, modes.data());
         bool mailbox = false;
+        bool immediate = false;
         for (std::uint32_t i = 0; i < count; ++i)
         {
-            if (modes[i] == VK_PRESENT_MODE_IMMEDIATE_KHR) return VK_PRESENT_MODE_IMMEDIATE_KHR;
+            if (modes[i] == VK_PRESENT_MODE_IMMEDIATE_KHR) immediate = true;
             if (modes[i] == VK_PRESENT_MODE_MAILBOX_KHR) mailbox = true;
         }
+        // Mailbox asked for: never tear, so FIFO when the surface has no mailbox.
+        if (mailbox_) return mailbox ? VK_PRESENT_MODE_MAILBOX_KHR : VK_PRESENT_MODE_FIFO_KHR;
+        if (immediate) return VK_PRESENT_MODE_IMMEDIATE_KHR;
         return mailbox ? VK_PRESENT_MODE_MAILBOX_KHR : VK_PRESENT_MODE_FIFO_KHR;
     }
 
@@ -4348,6 +4353,8 @@ private:
         }
 
         std::uint32_t imageCount = capabilities.minImageCount + 1;
+        // Mailbox needs one image on screen, one waiting and one being drawn.
+        if (!vsync_ && mailbox_ && imageCount < 3) imageCount = 3;
         if (capabilities.maxImageCount > 0 && imageCount > capabilities.maxImageCount)
             imageCount = capabilities.maxImageCount;
 
@@ -4473,6 +4480,7 @@ private:
     bool slotOverflow_ = false;
     bool frameReady_ = false;
     bool vsync_ = true;
+    bool mailbox_ = false;
     bool presentModeDirty_ = false;
     bool passActive_ = false;
     bool computeActive_ = false;
