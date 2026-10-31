@@ -2176,10 +2176,14 @@ public:
         }
         if (caps_.compute) glMemoryBarrier(GL_ALL_BARRIER_BITS);
         glBindBuffer(GL_COPY_READ_BUFFER, source->id);
+#ifdef __EMSCRIPTEN__
+        glGetBufferSubData(GL_COPY_READ_BUFFER, offset, size, data);
+#else
         const void* mapped = glMapBufferRange(GL_COPY_READ_BUFFER, offset, size, GL_MAP_READ_BIT);
         if (!mapped) return false;
         memcpy(data, mapped, size);
         glUnmapBuffer(GL_COPY_READ_BUFFER);
+#endif
         return true;
     }
 

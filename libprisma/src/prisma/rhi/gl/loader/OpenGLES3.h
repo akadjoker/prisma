@@ -2323,3 +2323,7 @@ extern PFNGLGETDEBUGMESSAGELOGKHRPROC glGetDebugMessageLogKHR;
 
 }  // namespace gles
 
+#if defined( __EMSCRIPTEN__ )
+extern "C" void glGetBufferSubData( GLenum target, GLintptr offset, GLsizeiptr size, void *data );
+#endif
+
