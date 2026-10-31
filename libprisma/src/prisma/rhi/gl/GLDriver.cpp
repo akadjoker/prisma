@@ -682,9 +682,9 @@ public:
             glGetIntegerv(GL_MAX_PATCH_VERTICES, &value);
             caps_.maxPatchControlPoints = static_cast<std::uint32_t>(value);
         }
+        caps_.transformFeedback = true;
 #if !defined(__EMSCRIPTEN__) && !defined(__ANDROID__)
         caps_.multipleWindows = true;
-        caps_.transformFeedback = true;
         if (webProfile_)
         {
             caps_.compute = false;
@@ -2873,9 +2873,18 @@ private:
         const bool whole = offset == 0 && size == buffer->size;
         const bool created = buffer->versions[next] == 0;
         if (created) glGenBuffers(1, &buffer->versions[next]);
-        glBindBuffer(GL_COPY_WRITE_BUFFER, buffer->versions[next]);
         if (created || whole)
-            glBufferData(GL_COPY_WRITE_BUFFER, buffer->size, nullptr, GL_STREAM_DRAW);
+        {
+            GLenum target = GL_COPY_WRITE_BUFFER;
+            if (buffer->usage == BufferUsage::Index)
+            {
+                state_.bindVertexArray(scratchVertexArray_);
+                target = GL_ELEMENT_ARRAY_BUFFER;
+            }
+            glBindBuffer(target, buffer->versions[next]);
+            glBufferData(target, buffer->size, nullptr, GL_STREAM_DRAW);
+        }
+        glBindBuffer(GL_COPY_WRITE_BUFFER, buffer->versions[next]);
         if (!whole)
         {
             glBindBuffer(GL_COPY_READ_BUFFER, buffer->versions[buffer->current]);
