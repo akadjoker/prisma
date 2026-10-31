@@ -389,6 +389,11 @@ struct GLPipeline
     float depthBiasSlope = 0.0f;
     bool wireframe = false;
     bool alphaToCoverage = false;
+    std::uint32_t blockCount = 0;
+    std::uint32_t blockSlots[PipelineDesc::kMaxUniformBlocks] = {};
+    std::uint32_t blockSizes[PipelineDesc::kMaxUniformBlocks] = {};
+    char blockNames[PipelineDesc::kMaxUniformBlocks][48] = {};
+    mutable std::uint8_t blockWarned[PipelineDesc::kMaxUniformBlocks] = {};
     TargetFormats targets;
 };
 
@@ -1351,6 +1356,36 @@ public:
                 continue;
             }
             glUniformBlockBinding(pipeline.program, index, block.slot);
+            GLint dataSize = 0;
+            glGetActiveUniformBlockiv(pipeline.program, index, GL_UNIFORM_BLOCK_DATA_SIZE,
+                    &dataSize);
+            pipeline.blockSlots[pipeline.blockCount] = block.slot;
+            pipeline.blockSizes[pipeline.blockCount] = static_cast<std::uint32_t>(dataSize);
+            snprintf(pipeline.blockNames[pipeline.blockCount], sizeof pipeline.blockNames[0], "%s",
+                    block.name);
+            ++pipeline.blockCount;
+        }
+        {
+            GLint active = 0;
+            glGetProgramiv(pipeline.program, GL_ACTIVE_UNIFORM_BLOCKS, &active);
+            for (GLint b = 0; b < active; ++b)
+            {
+                char name[128] = {};
+                glGetActiveUniformBlockName(pipeline.program, static_cast<GLuint>(b), sizeof name,
+                        nullptr, name);
+                bool declared = false;
+                for (std::uint32_t i = 0; i < desc.uniformBlockCount && !declared; ++i)
+                    declared = strcmp(desc.uniformBlocks[i].name, name) == 0;
+                if (!declared)
+                {
+                    char message[256];
+                    snprintf(message, sizeof message,
+                            "createPipeline: %s: the shaders use uniform block %s that the "
+                            "pipeline does not declare",
+                            desc.debugName ? desc.debugName : "pipeline", name);
+                    log(message);
+                }
+            }
         }
 
         if (desc.textureCount > 0) state_.useProgram(pipeline.program);
@@ -2888,6 +2923,27 @@ private:
         }
 
         state_.useProgram(pipeline->program);
+        for (std::uint32_t i = 0; i < pipeline->blockCount; ++i)
+        {
+            if (pipeline->blockWarned[i] || pipeline->blockSlots[i] >= GLState::kMaxUniformSlots)
+                continue;
+            std::uint32_t buffer = 0;
+            std::uint32_t size = 0;
+            state_.uniformRange(pipeline->blockSlots[i], buffer, size);
+            if (buffer != 0 && size >= pipeline->blockSizes[i]) continue;
+            pipeline->blockWarned[i] = 1;
+            char message[256];
+            if (buffer == 0)
+                snprintf(message, sizeof message,
+                        "draw: uniform block %s (slot %u) has no buffer bound",
+                        pipeline->blockNames[i], pipeline->blockSlots[i]);
+            else
+                snprintf(message, sizeof message,
+                        "draw: uniform block %s (slot %u) needs %u bytes but %u are bound",
+                        pipeline->blockNames[i], pipeline->blockSlots[i], pipeline->blockSizes[i],
+                        size);
+            log(message);
+        }
         state_.depthTest(pipeline->depthTest);
         state_.depthMask(pipeline->depthWrite);
         if (pipeline->depthTest) state_.depthFunc(pipeline->depthFunc);

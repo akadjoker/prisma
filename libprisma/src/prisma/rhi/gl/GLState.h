@@ -73,6 +73,12 @@ public:
     void textureDeleted(std::uint32_t texture);
     void samplerDeleted(std::uint32_t sampler);
 
+    void uniformRange(std::uint32_t slot, std::uint32_t& buffer, std::uint32_t& size) const
+    {
+        buffer = uniformSlots_[slot].buffer;
+        size = uniformSlots_[slot].size;
+    }
+
 private:
     enum : std::uint32_t
     {
