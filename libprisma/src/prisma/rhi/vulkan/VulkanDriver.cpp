@@ -484,6 +484,14 @@ VkFormat toVkFormat(VertexFormat format)
             return VK_FORMAT_R8G8B8A8_UINT;
         case VertexFormat::UShort4:
             return VK_FORMAT_R16G16B16A16_UINT;
+        case VertexFormat::UInt1:
+            return VK_FORMAT_R32_UINT;
+        case VertexFormat::UInt2:
+            return VK_FORMAT_R32G32_UINT;
+        case VertexFormat::UInt3:
+            return VK_FORMAT_R32G32B32_UINT;
+        case VertexFormat::UInt4:
+            return VK_FORMAT_R32G32B32A32_UINT;
     }
     return VK_FORMAT_UNDEFINED;
 }
@@ -2396,6 +2404,11 @@ public:
         else
             for (std::uint32_t i = 0; i < drawCount; ++i)
                 vkCmdDrawIndexedIndirect(commands, version.buffer, offset + i * step, 1, step);
+    }
+
+    void drawFeedback(BufferHandle, std::uint32_t, std::uint32_t, std::uint32_t) override
+    {
+        log("drawFeedback: transform feedback is not available on Vulkan");
     }
 
     void beginComputePass() override

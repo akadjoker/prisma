@@ -52,6 +52,9 @@ struct DriverDesc
     const VulkanPlatform* vulkan = nullptr;
     void (*log)(const char* message) = nullptr;
     bool debug = false;
+    // Limits the capabilities to what WebGL 2 (OpenGL ES 3.0) offers, so a desktop build
+    // exercises the same paths as the web.
+    bool webProfile = false;
 };
 
 enum class PipelineStatus : std::uint8_t
@@ -327,7 +330,11 @@ enum class VertexFormat : std::uint8_t
     Short4Norm,
     Int1010102Norm,
     UByte4,
-    UShort4
+    UShort4,
+    UInt1,
+    UInt2,
+    UInt3,
+    UInt4
 };
 
 enum class VertexStep : std::uint8_t
@@ -558,6 +565,9 @@ struct PipelineDesc
     std::uint32_t textureCount = 0;
     StorageBinding storageBuffers[kMaxStorageBuffers];
     std::uint32_t storageBufferCount = 0;
+    // Vertex-only pipeline for drawFeedback: the outputs captured, interleaved, in this order.
+    const char* const* feedbackVaryings = nullptr;
+    std::uint32_t feedbackVaryingCount = 0;
 
     bool depthTest = false;
     bool depthWrite = true;

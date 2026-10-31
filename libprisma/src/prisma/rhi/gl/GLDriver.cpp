@@ -389,6 +389,7 @@ struct GLPipeline
     float depthBiasSlope = 0.0f;
     bool wireframe = false;
     bool alphaToCoverage = false;
+    bool feedback = false;
     std::uint32_t blockCount = 0;
     std::uint32_t blockSlots[PipelineDesc::kMaxUniformBlocks] = {};
     std::uint32_t blockSizes[PipelineDesc::kMaxUniformBlocks] = {};
@@ -439,6 +440,14 @@ GLVertexFormat toGLVertexFormat(VertexFormat format)
             return { 4, GL_UNSIGNED_BYTE, GL_FALSE, true };
         case VertexFormat::UShort4:
             return { 4, GL_UNSIGNED_SHORT, GL_FALSE, true };
+        case VertexFormat::UInt1:
+            return { 1, GL_UNSIGNED_INT, GL_FALSE, true };
+        case VertexFormat::UInt2:
+            return { 2, GL_UNSIGNED_INT, GL_FALSE, true };
+        case VertexFormat::UInt3:
+            return { 3, GL_UNSIGNED_INT, GL_FALSE, true };
+        case VertexFormat::UInt4:
+            return { 4, GL_UNSIGNED_INT, GL_FALSE, true };
     }
     return { 4, GL_FLOAT, GL_FALSE, false };
 }
@@ -582,10 +591,12 @@ GLenum toGLBlendFactor(BlendFactor factor)
 class GLDriver final : public Driver
 {
 public:
-    GLDriver(const GLPlatform& platform, void (*log)(const char*), bool debug, int major, int minor)
+    GLDriver(const GLPlatform& platform, void (*log)(const char*), bool debug, int major, int minor,
+            bool webProfile)
             : platform_(platform),
               log_(log),
-              debug_(debug && glDebugMessageCallback != nullptr)
+              debug_(debug && glDebugMessageCallback != nullptr),
+              webProfile_(webProfile)
     {
         if (debug_)
         {
@@ -673,6 +684,19 @@ public:
         }
 #if !defined(__EMSCRIPTEN__) && !defined(__ANDROID__)
         caps_.multipleWindows = true;
+        caps_.transformFeedback = true;
+        if (webProfile_)
+        {
+            caps_.compute = false;
+            caps_.indirectDraw = false;
+            caps_.storageBuffersInGraphics = false;
+            caps_.storageWritesInGraphics = false;
+            caps_.geometryShaders = false;
+            caps_.tessellation = false;
+            caps_.cubeArrays = false;
+            caps_.independentBlend = false;
+            caps_.wireframe = false;
+        }
 #endif
         if (caps_.compute)
         {
@@ -1219,7 +1243,7 @@ public:
                 (control != nullptr) != (evaluation != nullptr) ||
                 (patches && (desc.patchControlPoints == 0 ||
                                     desc.patchControlPoints > caps_.maxPatchControlPoints));
-        if (!vertex || !fragment || badGeometry ||
+        if (!vertex || (!fragment && desc.feedbackVaryingCount == 0) || badGeometry ||
                 desc.attributeCount > PipelineDesc::kMaxAttributes ||
                 desc.uniformBlockCount > PipelineDesc::kMaxUniformBlocks ||
                 desc.textureCount > PipelineDesc::kMaxTextures ||
@@ -1239,10 +1263,17 @@ public:
                                     : evaluation ? evaluation->id
                                                  : 0;
         glAttachShader(pipeline.program, vertexId);
-        glAttachShader(pipeline.program, fragment->id);
+        if (fragment) glAttachShader(pipeline.program, fragment->id);
         if (geometry) glAttachShader(pipeline.program, geometry->id);
         if (control) glAttachShader(pipeline.program, control->id);
         if (evaluation) glAttachShader(pipeline.program, evaluationId);
+        if (desc.feedbackVaryingCount > 0)
+        {
+            glTransformFeedbackVaryings(pipeline.program,
+                    static_cast<GLsizei>(desc.feedbackVaryingCount), desc.feedbackVaryings,
+                    GL_INTERLEAVED_ATTRIBS);
+            pipeline.feedback = true;
+        }
         return true;
     }
 
@@ -1263,7 +1294,8 @@ public:
                 desc.tessEvalShader.valid()
                         ? shaders_.get(handleCast<ShaderSlot>(desc.tessEvalShader))
                         : nullptr;
-        if (!vertex || !fragment || (desc.geometryShader.valid() && !geometry) ||
+        if (!vertex || (!fragment && desc.feedbackVaryingCount == 0) ||
+                (desc.geometryShader.valid() && !geometry) ||
                 (desc.tessControlShader.valid() && !control) ||
                 (desc.tessEvalShader.valid() && !evaluation))
         {
@@ -1279,7 +1311,7 @@ public:
                                     : evaluation ? evaluation->id
                                                  : 0;
         glDetachShader(pipeline.program, vertexId);
-        glDetachShader(pipeline.program, fragment->id);
+        if (fragment) glDetachShader(pipeline.program, fragment->id);
         if (geometry) glDetachShader(pipeline.program, geometry->id);
         if (control) glDetachShader(pipeline.program, control->id);
         if (evaluation) glDetachShader(pipeline.program, evaluationId);
@@ -1407,7 +1439,7 @@ public:
         if (!mapStorageBuffers(pipeline.program, desc.storageBuffers, desc.storageBufferCount,
                     true) ||
                 !applyBindings(pipeline.program, *vertex) ||
-                !applyBindings(pipeline.program, *fragment) ||
+                (fragment && !applyBindings(pipeline.program, *fragment)) ||
                 (geometry && !applyBindings(pipeline.program, *geometry)) ||
                 (control && !applyBindings(pipeline.program, *control)) ||
                 (evaluation && !applyBindings(pipeline.program, *evaluation)))
@@ -1960,6 +1992,48 @@ public:
                 reinterpret_cast<const void*>(static_cast<std::size_t>(offset)),
                 static_cast<GLsizei>(drawCount), static_cast<GLsizei>(step));
 #endif
+    }
+
+    void drawFeedback(BufferHandle output, std::uint32_t offset, std::uint32_t size,
+            std::uint32_t vertexCount) override
+    {
+        const GLPipeline* pipeline = pipelines_.get(handleCast<PipelineSlot>(pipeline_));
+        const GLBuffer* out = buffers_.get(handleCast<BufferSlot>(output));
+        if (passActive_ || !pipeline || !pipeline->feedback || !out || size == 0 ||
+                static_cast<std::uint64_t>(offset) + size > out->size || vertexCount == 0)
+        {
+            log("drawFeedback: needs a feedback pipeline, a valid output range and no open render "
+                "pass");
+            return;
+        }
+        const GLBuffer* buffers[PipelineDesc::kMaxVertexBuffers] = {};
+        for (std::uint32_t i = 0; i < pipeline->vertexBufferCount; ++i)
+        {
+            buffers[i] = buffers_.get(handleCast<BufferSlot>(vertexBuffers_[i]));
+            if (!buffers[i] || buffers[i] == out)
+            {
+                log("drawFeedback: a vertex buffer the pipeline needs is not bound, or is the "
+                    "output");
+                return;
+            }
+            const VertexBufferLayout& layout = pipeline->vertexBuffers[i];
+            if (vertexOffsets_[i] + static_cast<std::uint64_t>(vertexCount) * layout.stride >
+                    buffers[i]->size)
+            {
+                log("drawFeedback: vertex range is outside the vertex buffer");
+                return;
+            }
+        }
+        state_.useProgram(pipeline->program);
+        applyVertexInput(*pipeline, buffers);
+        state_.bindArrayBuffer(0);
+        glBindBufferRange(GL_TRANSFORM_FEEDBACK_BUFFER, 0, out->id, offset, size);
+        glEnable(GL_RASTERIZER_DISCARD);
+        glBeginTransformFeedback(GL_POINTS);
+        glDrawArrays(GL_POINTS, 0, static_cast<GLsizei>(vertexCount));
+        glEndTransformFeedback();
+        glDisable(GL_RASTERIZER_DISCARD);
+        glBindBufferBase(GL_TRANSFORM_FEEDBACK_BUFFER, 0, 0);
     }
 
     void beginComputePass() override
@@ -2888,10 +2962,45 @@ private:
         if (count > independentKnown_) independentKnown_ = count;
     }
 
+    void applyVertexInput(const GLPipeline& pipeline, const GLBuffer* const* buffers)
+    {
+        state_.bindVertexArray(pipeline.vertexArray);
+        if (vertexDirty_ && pipeline.vertexBinding)
+        {
+            for (std::uint32_t i = 0; i < pipeline.vertexBufferCount; ++i)
+                glBindVertexBuffer(i, buffers[i]->id, vertexOffsets_[i],
+                        static_cast<GLsizei>(pipeline.vertexBuffers[i].stride));
+            vertexDirty_ = false;
+        }
+        if (vertexDirty_)
+        {
+            for (std::uint32_t i = 0; i < pipeline.attributeCount; ++i)
+            {
+                const VertexAttribute& attribute = pipeline.attributes[i];
+                const VertexBufferLayout& layout = pipeline.vertexBuffers[attribute.buffer];
+                const GLVertexFormat format = toGLVertexFormat(attribute.format);
+                const std::size_t offset =
+                        static_cast<std::size_t>(vertexOffsets_[attribute.buffer]) +
+                        attribute.offset;
+                state_.bindArrayBuffer(buffers[attribute.buffer]->id);
+                if (format.integer)
+                    glVertexAttribIPointer(attribute.location, format.components, format.type,
+                            static_cast<GLsizei>(layout.stride),
+                            reinterpret_cast<const void*>(offset));
+                else
+                    glVertexAttribPointer(attribute.location, format.components, format.type,
+                            format.normalized, static_cast<GLsizei>(layout.stride),
+                            reinterpret_cast<const void*>(offset));
+            }
+            vertexDirty_ = false;
+        }
+    }
+
     const GLPipeline* prepareDraw(std::uint64_t vertexEnd, std::uint32_t instanceCount)
     {
         const GLPipeline* pipeline = pipelines_.get(handleCast<PipelineSlot>(pipeline_));
-        if (!passActive_ || !pipeline || pipeline->compute || instanceCount == 0)
+        if (!passActive_ || !pipeline || pipeline->compute || pipeline->feedback ||
+                instanceCount == 0)
         {
             log("draw: no active render pass, no pipeline bound in this pass or no instances");
             return nullptr;
@@ -2969,36 +3078,7 @@ private:
         state_.wireframe(pipeline->wireframe);
         state_.alphaToCoverage(pipeline->alphaToCoverage);
 
-        state_.bindVertexArray(pipeline->vertexArray);
-        if (vertexDirty_ && pipeline->vertexBinding)
-        {
-            for (std::uint32_t i = 0; i < pipeline->vertexBufferCount; ++i)
-                glBindVertexBuffer(i, buffers[i]->id, vertexOffsets_[i],
-                        static_cast<GLsizei>(pipeline->vertexBuffers[i].stride));
-            vertexDirty_ = false;
-        }
-        if (vertexDirty_)
-        {
-            for (std::uint32_t i = 0; i < pipeline->attributeCount; ++i)
-            {
-                const VertexAttribute& attribute = pipeline->attributes[i];
-                const VertexBufferLayout& layout = pipeline->vertexBuffers[attribute.buffer];
-                const GLVertexFormat format = toGLVertexFormat(attribute.format);
-                const std::size_t offset =
-                        static_cast<std::size_t>(vertexOffsets_[attribute.buffer]) +
-                        attribute.offset;
-                state_.bindArrayBuffer(buffers[attribute.buffer]->id);
-                if (format.integer)
-                    glVertexAttribIPointer(attribute.location, format.components, format.type,
-                            static_cast<GLsizei>(layout.stride),
-                            reinterpret_cast<const void*>(offset));
-                else
-                    glVertexAttribPointer(attribute.location, format.components, format.type,
-                            format.normalized, static_cast<GLsizei>(layout.stride),
-                            reinterpret_cast<const void*>(offset));
-            }
-            vertexDirty_ = false;
-        }
+        applyVertexInput(*pipeline, buffers);
         if (pipeline->patchVertices && pipeline->patchVertices != patchVertices_)
         {
             glPatchParameteri(GL_PATCH_VERTICES, pipeline->patchVertices);
@@ -3032,6 +3112,7 @@ private:
     GLPlatform platform_;
     void (*log_)(const char*);
     bool debug_;
+    bool webProfile_;
     GLState state_;
     Caps caps_;
     GLuint scratchVertexArray_ = 0;
@@ -3139,7 +3220,7 @@ Driver* createGLDriver(const DriverDesc& desc, DriverError* error)
         return nullptr;
     }
     *error = DriverError::None;
-    return new GLDriver(*gl, desc.log, desc.debug, major, minor);
+    return new GLDriver(*gl, desc.log, desc.debug, major, minor, desc.webProfile);
 }
 
 } // namespace prisma

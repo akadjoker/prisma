@@ -15,6 +15,7 @@ struct Caps
     bool tessellation = false;
     bool multipleWindows = false;
     bool indirectDraw = false;
+    bool transformFeedback = false;
     bool storageBuffersInGraphics = false;
     bool storageWritesInGraphics = false;
     bool debugOutput = false;

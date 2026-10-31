@@ -104,6 +104,7 @@ public:
     void drawIndexed(std::uint32_t, std::uint32_t, std::uint32_t) override {}
     void drawIndirect(BufferHandle, std::uint32_t, std::uint32_t, std::uint32_t) override {}
     void drawIndexedIndirect(BufferHandle, std::uint32_t, std::uint32_t, std::uint32_t) override {}
+    void drawFeedback(BufferHandle, std::uint32_t, std::uint32_t, std::uint32_t) override {}
     void endRenderPass() override {}
     void beginComputePass() override {}
     void bindStorageBuffer(std::uint32_t, BufferHandle, std::uint32_t, std::uint32_t) override {}

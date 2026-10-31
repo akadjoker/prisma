@@ -92,6 +92,10 @@ public:
     virtual void drawIndexedIndirect(BufferHandle arguments, std::uint32_t offset,
             std::uint32_t drawCount, std::uint32_t stride = 0) = 0;
     virtual void endRenderPass() = 0;
+    // Outside any pass: runs the bound feedback pipeline over vertexCount points without
+    // rasterizing and captures its feedback varyings, interleaved, into output.
+    virtual void drawFeedback(BufferHandle output, std::uint32_t offset, std::uint32_t size,
+            std::uint32_t vertexCount) = 0;
 
     virtual void beginComputePass() = 0;
     virtual void bindStorageBuffer(std::uint32_t slot, BufferHandle handle, std::uint32_t offset,
