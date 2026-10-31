@@ -753,6 +753,7 @@ public:
             glDeleteVertexArrays(1, &pipeline.vertexArray);
         }
         for (GLShader& shader: shaders_) glDeleteShader(shader.id);
+        if (emptyFragment_ != 0) glDeleteShader(emptyFragment_);
         for (std::size_t i = 0; i < framebuffers_.size(); ++i)
             glDeleteFramebuffers(1, &framebuffers_[i].id);
         for (GLTexture& texture: textures_)
@@ -1263,7 +1264,7 @@ public:
                                     : evaluation ? evaluation->id
                                                  : 0;
         glAttachShader(pipeline.program, vertexId);
-        if (fragment) glAttachShader(pipeline.program, fragment->id);
+        glAttachShader(pipeline.program, fragment ? fragment->id : emptyFragmentShader());
         if (geometry) glAttachShader(pipeline.program, geometry->id);
         if (control) glAttachShader(pipeline.program, control->id);
         if (evaluation) glAttachShader(pipeline.program, evaluationId);
@@ -1311,7 +1312,7 @@ public:
                                     : evaluation ? evaluation->id
                                                  : 0;
         glDetachShader(pipeline.program, vertexId);
-        if (fragment) glDetachShader(pipeline.program, fragment->id);
+        glDetachShader(pipeline.program, fragment ? fragment->id : emptyFragmentShader());
         if (geometry) glDetachShader(pipeline.program, geometry->id);
         if (control) glDetachShader(pipeline.program, control->id);
         if (evaluation) glDetachShader(pipeline.program, evaluationId);
@@ -2027,6 +2028,8 @@ public:
         state_.useProgram(pipeline->program);
         applyVertexInput(*pipeline, buffers);
         state_.bindArrayBuffer(0);
+        glBindBuffer(GL_COPY_READ_BUFFER, 0);
+        glBindBuffer(GL_COPY_WRITE_BUFFER, 0);
         glBindBufferRange(GL_TRANSFORM_FEEDBACK_BUFFER, 0, out->id, offset, size);
         glEnable(GL_RASTERIZER_DISCARD);
         glBeginTransformFeedback(GL_POINTS);
@@ -3122,6 +3125,22 @@ private:
     void (*log_)(const char*);
     bool debug_;
     bool webProfile_;
+    GLuint emptyFragment_ = 0;
+
+    // WebGL links no program without a fragment shader, feedback ones included.
+    GLuint emptyFragmentShader()
+    {
+        if (emptyFragment_ != 0) return emptyFragment_;
+#ifdef PRISMA_GLES
+        const char* source = "#version 300 es\nvoid main() {}\n";
+#else
+        const char* source = "#version 330 core\nvoid main() {}\n";
+#endif
+        emptyFragment_ = glCreateShader(GL_FRAGMENT_SHADER);
+        glShaderSource(emptyFragment_, 1, &source, nullptr);
+        glCompileShader(emptyFragment_);
+        return emptyFragment_;
+    }
     GLState state_;
     Caps caps_;
     GLuint scratchVertexArray_ = 0;
