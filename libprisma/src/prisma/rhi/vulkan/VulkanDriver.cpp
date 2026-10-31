@@ -1924,11 +1924,10 @@ public:
 
     void beginFrame() override
     {
-        if (frameReady_)
-        {
-            log("beginFrame: the previous frame was not presented");
-            return;
-        }
+        // A frame ended without a present (the window could not draw) still holds
+        // its acquired image: it is presented now, late, rather than left to block
+        // every frame after it.
+        if (frameReady_) present();
         frameSubmitted_ = false;
         for (VulkanWindow* extra: swapchains_) extra->acquired = false;
 

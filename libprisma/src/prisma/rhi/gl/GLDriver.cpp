@@ -1528,7 +1528,9 @@ public:
     static void waitForLink(GLPipeline& pipeline)
     {
         if (!pipeline.pending) return;
-        while (!pipeline.pending->done.load(std::memory_order_acquire)) {}
+        while (!pipeline.pending->done.load(std::memory_order_acquire))
+        {
+        }
         delete pipeline.pending;
         pipeline.pending = nullptr;
     }
@@ -1701,11 +1703,7 @@ public:
 
     void beginFrame() override
     {
-        if (frameOpen_)
-        {
-            log("beginFrame: the previous frame was not presented");
-            return;
-        }
+        if (frameOpen_) present();
         frameOpen_ = true;
         if (!surfacesUsed_) return;
         platform_.makeCurrent(platform_.user);
