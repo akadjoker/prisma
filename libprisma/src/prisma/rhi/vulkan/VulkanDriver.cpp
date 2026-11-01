@@ -48,7 +48,7 @@ struct VulkanBuffer
 {
     enum : std::uint32_t
     {
-        kMaxVersions = 8
+        kMaxVersions = 16
     };
 
     BufferVersion versions[kMaxVersions];
