@@ -32,6 +32,7 @@ struct SwapchainImage
     VkImageView view = VK_NULL_HANDLE;
     VkSemaphore renderFinished = VK_NULL_HANDLE;
     VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
+    VulkanAllocation allocation;
 };
 
 const std::uint64_t kNeverUsed = UINT64_MAX;
@@ -699,13 +700,17 @@ public:
         if (!createInstance(debug)) return DriverError::ContextFailed;
         mainWindow_.platform = platform_;
 
-        std::uint64_t surface = 0;
-        if (!platform_.createSurface(platform_.user, instance_, &surface))
+        offscreen_ = !platform_.createSurface;
+        if (!offscreen_)
         {
-            log("Vulkan: the platform could not create a surface");
-            return DriverError::ContextFailed;
+            std::uint64_t surface = 0;
+            if (!platform_.createSurface(platform_.user, instance_, &surface))
+            {
+                log("Vulkan: the platform could not create a surface");
+                return DriverError::ContextFailed;
+            }
+            window_->surface = (VkSurfaceKHR) surface;
         }
-        window_->surface = (VkSurfaceKHR) surface;
 
         if (!pickPhysicalDevice()) return DriverError::VersionTooLow;
         if (!createDevice()) return DriverError::ContextFailed;
@@ -1935,7 +1940,7 @@ public:
         std::uint32_t height = 0;
         window_->platform.framebufferSize(window_->platform.user, &width, &height);
         if (width == 0 || height == 0) return;
-        if (!window_->swapchain || width != window_->requestedWidth ||
+        if (window_->images.empty() || width != window_->requestedWidth ||
                 height != window_->requestedHeight || presentModeDirty_)
         {
             presentModeDirty_ = false;
@@ -1952,17 +1957,23 @@ public:
         lastSet_ = VK_NULL_HANDLE;
         lastTextureSet_ = VK_NULL_HANDLE;
 
-        const VkResult acquired = vkAcquireNextImageKHR(device_, window_->swapchain, UINT64_MAX,
-                frame.imageAvailable, VK_NULL_HANDLE, &window_->imageIndex);
-        if (acquired == VK_ERROR_OUT_OF_DATE_KHR)
+        if (offscreen_)
+            window_->imageIndex =
+                    (window_->imageIndex + 1) % static_cast<std::uint32_t>(window_->images.size());
+        else
         {
-            rebuildSwapchain();
-            return;
-        }
-        if (acquired != VK_SUCCESS && acquired != VK_SUBOPTIMAL_KHR)
-        {
-            log("Vulkan: could not acquire a swapchain image");
-            return;
+            const VkResult acquired = vkAcquireNextImageKHR(device_, window_->swapchain, UINT64_MAX,
+                    frame.imageAvailable, VK_NULL_HANDLE, &window_->imageIndex);
+            if (acquired == VK_ERROR_OUT_OF_DATE_KHR)
+            {
+                rebuildSwapchain();
+                return;
+            }
+            if (acquired != VK_SUCCESS && acquired != VK_SUBOPTIMAL_KHR)
+            {
+                log("Vulkan: could not acquire a swapchain image");
+                return;
+            }
         }
 
         vkResetFences(device_, 1, &frame.inFlight);
@@ -2550,8 +2561,10 @@ public:
         std::uint32_t signalCount = 0;
         std::uint32_t waitCount = pendingWaits(waits, stages);
         SwapchainImage& target = mainWindow_.images[mainWindow_.imageIndex];
-        transition(frame.commands, target, target.layout, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
-        signals[signalCount++] = target.renderFinished;
+        transition(frame.commands, target, target.layout,
+                offscreen_ ? VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL
+                           : VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+        if (!offscreen_) signals[signalCount++] = target.renderFinished;
         for (VulkanWindow* extra: swapchains_)
         {
             if (!extra->acquired) continue;
@@ -2604,7 +2617,7 @@ public:
         VkSemaphore finished[kMaxWindows];
         VkResult results[kMaxWindows];
         std::uint32_t count = 0;
-        windows[count++] = &mainWindow_;
+        if (!offscreen_) windows[count++] = &mainWindow_;
         for (VulkanWindow* extra: swapchains_)
             if (extra->acquired && count < kMaxWindows) windows[count++] = extra;
         for (std::uint32_t i = 0; i < count; ++i)
@@ -2624,7 +2637,7 @@ public:
         info.pSwapchains = chains;
         info.pImageIndices = indices;
         info.pResults = results;
-        vkQueuePresentKHR(queue_, &info);
+        if (count > 0) vkQueuePresentKHR(queue_, &info);
         frameIndex_ = (frameIndex_ + 1) % kFramesInFlight;
         ++frameNumber_;
         for (std::uint32_t i = 0; i < count; ++i)
@@ -2639,8 +2652,8 @@ public:
     SwapchainHandle createSwapchain(const SwapchainDesc& desc) override
     {
         const VulkanPlatform& platform = desc.vulkan;
-        if (!caps_.multipleWindows || !platform.createSurface || !platform.framebufferSize ||
-                swapchains_.size() + 2 > kMaxWindows)
+        if (offscreen_ || !caps_.multipleWindows || !platform.createSurface ||
+                !platform.framebufferSize || swapchains_.size() + 2 > kMaxWindows)
         {
             log("createSwapchain: several windows are not supported, too many windows, or "
                 "platform functions are missing");
@@ -2702,7 +2715,7 @@ public:
     std::uint32_t pendingWaits(VkSemaphore* waits, VkPipelineStageFlags* stages)
     {
         std::uint32_t count = 0;
-        if (!frameSubmitted_)
+        if (!frameSubmitted_ && !offscreen_)
         {
             waits[count] = frames_[frameIndex_].imageAvailable;
             stages[count++] = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
@@ -4026,8 +4039,10 @@ private:
             std::uint32_t family = familyCount;
             for (std::uint32_t f = 0; f < familyCount && family == familyCount; ++f)
             {
-                VkBool32 presents = VK_FALSE;
-                vkGetPhysicalDeviceSurfaceSupportKHR(devices[d], f, window_->surface, &presents);
+                VkBool32 presents = offscreen_ ? VK_TRUE : VK_FALSE;
+                if (!offscreen_)
+                    vkGetPhysicalDeviceSurfaceSupportKHR(devices[d], f, window_->surface,
+                            &presents);
                 if ((families[f].queueFlags & VK_QUEUE_GRAPHICS_BIT) && presents) family = f;
             }
             if (family == familyCount) continue;
@@ -4091,7 +4106,7 @@ private:
         caps_.compute = true;
         caps_.indirectDraw = true;
 #ifndef __ANDROID__
-        caps_.multipleWindows = true;
+        caps_.multipleWindows = !offscreen_;
 #endif
         caps_.storageBuffersInGraphics = true;
         caps_.storageWritesInGraphics = fragmentStores_;
@@ -4138,8 +4153,8 @@ private:
         info.pEnabledFeatures = &enabled;
         info.queueCreateInfoCount = 1;
         info.pQueueCreateInfos = &queue;
-        info.enabledExtensionCount = 1;
-        info.ppEnabledExtensionNames = &extension;
+        info.enabledExtensionCount = offscreen_ ? 0 : 1;
+        info.ppEnabledExtensionNames = offscreen_ ? nullptr : &extension;
         if (vkCreateDevice(physicalDevice_, &info, nullptr, &device_) != VK_SUCCESS)
         {
             log("Vulkan: could not create the device");
@@ -4316,15 +4331,85 @@ private:
         {
             vkDestroyImageView(device_, window_->images[i].view, nullptr);
             vkDestroySemaphore(device_, window_->images[i].renderFinished, nullptr);
+            if (window_->images[i].allocation.memory)
+            {
+                vkDestroyImage(device_, window_->images[i].image, nullptr);
+                memory_.free(window_->images[i].allocation);
+            }
         }
         window_->images.clear();
         if (window_->swapchain) vkDestroySwapchainKHR(device_, window_->swapchain, nullptr);
         window_->swapchain = VK_NULL_HANDLE;
     }
 
+    bool rebuildOffscreen()
+    {
+        destroySwapchain();
+        VkExtent2D extent = { 0, 0 };
+        window_->platform.framebufferSize(window_->platform.user, &extent.width, &extent.height);
+        if (extent.width == 0 || extent.height == 0) return false;
+        window_->extent = extent;
+        window_->canRead = true;
+        format_ = VK_FORMAT_R8G8B8A8_UNORM;
+
+        VkSemaphoreCreateInfo semaphore = {};
+        semaphore.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+        for (std::uint32_t i = 0; i < 2; ++i)
+        {
+            SwapchainImage target;
+            VkImageCreateInfo image = {};
+            image.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+            image.imageType = VK_IMAGE_TYPE_2D;
+            image.format = format_;
+            image.extent.width = extent.width;
+            image.extent.height = extent.height;
+            image.extent.depth = 1;
+            image.mipLevels = 1;
+            image.arrayLayers = 1;
+            image.samples = VK_SAMPLE_COUNT_1_BIT;
+            image.tiling = VK_IMAGE_TILING_OPTIMAL;
+            image.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+            image.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+            image.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            if (vkCreateImage(device_, &image, nullptr, &target.image) != VK_SUCCESS) return false;
+            VkMemoryRequirements requirements;
+            vkGetImageMemoryRequirements(device_, target.image, &requirements);
+            if (!memory_.allocate(requirements, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                        VulkanMemoryKind::Image, &target.allocation) ||
+                    vkBindImageMemory(device_, target.image, target.allocation.memory,
+                            target.allocation.offset) != VK_SUCCESS)
+            {
+                vkDestroyImage(device_, target.image, nullptr);
+                memory_.free(target.allocation);
+                log("Vulkan: could not allocate the off-screen image");
+                return false;
+            }
+
+            VkImageViewCreateInfo view = {};
+            view.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+            view.image = target.image;
+            view.viewType = VK_IMAGE_VIEW_TYPE_2D;
+            view.format = format_;
+            view.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            view.subresourceRange.levelCount = 1;
+            view.subresourceRange.layerCount = 1;
+            vkCreateImageView(device_, &view, nullptr, &target.view);
+            vkCreateSemaphore(device_, &semaphore, nullptr, &target.renderFinished);
+            window_->images.push_back(target);
+        }
+        window_->imageIndex = 0;
+        if (!createDepth())
+        {
+            log("Vulkan: could not create the depth buffer of the window");
+            return false;
+        }
+        return true;
+    }
+
     bool rebuildSwapchain()
     {
         vkDeviceWaitIdle(device_);
+        if (offscreen_ && window_ == &mainWindow_) return rebuildOffscreen();
 
         VkSurfaceCapabilitiesKHR capabilities;
         vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physicalDevice_, window_->surface, &capabilities);
@@ -4569,6 +4654,7 @@ private:
     VkCommandBuffer immediateCommands_ = VK_NULL_HANDLE;
     VkCommandBuffer pendingTransfer_ = VK_NULL_HANDLE;
     bool frameSubmitted_ = false;
+    bool offscreen_ = false;
     bool passOffscreen_ = false;
     PassTarget passTargets_[RenderPassDesc::kMaxColorTargets * 2 + 2];
     std::uint32_t passTargetCount_ = 0;
@@ -4587,8 +4673,7 @@ private:
 Driver* createVulkanDriver(const DriverDesc& desc, DriverError* error)
 {
     const VulkanPlatform* vulkan = desc.vulkan;
-    if (!vulkan || !vulkan->instanceExtensions || !vulkan->createSurface ||
-            !vulkan->framebufferSize)
+    if (!vulkan || !vulkan->instanceExtensions || !vulkan->framebufferSize)
     {
         *error = DriverError::MissingPlatform;
         return nullptr;
