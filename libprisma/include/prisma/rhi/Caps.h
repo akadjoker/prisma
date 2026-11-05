@@ -36,6 +36,7 @@ struct Caps
     std::uint32_t maxPatchControlPoints = 0;
     std::uint32_t uniformBufferOffsetAlignment = 1;
     std::uint32_t storageBufferOffsetAlignment = 1;
+    std::uint32_t maxComputeStorageBuffers = 0;
     float maxAnisotropy = 1.0f;
 };
 

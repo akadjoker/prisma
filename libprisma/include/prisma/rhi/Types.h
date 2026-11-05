@@ -506,7 +506,7 @@ struct ComputePipelineDesc
     {
         kMaxUniformBlocks = 12,
         kMaxTextures = 32,
-        kMaxStorageBuffers = 4,
+        kMaxStorageBuffers = 11,
         kMaxStorageTextures = 4
     };
 

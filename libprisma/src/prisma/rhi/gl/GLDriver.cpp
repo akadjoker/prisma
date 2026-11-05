@@ -708,6 +708,12 @@ public:
                     vertexBlocks >= static_cast<GLint>(PipelineDesc::kMaxStorageBuffers) &&
                     fragmentBlocks >= static_cast<GLint>(PipelineDesc::kMaxStorageBuffers);
             caps_.storageWritesInGraphics = caps_.storageBuffersInGraphics;
+            GLint computeBlocks = 0;
+            glGetIntegerv(GL_MAX_COMPUTE_SHADER_STORAGE_BLOCKS, &computeBlocks);
+            caps_.maxComputeStorageBuffers =
+                    computeBlocks < static_cast<GLint>(ComputePipelineDesc::kMaxStorageBuffers)
+                            ? static_cast<std::uint32_t>(computeBlocks)
+                            : ComputePipelineDesc::kMaxStorageBuffers;
             glGetIntegerv(kStorageBufferOffsetAlignment, &value);
             caps_.storageBufferOffsetAlignment = static_cast<std::uint32_t>(value);
         }
@@ -809,7 +815,7 @@ public:
         if (!caps_.compute || !shader || shader->stage != ShaderStage::Compute ||
                 desc.uniformBlockCount > ComputePipelineDesc::kMaxUniformBlocks ||
                 desc.textureCount > ComputePipelineDesc::kMaxTextures ||
-                desc.storageBufferCount > ComputePipelineDesc::kMaxStorageBuffers ||
+                desc.storageBufferCount > caps_.maxComputeStorageBuffers ||
                 desc.storageTextureCount > ComputePipelineDesc::kMaxStorageTextures)
         {
             log("createComputePipeline: compute not supported, invalid shader or too many "

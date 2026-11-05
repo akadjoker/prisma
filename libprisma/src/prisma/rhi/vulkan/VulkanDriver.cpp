@@ -785,7 +785,7 @@ public:
         bool valid = shader && shader->stage == ShaderStage::Compute &&
                      desc.uniformBlockCount <= ComputePipelineDesc::kMaxUniformBlocks &&
                      desc.textureCount <= ComputePipelineDesc::kMaxTextures &&
-                     desc.storageBufferCount <= ComputePipelineDesc::kMaxStorageBuffers &&
+                     desc.storageBufferCount <= caps_.maxComputeStorageBuffers &&
                      desc.storageTextureCount <= ComputePipelineDesc::kMaxStorageTextures;
         for (std::uint32_t i = 0; valid && i < desc.uniformBlockCount; ++i)
             if (desc.uniformBlocks[i].slot >= kMaxUniformSlots) valid = false;
@@ -823,9 +823,8 @@ public:
                 BindingKind::UniformBlock);
         mergeSlots(pipeline.textureSlots, pipeline.textureCount, ComputePipelineDesc::kMaxTextures,
                 kMaxTextureSlots, *shader, BindingKind::Texture);
-        mergeSlots(pipeline.storageSlots, pipeline.storageCount,
-                ComputePipelineDesc::kMaxStorageBuffers, ComputePipelineDesc::kMaxStorageBuffers,
-                *shader, BindingKind::StorageBuffer);
+        mergeSlots(pipeline.storageSlots, pipeline.storageCount, caps_.maxComputeStorageBuffers,
+                ComputePipelineDesc::kMaxStorageBuffers, *shader, BindingKind::StorageBuffer);
         mergeSlots(pipeline.imageSlots, pipeline.imageCount,
                 ComputePipelineDesc::kMaxStorageTextures, ComputePipelineDesc::kMaxStorageTextures,
                 *shader, BindingKind::StorageTexture);
@@ -4086,6 +4085,11 @@ private:
                 multiDrawIndirect_ = features.features.multiDrawIndirect;
                 caps_.storageBufferOffsetAlignment = static_cast<std::uint32_t>(
                         properties.limits.minStorageBufferOffsetAlignment);
+                caps_.maxComputeStorageBuffers =
+                        properties.limits.maxPerStageDescriptorStorageBuffers <
+                                        ComputePipelineDesc::kMaxStorageBuffers
+                                ? properties.limits.maxPerStageDescriptorStorageBuffers
+                                : ComputePipelineDesc::kMaxStorageBuffers;
                 caps_.compressedTextureCopy = true;
                 caps_.occlusionQueries = features12.hostQueryReset;
                 caps_.timerQueries =
