@@ -714,6 +714,12 @@ public:
                     computeBlocks < static_cast<GLint>(ComputePipelineDesc::kMaxStorageBuffers)
                             ? static_cast<std::uint32_t>(computeBlocks)
                             : ComputePipelineDesc::kMaxStorageBuffers;
+            GLint computeImages = 0;
+            glGetIntegerv(GL_MAX_COMPUTE_IMAGE_UNIFORMS, &computeImages);
+            caps_.maxComputeStorageTextures =
+                    computeImages < static_cast<GLint>(ComputePipelineDesc::kMaxStorageTextures)
+                            ? static_cast<std::uint32_t>(computeImages)
+                            : ComputePipelineDesc::kMaxStorageTextures;
             glGetIntegerv(kStorageBufferOffsetAlignment, &value);
             caps_.storageBufferOffsetAlignment = static_cast<std::uint32_t>(value);
         }
@@ -816,7 +822,7 @@ public:
                 desc.uniformBlockCount > ComputePipelineDesc::kMaxUniformBlocks ||
                 desc.textureCount > ComputePipelineDesc::kMaxTextures ||
                 desc.storageBufferCount > caps_.maxComputeStorageBuffers ||
-                desc.storageTextureCount > ComputePipelineDesc::kMaxStorageTextures)
+                desc.storageTextureCount > caps_.maxComputeStorageTextures)
         {
             log("createComputePipeline: compute not supported, invalid shader or too many "
                 "bindings");

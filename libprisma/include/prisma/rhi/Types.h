@@ -507,7 +507,7 @@ struct ComputePipelineDesc
         kMaxUniformBlocks = 12,
         kMaxTextures = 32,
         kMaxStorageBuffers = 11,
-        kMaxStorageTextures = 4
+        kMaxStorageTextures = 8
     };
 
     ShaderHandle shader;
