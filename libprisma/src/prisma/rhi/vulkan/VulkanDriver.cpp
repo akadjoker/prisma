@@ -1862,7 +1862,7 @@ public:
                     index + 1);
     }
 
-    bool queryResult(QueryHandle handle, std::uint64_t* result) override
+    bool queryResult(QueryHandle handle, std::uint64_t* result, bool wait) override
     {
         VulkanQuery* query = queries_.get(handleCast<QuerySlotHandle>(handle));
         if (!query || !result) return false;
@@ -1872,14 +1872,22 @@ public:
         std::uint64_t bestSequence = 0;
         std::uint32_t bestSlot = 0;
         bool found = false;
+        std::uint32_t newest = kQuerySlots;
+        if (wait)
+            for (std::uint32_t slot = 0; slot < kQuerySlots; ++slot)
+                if (query->sequence[slot] != 0 &&
+                        (newest == kQuerySlots || query->sequence[slot] > query->sequence[newest]))
+                    newest = slot;
         for (std::uint32_t slot = 0; slot < kQuerySlots; ++slot)
         {
             if (query->sequence[slot] == 0 || query->sequence[slot] < bestSequence) continue;
+            if (wait && slot != newest) continue;
             std::uint64_t data[4] = { 0, 0, 0, 0 };
             const VkResult status = vkGetQueryPoolResults(device_,
                     time ? timePool_ : occlusionPool_, query->slots[slot], count, sizeof(data),
                     data, sizeof(std::uint64_t) * 2,
-                    VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);
+                    VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT |
+                            (wait ? VK_QUERY_RESULT_WAIT_BIT : 0u));
             if (status != VK_SUCCESS && status != VK_NOT_READY) continue;
             if (data[1] == 0 || (time && data[3] == 0)) continue;
 

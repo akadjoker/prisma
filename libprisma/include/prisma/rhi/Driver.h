@@ -61,7 +61,7 @@ public:
     virtual void destroy(ReadbackHandle handle) = 0;
     virtual void beginQuery(QueryHandle handle) = 0;
     virtual void endQuery(QueryHandle handle) = 0;
-    virtual bool queryResult(QueryHandle handle, std::uint64_t* result) = 0;
+    virtual bool queryResult(QueryHandle handle, std::uint64_t* result, bool wait = false) = 0;
 
     // mailbox: with vsync off, prefer a presentation that never tears and never waits for the
     // display (Vulkan mailbox) over an immediate one.

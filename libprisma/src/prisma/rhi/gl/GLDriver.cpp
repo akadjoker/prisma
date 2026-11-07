@@ -1684,7 +1684,7 @@ public:
             writeTimestamp(query->ids[slot][1]);
     }
 
-    bool queryResult(QueryHandle handle, std::uint64_t* result) override
+    bool queryResult(QueryHandle handle, std::uint64_t* result, bool wait) override
     {
         GLQuery* query = queries_.get(handleCast<QuerySlot>(handle));
         if (!query || !result) return false;
@@ -1695,8 +1695,9 @@ public:
         {
             if (query->sequence[slot] == 0) continue;
             GLuint available = 0;
-            glGetQueryObjectuiv(query->ids[slot][last], GL_QUERY_RESULT_AVAILABLE, &available);
-            if (available && (best < 0 || query->sequence[slot] > query->sequence[best]))
+            if (!wait)
+                glGetQueryObjectuiv(query->ids[slot][last], GL_QUERY_RESULT_AVAILABLE, &available);
+            if ((wait || available) && (best < 0 || query->sequence[slot] > query->sequence[best]))
                 best = static_cast<int>(slot);
         }
         if (best < 0) return false;

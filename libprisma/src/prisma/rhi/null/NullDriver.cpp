@@ -88,7 +88,7 @@ public:
     void destroy(ReadbackHandle handle) override { readbacks_.erase(handleCast<Slot>(handle)); }
     void beginQuery(QueryHandle) override {}
     void endQuery(QueryHandle) override {}
-    bool queryResult(QueryHandle, std::uint64_t*) override { return false; }
+    bool queryResult(QueryHandle, std::uint64_t*, bool) override { return false; }
 
     void beginFrame() override {}
     void beginRenderPass(const RenderPassDesc&) override {}
