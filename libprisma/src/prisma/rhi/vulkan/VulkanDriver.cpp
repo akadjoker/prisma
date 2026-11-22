@@ -3,6 +3,7 @@
 #include "prisma/rhi/HandleCast.h"
 #include "prisma/rhi/vulkan/VulkanMemory.h"
 
+#include <ct/hashmap.hpp>
 #include <ct/vector.hpp>
 #include <vulkan/vulkan.h>
 
@@ -234,6 +235,40 @@ struct Garbage
     VkImageView view = VK_NULL_HANDLE;
     VkSampler sampler = VK_NULL_HANDLE;
     VkCommandBuffer commands = VK_NULL_HANDLE;
+    VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
+};
+
+// What a texture set holds: the same bindings with the same views and samplers
+// give the same set, whichever pipeline asks.
+struct TextureSetKey
+{
+    std::uint32_t count = 0;
+    bool compute = false;
+    std::uint32_t slots[PipelineDesc::kMaxTextures];
+    VkImageView views[PipelineDesc::kMaxTextures];
+    VkSampler samplers[PipelineDesc::kMaxTextures];
+
+    bool operator==(const TextureSetKey& other) const
+    {
+        if (count != other.count || compute != other.compute) return false;
+        for (std::uint32_t i = 0; i < count; ++i)
+            if (slots[i] != other.slots[i] || views[i] != other.views[i] ||
+                    samplers[i] != other.samplers[i])
+                return false;
+        return true;
+    }
+
+    std::uint64_t hash() const
+    {
+        std::uint64_t value = count * 2u + (compute ? 1u : 0u);
+        for (std::uint32_t i = 0; i < count; ++i)
+        {
+            value = ct::hash_combine(value, static_cast<std::uint64_t>(slots[i]));
+            value = ct::hash_combine(value, reinterpret_cast<std::uint64_t>(views[i]));
+            value = ct::hash_combine(value, reinterpret_cast<std::uint64_t>(samplers[i]));
+        }
+        return value;
+    }
 };
 
 std::uint32_t mipSize(std::uint32_t size, std::uint32_t mip)
@@ -684,6 +719,7 @@ public:
             for (std::uint32_t i = 0; i < kFramesInFlight; ++i)
                 if (descriptorPools_[i])
                     vkDestroyDescriptorPool(device_, descriptorPools_[i], nullptr);
+            if (textureSetPool_) vkDestroyDescriptorPool(device_, textureSetPool_, nullptr);
             if (occlusionPool_) vkDestroyQueryPool(device_, occlusionPool_, nullptr);
             if (timePool_) vkDestroyQueryPool(device_, timePool_, nullptr);
             if (commandPool_) vkDestroyCommandPool(device_, commandPool_, nullptr);
@@ -3107,6 +3143,8 @@ private:
             if (item.imageSetLayout)
                 vkDestroyDescriptorSetLayout(device_, item.imageSetLayout, nullptr);
             if (item.buffer) vkDestroyBuffer(device_, item.buffer, nullptr);
+            if (item.view || item.sampler) textureSetsStale_ = true;
+            if (item.descriptorPool) vkDestroyDescriptorPool(device_, item.descriptorPool, nullptr);
             if (item.view) vkDestroyImageView(device_, item.view, nullptr);
             if (item.image) vkDestroyImage(device_, item.image, nullptr);
             if (item.sampler) vkDestroySampler(device_, item.sampler, nullptr);
@@ -3438,40 +3476,98 @@ private:
 
         if (!sameSet)
         {
-            VkDescriptorSetAllocateInfo allocate = {};
-            allocate.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-            allocate.descriptorPool = descriptorPools_[frameIndex_];
-            allocate.descriptorSetCount = 1;
-            allocate.pSetLayouts = &pipeline.textureSetLayout;
-            if (vkAllocateDescriptorSets(device_, &allocate, &lastTextureSet_) != VK_SUCCESS)
-            {
-                lastTextureSet_ = VK_NULL_HANDLE;
-                log("draw: out of descriptor sets for this frame");
-                return false;
-            }
-
-            VkDescriptorImageInfo infos[PipelineDesc::kMaxTextures] = {};
-            VkWriteDescriptorSet writes[PipelineDesc::kMaxTextures] = {};
+            TextureSetKey key;
+            key.count = pipeline.textureCount;
+            key.compute = pipeline.compute;
             for (std::uint32_t i = 0; i < pipeline.textureCount; ++i)
             {
-                infos[i].sampler = samplers[i];
-                infos[i].imageView = views[i];
-                infos[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-                writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                writes[i].dstSet = lastTextureSet_;
-                writes[i].dstBinding = pipeline.textureSlots[i];
-                writes[i].descriptorCount = 1;
-                writes[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-                writes[i].pImageInfo = &infos[i];
+                key.slots[i] = pipeline.textureSlots[i];
+                key.views[i] = views[i];
+                key.samplers[i] = samplers[i];
                 lastViews_[i] = views[i];
                 lastSamplers_[i] = samplers[i];
             }
-            vkUpdateDescriptorSets(device_, pipeline.textureCount, writes, 0, nullptr);
             lastTextureSetLayout_ = pipeline.textureSetLayout;
+            if (textureSetsStale_) retireTextureSets();
+            const VkDescriptorSet* cached = textureSets_.find(key);
+            if (cached) lastTextureSet_ = *cached;
+            else
+            {
+                lastTextureSet_ = allocateTextureSet(pipeline.textureSetLayout);
+                if (lastTextureSet_ == VK_NULL_HANDLE)
+                {
+                    log("draw: out of descriptor sets for the textures");
+                    return false;
+                }
+                VkDescriptorImageInfo infos[PipelineDesc::kMaxTextures] = {};
+                VkWriteDescriptorSet writes[PipelineDesc::kMaxTextures] = {};
+                for (std::uint32_t i = 0; i < pipeline.textureCount; ++i)
+                {
+                    infos[i].sampler = samplers[i];
+                    infos[i].imageView = views[i];
+                    infos[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                    writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                    writes[i].dstSet = lastTextureSet_;
+                    writes[i].dstBinding = pipeline.textureSlots[i];
+                    writes[i].descriptorCount = 1;
+                    writes[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                    writes[i].pImageInfo = &infos[i];
+                }
+                vkUpdateDescriptorSets(device_, pipeline.textureCount, writes, 0, nullptr);
+                textureSets_.put(key, lastTextureSet_);
+            }
         }
         vkCmdBindDescriptorSets(commands, bindPoint(pipeline), pipeline.layout, 1, 1,
                 &lastTextureSet_, 0, nullptr);
         return true;
+    }
+
+    // The texture sets outlive the frame: a set is written once and found again by what
+    // it holds. They live in a pool of their own, dropped whole when a view or a sampler
+    // dies (its handle may come back for another texture) or when the pool fills up; the
+    // old pool waits for the frames in flight like any other garbage.
+    void retireTextureSets()
+    {
+        textureSetsStale_ = false;
+        textureSets_.clear();
+        lastTextureSet_ = VK_NULL_HANDLE;
+        if (!textureSetPool_) return;
+        Garbage item;
+        item.frame = frameNumber_;
+        item.descriptorPool = textureSetPool_;
+        garbage_.push_back(item);
+        textureSetPool_ = VK_NULL_HANDLE;
+    }
+
+    VkDescriptorSet allocateTextureSet(VkDescriptorSetLayout layout)
+    {
+        for (int attempt = 0; attempt < 2; ++attempt)
+        {
+            if (!textureSetPool_)
+            {
+                const VkDescriptorPoolSize size = { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                    kTextureSetPoolSets * 16 };
+                VkDescriptorPoolCreateInfo info = {};
+                info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+                info.maxSets = kTextureSetPoolSets;
+                info.poolSizeCount = 1;
+                info.pPoolSizes = &size;
+                if (vkCreateDescriptorPool(device_, &info, nullptr, &textureSetPool_) != VK_SUCCESS)
+                {
+                    textureSetPool_ = VK_NULL_HANDLE;
+                    return VK_NULL_HANDLE;
+                }
+            }
+            VkDescriptorSetAllocateInfo allocate = {};
+            allocate.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+            allocate.descriptorPool = textureSetPool_;
+            allocate.descriptorSetCount = 1;
+            allocate.pSetLayouts = &layout;
+            VkDescriptorSet set = VK_NULL_HANDLE;
+            if (vkAllocateDescriptorSets(device_, &allocate, &set) == VK_SUCCESS) return set;
+            retireTextureSets();
+        }
+        return VK_NULL_HANDLE;
     }
 
     bool bindUniforms(const VulkanPipeline& pipeline, VkCommandBuffer commands)
@@ -4651,6 +4747,10 @@ private:
     VkDescriptorSetLayout lastTextureSetLayout_ = VK_NULL_HANDLE;
     VkImageView lastViews_[PipelineDesc::kMaxTextures] = {};
     VkSampler lastSamplers_[PipelineDesc::kMaxTextures] = {};
+    static constexpr std::uint32_t kTextureSetPoolSets = 4096;
+    VkDescriptorPool textureSetPool_ = VK_NULL_HANDLE;
+    ct::HashMap<TextureSetKey, VkDescriptorSet> textureSets_;
+    bool textureSetsStale_ = false;
     using QuerySlotHandle = ct::Handle32<VulkanQuery>;
     ct::SlotMap32<VulkanQuery> queries_;
     using ReadbackSlotHandle = ct::Handle32<VulkanReadback>;
