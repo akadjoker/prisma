@@ -62,6 +62,8 @@ struct VulkanBuffer
     BufferUsage usage = BufferUsage::Vertex;
     IndexFormat indexFormat = IndexFormat::UInt16;
     ct::Vector<unsigned char> shadow;
+    // End of what was ever written: the bytes past it are still the zeros of creation.
+    std::uint32_t written = 0;
 };
 
 struct VulkanShader
@@ -798,6 +800,7 @@ public:
             else
                 memset(buffer.shadow.data(), 0, desc.size);
             memcpy(buffer.versions[0].mapped, buffer.shadow.data(), desc.size);
+            buffer.written = desc.data ? desc.size : 0;
         }
         if (desc.data && !visible)
         {
@@ -943,6 +946,7 @@ public:
         }
 
         memcpy(buffer->shadow.data() + offset, data, size);
+        if (offset + size > buffer->written) buffer->written = offset + size;
         const std::uint32_t previous = buffer->current;
         if (buffer->versions[previous].lastUsedFrame != kNeverUsed)
         {
@@ -953,14 +957,19 @@ public:
                 if (i != previous && (used == kNeverUsed || used + kFramesInFlight < frameNumber_))
                     next = i;
             }
-            if (next == buffer->versionCount && !createVersion(*buffer, nullptr))
+            if (next == buffer->versionCount)
             {
-                log("updateBuffer: too many versions of this buffer are still in use");
-                next = previous;
+                if (createVersion(*buffer, nullptr))
+                    memset(buffer->versions[next].mapped, 0, buffer->size);
+                else
+                {
+                    log("updateBuffer: too many versions of this buffer are still in use");
+                    next = previous;
+                }
             }
             if (next != previous)
             {
-                memcpy(buffer->versions[next].mapped, buffer->shadow.data(), buffer->size);
+                memcpy(buffer->versions[next].mapped, buffer->shadow.data(), buffer->written);
                 buffer->versions[next].lastUsedFrame = kNeverUsed;
                 buffer->current = next;
                 return;
