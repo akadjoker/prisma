@@ -2,6 +2,7 @@
 
 #include "prisma/rhi/vulkan/FreeRanges.h"
 
+#include <ct/thread.hpp>
 #include <ct/vector.hpp>
 #include <vulkan/vulkan.h>
 
@@ -37,7 +38,11 @@ public:
             VulkanMemoryKind kind, VulkanAllocation* allocation);
     void free(const VulkanAllocation& allocation);
 
-    std::uint32_t blockCount() const { return static_cast<std::uint32_t>(blocks_.size()); }
+    std::uint32_t blockCount() const
+    {
+        ct::LockGuard guard(mutex_);
+        return static_cast<std::uint32_t>(blocks_.size());
+    }
 
 private:
     struct Block
@@ -52,11 +57,17 @@ private:
     };
 
     std::uint32_t findType(std::uint32_t typeBits, VkMemoryPropertyFlags wanted) const;
-    bool createBlock(VkDeviceSize size, std::uint32_t type, VulkanMemoryKind kind, bool dedicated);
-    void destroyBlock(std::size_t index);
+    bool createBlock(VkDeviceSize size, std::uint32_t type, VulkanMemoryKind kind, bool dedicated,
+            Block* block) const;
+    void releaseBlock(const Block& block) const;
+    bool takeFromBlocks(std::uint32_t type, VulkanMemoryKind kind,
+            const VkMemoryRequirements& requirements, VulkanAllocation* allocation);
+    void fill(const Block& block, std::uint64_t offset, VkDeviceSize size,
+            VulkanAllocation* allocation) const;
 
     VkDevice device_ = VK_NULL_HANDLE;
     VkPhysicalDeviceMemoryProperties properties_ = {};
+    mutable ct::Mutex mutex_;
     ct::Vector<Block> blocks_;
     FreeRanges ranges_;
     std::uint32_t nextId_ = 1;

@@ -29,6 +29,11 @@ public:
     }
     virtual PipelineHandle createComputePipeline(const ComputePipelineDesc& desc) = 0;
     virtual TextureHandle createTexture(const TextureDesc& desc) = 0;
+    // May be called from any thread, before the createTexture that follows it with the same
+    // type, format, size, mip levels, samples and usage: the image and its memory are allocated
+    // here, so that createTexture only takes them. Does nothing where the backend has no such
+    // step. What createTexture does not take within thirty seconds is freed.
+    virtual void prepareTexture(const TextureDesc& desc) { (void) desc; }
     virtual SamplerHandle createSampler(const SamplerDesc& desc) = 0;
     virtual void updateBuffer(BufferHandle handle, std::uint32_t offset, const void* data,
             std::uint32_t size) = 0;
