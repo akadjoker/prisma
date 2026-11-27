@@ -4,6 +4,7 @@
 #include "prisma/rhi/vulkan/VulkanMemory.h"
 
 #include <ct/hashmap.hpp>
+#include <ct/thread.hpp>
 #include <ct/vector.hpp>
 #include <vulkan/vulkan.h>
 
@@ -37,6 +38,7 @@ struct SwapchainImage
 };
 
 const std::uint64_t kNeverUsed = UINT64_MAX;
+const std::uint64_t kPreparedLifetimeMillis = 30000;
 
 struct BufferVersion
 {
@@ -186,6 +188,13 @@ struct VulkanTexture
     std::uint32_t usage = 0;
     ct::Vector<AttachmentView> attachmentViews;
     VkImageView mipViews[kMaxMipViews] = {};
+};
+
+struct PreparedTexture
+{
+    TextureDesc desc;
+    VulkanTexture texture;
+    std::uint64_t created = 0;
 };
 
 struct PassTarget
@@ -687,6 +696,7 @@ public:
                 vkDestroyBuffer(device_, readback.buffer, nullptr);
                 memory_.free(readback.allocation);
             }
+            trimPrepared(true);
             for (VulkanTexture& texture: textures_)
             {
                 for (size_t i = 0; i < texture.attachmentViews.size(); ++i)
@@ -1410,136 +1420,27 @@ public:
         return handleCast<PipelineHandle>(pipelines_.insert(pipeline));
     }
 
+    void prepareTexture(const TextureDesc& desc) override
+    {
+        if (desc.data) return;
+        VulkanTexture texture;
+        if (!buildTexture(desc, texture)) return;
+        PreparedTexture entry;
+        entry.desc = desc;
+        entry.desc.debugName = nullptr;
+        entry.texture = texture;
+        entry.created = ct::Thread::monotonic_ms();
+        ct::LockGuard guard(preparedMutex_);
+        prepared_.push_back(entry);
+    }
+
     TextureHandle createTexture(const TextureDesc& desc) override
     {
-        const std::uint32_t largest = desc.width > desc.height ? desc.width : desc.height;
-        if (desc.format == TextureFormat::None || desc.width == 0 || desc.height == 0 ||
-                desc.depth == 0 || largest > caps_.maxTextureSize ||
-                (isCube(desc.type) && desc.width != desc.height) ||
-                (desc.type == TextureType::TextureCubeArray && !caps_.cubeArrays))
-        {
-            log("createTexture: invalid format or size, or cube map arrays are not supported");
-            return TextureHandle();
-        }
-        if (!supportedFormat(desc))
-        {
-            log("createTexture: compressed format not supported, or used as a render target or "
-                "as a 3D texture");
-            return TextureHandle();
-        }
-        if (!validSamples(desc, caps_.maxSamples))
-        {
-            log("createTexture: a multisampled texture must be a 2D render target only, with one "
-                "mip, no data and a supported sample count");
-            return TextureHandle();
-        }
-
+        VulkanTexture texture;
+        if (!takePrepared(desc, texture) && !buildTexture(desc, texture)) return TextureHandle();
         const bool depth = isDepthFormat(desc.format);
         const bool volume = desc.type == TextureType::Texture3D;
-        const bool target = (desc.usage & kTextureRenderTarget) != 0;
-        VulkanTexture texture;
-        texture.type = desc.type;
-        texture.width = desc.width;
-        texture.height = desc.height;
-        texture.depth = desc.type == TextureType::Texture2D || desc.type == TextureType::TextureCube
-                                ? 1
-                                : desc.depth;
-        texture.format = desc.format;
-        texture.usage = desc.usage;
-        texture.samples = desc.samples;
-        const std::uint32_t deepest = volume ? texture.depth : 1;
-        const std::uint32_t fullChain = fullMipCount(largest > deepest ? largest : deepest, 1);
-        texture.mipLevels = desc.mipLevels == 0 ? fullChain : desc.mipLevels;
-        if (texture.mipLevels > fullChain) texture.mipLevels = fullChain;
         const std::uint32_t layers = imageLayers(texture);
-
-        VkImageCreateInfo image = {};
-        image.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-        if (isCube(desc.type)) image.flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
-        if (volume && target) image.flags = VK_IMAGE_CREATE_2D_ARRAY_COMPATIBLE_BIT;
-        image.imageType = volume ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D;
-        image.format = textureFormat(desc.format);
-        image.extent.width = desc.width;
-        image.extent.height = desc.height;
-        image.extent.depth = volume ? texture.depth : 1;
-        image.mipLevels = texture.mipLevels;
-        image.arrayLayers = layers;
-        image.samples = toSampleCount(desc.samples);
-        image.tiling = VK_IMAGE_TILING_OPTIMAL;
-        image.usage = VK_IMAGE_USAGE_SAMPLED_BIT;
-        if (desc.samples == 1) image.usage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
-        if (desc.samples == 1)
-        {
-            VkFormatProperties properties = {};
-            vkGetPhysicalDeviceFormatProperties(physicalDevice_, image.format, &properties);
-            texture.copyDestination = !depth || (properties.optimalTilingFeatures &
-                                                        VK_FORMAT_FEATURE_TRANSFER_DST_BIT);
-            if (texture.copyDestination) image.usage |= VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-        }
-        if (target)
-            image.usage |= depth ? VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT
-                                 : VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-        if (desc.usage & kTextureStorage)
-        {
-            VkFormatProperties properties = {};
-            vkGetPhysicalDeviceFormatProperties(physicalDevice_, image.format, &properties);
-            if (!isStorageFormat(desc.format, false) || desc.samples != 1 ||
-                    !(properties.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT))
-            {
-                log("createTexture: this format cannot be used as a storage texture");
-                return TextureHandle();
-            }
-            image.usage |= VK_IMAGE_USAGE_STORAGE_BIT;
-        }
-        image.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-        image.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        if (desc.samples > 1)
-        {
-            VkImageFormatProperties supported = {};
-            if (vkGetPhysicalDeviceImageFormatProperties(physicalDevice_, image.format,
-                        image.imageType, image.tiling, image.usage, image.flags,
-                        &supported) != VK_SUCCESS ||
-                    !(supported.sampleCounts & image.samples))
-            {
-                log("createTexture: sample count not supported for this format");
-                return TextureHandle();
-            }
-        }
-        if (vkCreateImage(device_, &image, nullptr, &texture.image) != VK_SUCCESS)
-        {
-            log("createTexture: could not create the image");
-            return TextureHandle();
-        }
-
-        VkMemoryRequirements requirements;
-        vkGetImageMemoryRequirements(device_, texture.image, &requirements);
-
-        VkImageViewCreateInfo view = {};
-        view.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-        view.image = texture.image;
-        view.viewType = VK_IMAGE_VIEW_TYPE_2D;
-        if (desc.type == TextureType::Texture2DArray) view.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
-        if (desc.type == TextureType::TextureCube) view.viewType = VK_IMAGE_VIEW_TYPE_CUBE;
-        if (desc.type == TextureType::TextureCubeArray)
-            view.viewType = VK_IMAGE_VIEW_TYPE_CUBE_ARRAY;
-        if (volume) view.viewType = VK_IMAGE_VIEW_TYPE_3D;
-        view.format = image.format;
-        view.subresourceRange.aspectMask =
-                depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
-        view.subresourceRange.levelCount = texture.mipLevels;
-        view.subresourceRange.layerCount = layers;
-
-        if (!memory_.allocate(requirements, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                    VulkanMemoryKind::Image, &texture.allocation) ||
-                vkBindImageMemory(device_, texture.image, texture.allocation.memory,
-                        texture.allocation.offset) != VK_SUCCESS ||
-                vkCreateImageView(device_, &view, nullptr, &texture.view) != VK_SUCCESS)
-        {
-            log("createTexture: could not allocate memory or create the view");
-            vkDestroyImage(device_, texture.image, nullptr);
-            memory_.free(texture.allocation);
-            return TextureHandle();
-        }
         setName(VK_OBJECT_TYPE_IMAGE, (std::uint64_t) texture.image, desc.debugName);
 
         imageBarrier(transferCommands(), texture.image, aspectOf(texture.format), 0,
@@ -1984,6 +1885,7 @@ public:
         // its acquired image: it is presented now, late, rather than left to block
         // every frame after it.
         if (frameReady_) present();
+        trimPrepared(false);
         frameSubmitted_ = false;
         for (VulkanWindow* extra: swapchains_) extra->acquired = false;
 
@@ -3075,6 +2977,188 @@ private:
     void log(const char* message) const
     {
         if (log_) log_(message);
+    }
+
+    bool buildTexture(const TextureDesc& desc, VulkanTexture& texture)
+    {
+        const std::uint32_t largest = desc.width > desc.height ? desc.width : desc.height;
+        if (desc.format == TextureFormat::None || desc.width == 0 || desc.height == 0 ||
+                desc.depth == 0 || largest > caps_.maxTextureSize ||
+                (isCube(desc.type) && desc.width != desc.height) ||
+                (desc.type == TextureType::TextureCubeArray && !caps_.cubeArrays))
+        {
+            log("createTexture: invalid format or size, or cube map arrays are not supported");
+            return false;
+        }
+        if (!supportedFormat(desc))
+        {
+            log("createTexture: compressed format not supported, or used as a render target or "
+                "as a 3D texture");
+            return false;
+        }
+        if (!validSamples(desc, caps_.maxSamples))
+        {
+            log("createTexture: a multisampled texture must be a 2D render target only, with one "
+                "mip, no data and a supported sample count");
+            return false;
+        }
+
+        const bool depth = isDepthFormat(desc.format);
+        const bool volume = desc.type == TextureType::Texture3D;
+        const bool target = (desc.usage & kTextureRenderTarget) != 0;
+        texture.type = desc.type;
+        texture.width = desc.width;
+        texture.height = desc.height;
+        texture.depth = desc.type == TextureType::Texture2D || desc.type == TextureType::TextureCube
+                                ? 1
+                                : desc.depth;
+        texture.format = desc.format;
+        texture.usage = desc.usage;
+        texture.samples = desc.samples;
+        const std::uint32_t deepest = volume ? texture.depth : 1;
+        const std::uint32_t fullChain = fullMipCount(largest > deepest ? largest : deepest, 1);
+        texture.mipLevels = desc.mipLevels == 0 ? fullChain : desc.mipLevels;
+        if (texture.mipLevels > fullChain) texture.mipLevels = fullChain;
+        const std::uint32_t layers = imageLayers(texture);
+
+        VkImageCreateInfo image = {};
+        image.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        if (isCube(desc.type)) image.flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
+        if (volume && target) image.flags = VK_IMAGE_CREATE_2D_ARRAY_COMPATIBLE_BIT;
+        image.imageType = volume ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D;
+        image.format = textureFormat(desc.format);
+        image.extent.width = desc.width;
+        image.extent.height = desc.height;
+        image.extent.depth = volume ? texture.depth : 1;
+        image.mipLevels = texture.mipLevels;
+        image.arrayLayers = layers;
+        image.samples = toSampleCount(desc.samples);
+        image.tiling = VK_IMAGE_TILING_OPTIMAL;
+        image.usage = VK_IMAGE_USAGE_SAMPLED_BIT;
+        if (desc.samples == 1) image.usage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+        if (desc.samples == 1)
+        {
+            VkFormatProperties properties = {};
+            vkGetPhysicalDeviceFormatProperties(physicalDevice_, image.format, &properties);
+            texture.copyDestination = !depth || (properties.optimalTilingFeatures &
+                                                        VK_FORMAT_FEATURE_TRANSFER_DST_BIT);
+            if (texture.copyDestination) image.usage |= VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+        }
+        if (target)
+            image.usage |= depth ? VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT
+                                 : VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+        if (desc.usage & kTextureStorage)
+        {
+            VkFormatProperties properties = {};
+            vkGetPhysicalDeviceFormatProperties(physicalDevice_, image.format, &properties);
+            if (!isStorageFormat(desc.format, false) || desc.samples != 1 ||
+                    !(properties.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT))
+            {
+                log("createTexture: this format cannot be used as a storage texture");
+                return false;
+            }
+            image.usage |= VK_IMAGE_USAGE_STORAGE_BIT;
+        }
+        image.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        image.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        if (desc.samples > 1)
+        {
+            VkImageFormatProperties supported = {};
+            if (vkGetPhysicalDeviceImageFormatProperties(physicalDevice_, image.format,
+                        image.imageType, image.tiling, image.usage, image.flags,
+                        &supported) != VK_SUCCESS ||
+                    !(supported.sampleCounts & image.samples))
+            {
+                log("createTexture: sample count not supported for this format");
+                return false;
+            }
+        }
+        if (vkCreateImage(device_, &image, nullptr, &texture.image) != VK_SUCCESS)
+        {
+            log("createTexture: could not create the image");
+            return false;
+        }
+
+        VkMemoryRequirements requirements;
+        vkGetImageMemoryRequirements(device_, texture.image, &requirements);
+
+        VkImageViewCreateInfo view = {};
+        view.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        view.image = texture.image;
+        view.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        if (desc.type == TextureType::Texture2DArray) view.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+        if (desc.type == TextureType::TextureCube) view.viewType = VK_IMAGE_VIEW_TYPE_CUBE;
+        if (desc.type == TextureType::TextureCubeArray)
+            view.viewType = VK_IMAGE_VIEW_TYPE_CUBE_ARRAY;
+        if (volume) view.viewType = VK_IMAGE_VIEW_TYPE_3D;
+        view.format = image.format;
+        view.subresourceRange.aspectMask =
+                depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
+        view.subresourceRange.levelCount = texture.mipLevels;
+        view.subresourceRange.layerCount = layers;
+
+        if (!memory_.allocate(requirements, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                    VulkanMemoryKind::Image, &texture.allocation) ||
+                vkBindImageMemory(device_, texture.image, texture.allocation.memory,
+                        texture.allocation.offset) != VK_SUCCESS ||
+                vkCreateImageView(device_, &view, nullptr, &texture.view) != VK_SUCCESS)
+        {
+            log("createTexture: could not allocate memory or create the view");
+            vkDestroyImage(device_, texture.image, nullptr);
+            memory_.free(texture.allocation);
+            return false;
+        }
+        return true;
+    }
+
+    static bool sameImage(const TextureDesc& a, const TextureDesc& b)
+    {
+        return a.type == b.type && a.format == b.format && a.width == b.width &&
+               a.height == b.height && a.depth == b.depth && a.mipLevels == b.mipLevels &&
+               a.samples == b.samples && a.usage == b.usage;
+    }
+
+    bool takePrepared(const TextureDesc& desc, VulkanTexture& texture)
+    {
+        ct::LockGuard guard(preparedMutex_);
+        for (std::size_t i = 0; i < prepared_.size(); ++i)
+        {
+            if (!sameImage(prepared_[i].desc, desc)) continue;
+            texture = prepared_[i].texture;
+            prepared_[i] = prepared_[prepared_.size() - 1];
+            prepared_.pop_back();
+            return true;
+        }
+        return false;
+    }
+
+    void destroyPrepared(const VulkanTexture& texture)
+    {
+        vkDestroyImageView(device_, texture.view, nullptr);
+        vkDestroyImage(device_, texture.image, nullptr);
+        memory_.free(texture.allocation);
+    }
+
+    void trimPrepared(bool all)
+    {
+        ct::Vector<VulkanTexture> dead;
+        {
+            ct::LockGuard guard(preparedMutex_);
+            if (prepared_.empty()) return;
+            const std::uint64_t now = ct::Thread::monotonic_ms();
+            for (std::size_t i = 0; i < prepared_.size();)
+            {
+                if (!all && now - prepared_[i].created < kPreparedLifetimeMillis)
+                {
+                    ++i;
+                    continue;
+                }
+                dead.push_back(prepared_[i].texture);
+                prepared_[i] = prepared_[prepared_.size() - 1];
+                prepared_.pop_back();
+            }
+        }
+        for (std::size_t i = 0; i < dead.size(); ++i) destroyPrepared(dead[i]);
     }
 
     using BufferSlot = ct::Handle32<VulkanBuffer>;
@@ -4791,6 +4875,8 @@ private:
     using SwapchainSlot = ct::Handle32<VulkanWindow*>;
     ct::SlotMap32<VulkanWindow*> swapchains_;
     VulkanMemory memory_;
+    ct::Mutex preparedMutex_;
+    ct::Vector<PreparedTexture> prepared_;
 };
 
 } // namespace

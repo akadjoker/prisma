@@ -19,7 +19,13 @@ void VulkanMemory::init(VkPhysicalDevice physicalDevice, VkDevice device)
 
 void VulkanMemory::shutdown()
 {
-    while (!blocks_.empty()) destroyBlock(blocks_.size() - 1);
+    while (!blocks_.empty())
+    {
+        const Block block = blocks_[blocks_.size() - 1];
+        blocks_.pop_back();
+        ranges_.remove(block.id);
+        releaseBlock(block);
+    }
     device_ = VK_NULL_HANDLE;
 }
 
@@ -32,44 +38,62 @@ std::uint32_t VulkanMemory::findType(std::uint32_t typeBits, VkMemoryPropertyFla
 }
 
 bool VulkanMemory::createBlock(VkDeviceSize size, std::uint32_t type, VulkanMemoryKind kind,
-        bool dedicated)
+        bool dedicated, Block* block) const
 {
-    Block block;
-    block.memory = VK_NULL_HANDLE;
-    block.size = size;
-    block.mapped = nullptr;
-    block.id = nextId_++;
-    block.type = type;
-    block.kind = kind;
-    block.dedicated = dedicated;
+    block->memory = VK_NULL_HANDLE;
+    block->size = size;
+    block->mapped = nullptr;
+    block->id = 0;
+    block->type = type;
+    block->kind = kind;
+    block->dedicated = dedicated;
 
     VkMemoryAllocateInfo info = {};
     info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
     info.allocationSize = size;
     info.memoryTypeIndex = type;
-    if (vkAllocateMemory(device_, &info, nullptr, &block.memory) != VK_SUCCESS) return false;
+    if (vkAllocateMemory(device_, &info, nullptr, &block->memory) != VK_SUCCESS) return false;
 
     const bool visible = (properties_.memoryTypes[type].propertyFlags &
                                  VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0;
     if (visible &&
-            vkMapMemory(device_, block.memory, 0, VK_WHOLE_SIZE, 0, &block.mapped) != VK_SUCCESS)
+            vkMapMemory(device_, block->memory, 0, VK_WHOLE_SIZE, 0, &block->mapped) != VK_SUCCESS)
     {
-        vkFreeMemory(device_, block.memory, nullptr);
+        vkFreeMemory(device_, block->memory, nullptr);
         return false;
     }
-    blocks_.push_back(block);
-    ranges_.add(block.id, size);
     return true;
 }
 
-void VulkanMemory::destroyBlock(std::size_t index)
+void VulkanMemory::releaseBlock(const Block& block) const
 {
-    const Block block = blocks_[index];
     if (block.mapped) vkUnmapMemory(device_, block.memory);
     vkFreeMemory(device_, block.memory, nullptr);
-    ranges_.remove(block.id);
-    blocks_[index] = blocks_[blocks_.size() - 1];
-    blocks_.pop_back();
+}
+
+void VulkanMemory::fill(const Block& block, std::uint64_t offset, VkDeviceSize size,
+        VulkanAllocation* allocation) const
+{
+    allocation->memory = block.memory;
+    allocation->offset = offset;
+    allocation->size = size;
+    allocation->mapped = block.mapped ? static_cast<char*>(block.mapped) + offset : nullptr;
+    allocation->block = block.id;
+}
+
+bool VulkanMemory::takeFromBlocks(std::uint32_t type, VulkanMemoryKind kind,
+        const VkMemoryRequirements& requirements, VulkanAllocation* allocation)
+{
+    std::uint64_t offset = 0;
+    for (std::size_t i = 0; i < blocks_.size(); ++i)
+    {
+        const Block& block = blocks_[i];
+        if (block.dedicated || block.type != type || block.kind != kind) continue;
+        if (!ranges_.take(block.id, requirements.size, requirements.alignment, &offset)) continue;
+        fill(block, offset, requirements.size, allocation);
+        return true;
+    }
+    return false;
 }
 
 bool VulkanMemory::allocate(const VkMemoryRequirements& requirements, VkMemoryPropertyFlags wanted,
@@ -79,66 +103,68 @@ bool VulkanMemory::allocate(const VkMemoryRequirements& requirements, VkMemoryPr
     if (type == UINT32_MAX) return false;
 
     const bool dedicated = requirements.size > kBlockSize / 2;
-    std::size_t index = blocks_.size();
-    std::uint64_t offset = 0;
-    for (std::size_t i = 0; !dedicated && i < blocks_.size() && index == blocks_.size(); ++i)
+    if (!dedicated)
     {
-        const Block& block = blocks_[i];
-        if (block.dedicated || block.type != type || block.kind != kind) continue;
-        if (ranges_.take(block.id, requirements.size, requirements.alignment, &offset)) index = i;
-    }
-    if (index == blocks_.size())
-    {
-        const VkDeviceSize heap =
-                properties_.memoryHeaps[properties_.memoryTypes[type].heapIndex].size;
-        VkDeviceSize size = dedicated ? requirements.size : kBlockSize;
-        while (!dedicated && size > kSmallestBlock && size > heap / 8) size /= 2;
-        if (size < requirements.size) size = requirements.size;
-        bool created = createBlock(size, type, kind, dedicated);
-        while (!created && !dedicated && size / 2 >= requirements.size)
-        {
-            size /= 2;
-            created = createBlock(size, type, kind, dedicated);
-        }
-        if (!created) return false;
-        index = blocks_.size() - 1;
-        if (!ranges_.take(blocks_[index].id, requirements.size, requirements.alignment, &offset))
-            return false;
+        ct::LockGuard guard(mutex_);
+        if (takeFromBlocks(type, kind, requirements, allocation)) return true;
     }
 
-    const Block& block = blocks_[index];
-    allocation->memory = block.memory;
-    allocation->offset = offset;
-    allocation->size = requirements.size;
-    allocation->mapped = block.mapped ? static_cast<char*>(block.mapped) + offset : nullptr;
-    allocation->block = block.id;
+    const VkDeviceSize heap = properties_.memoryHeaps[properties_.memoryTypes[type].heapIndex].size;
+    VkDeviceSize size = dedicated ? requirements.size : kBlockSize;
+    while (!dedicated && size > kSmallestBlock && size > heap / 8) size /= 2;
+    if (size < requirements.size) size = requirements.size;
+    Block block;
+    bool created = createBlock(size, type, kind, dedicated, &block);
+    while (!created && !dedicated && size / 2 >= requirements.size)
+    {
+        size /= 2;
+        created = createBlock(size, type, kind, dedicated, &block);
+    }
+    if (!created) return false;
+
+    ct::LockGuard guard(mutex_);
+    block.id = nextId_++;
+    std::uint64_t offset = 0;
+    blocks_.push_back(block);
+    ranges_.add(block.id, block.size);
+    if (!ranges_.take(block.id, requirements.size, requirements.alignment, &offset)) return false;
+    fill(block, offset, requirements.size, allocation);
     return true;
 }
 
 void VulkanMemory::free(const VulkanAllocation& allocation)
 {
     if (!allocation.valid()) return;
-    std::size_t index = blocks_.size();
-    for (std::size_t i = 0; i < blocks_.size(); ++i)
-        if (blocks_[i].id == allocation.block) index = i;
-    if (index == blocks_.size()) return;
+    Block dead = {};
+    bool destroy = false;
+    {
+        ct::LockGuard guard(mutex_);
+        std::size_t index = blocks_.size();
+        for (std::size_t i = 0; i < blocks_.size(); ++i)
+            if (blocks_[i].id == allocation.block) index = i;
+        if (index == blocks_.size()) return;
 
-    const Block block = blocks_[index];
-    ranges_.give(block.id, allocation.offset, allocation.size);
-    if (!ranges_.whole(block.id, block.size)) return;
-    if (block.dedicated)
-    {
-        destroyBlock(index);
-        return;
+        const Block block = blocks_[index];
+        ranges_.give(block.id, allocation.offset, allocation.size);
+        if (!ranges_.whole(block.id, block.size)) return;
+        if (!block.dedicated)
+        {
+            for (std::size_t i = 0; i < blocks_.size() && !destroy; ++i)
+            {
+                const Block& other = blocks_[i];
+                destroy = i != index && !other.dedicated && other.type == block.type &&
+                          other.kind == block.kind;
+            }
+        }
+        else
+            destroy = true;
+        if (!destroy) return;
+        dead = block;
+        ranges_.remove(block.id);
+        blocks_[index] = blocks_[blocks_.size() - 1];
+        blocks_.pop_back();
     }
-    for (std::size_t i = 0; i < blocks_.size(); ++i)
-    {
-        const Block& other = blocks_[i];
-        if (i == index || other.dedicated || other.type != block.type || other.kind != block.kind)
-            continue;
-        destroyBlock(index);
-        return;
-    }
+    releaseBlock(dead);
 }
 
 } // namespace prisma
