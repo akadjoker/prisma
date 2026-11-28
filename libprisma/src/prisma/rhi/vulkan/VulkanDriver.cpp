@@ -1541,6 +1541,26 @@ public:
         transferBarrier(commands);
     }
 
+    void fillBuffer(BufferHandle handle, std::uint32_t offset, std::uint32_t size,
+            std::uint32_t value) override
+    {
+        VulkanBuffer* buffer = buffers_.get(handleCast<BufferSlot>(handle));
+        if (passActive_ || !buffer || size == 0 || offset % 4 != 0 || size % 4 != 0 ||
+                static_cast<std::uint64_t>(offset) + size > buffer->size)
+        {
+            log("fillBuffer: invalid buffer, offset or size not a multiple of four or out of "
+                "range, or called inside a render pass");
+            return;
+        }
+        BufferVersion& version = buffer->versions[buffer->current];
+        version.lastUsedFrame = frameNumber_;
+        buffer->gpuWritten = true;
+
+        VkCommandBuffer commands = transferCommands();
+        vkCmdFillBuffer(commands, version.buffer, offset, size, value);
+        transferBarrier(commands);
+    }
+
     SamplerHandle createSampler(const SamplerDesc& desc) override
     {
         VkSamplerCreateInfo info = {};

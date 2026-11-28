@@ -48,6 +48,7 @@ public:
             std::uint32_t) override
     {
     }
+    void fillBuffer(BufferHandle, std::uint32_t, std::uint32_t, std::uint32_t) override {}
     void destroy(BufferHandle handle) override { buffers_.erase(handleCast<Slot>(handle)); }
     void destroy(ShaderHandle handle) override { shaders_.erase(handleCast<Slot>(handle)); }
     TextureHandle createTexture(const TextureDesc& desc) override
