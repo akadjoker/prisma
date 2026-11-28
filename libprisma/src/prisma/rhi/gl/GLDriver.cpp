@@ -83,6 +83,8 @@ struct GLFramebuffer
 };
 
 const GLenum kStorageBufferOffsetAlignment = 0x90DF;
+const GLenum kMaxComputeShaderStorageBlocks = 0x90DB;
+const GLenum kMaxComputeImageUniforms = 0x91BD;
 const GLenum kTextureMaxAnisotropy = 0x84FE;
 const GLenum kMaxTextureMaxAnisotropy = 0x84FF;
 static_assert(static_cast<int>(GLState::kMaxTextureUnits) >=
@@ -709,13 +711,13 @@ public:
                     fragmentBlocks >= static_cast<GLint>(PipelineDesc::kMaxStorageBuffers);
             caps_.storageWritesInGraphics = caps_.storageBuffersInGraphics;
             GLint computeBlocks = 0;
-            glGetIntegerv(GL_MAX_COMPUTE_SHADER_STORAGE_BLOCKS, &computeBlocks);
+            glGetIntegerv(kMaxComputeShaderStorageBlocks, &computeBlocks);
             caps_.maxComputeStorageBuffers =
                     computeBlocks < static_cast<GLint>(ComputePipelineDesc::kMaxStorageBuffers)
                             ? static_cast<std::uint32_t>(computeBlocks)
                             : ComputePipelineDesc::kMaxStorageBuffers;
             GLint computeImages = 0;
-            glGetIntegerv(GL_MAX_COMPUTE_IMAGE_UNIFORMS, &computeImages);
+            glGetIntegerv(kMaxComputeImageUniforms, &computeImages);
             caps_.maxComputeStorageTextures =
                     computeImages < static_cast<GLint>(ComputePipelineDesc::kMaxStorageTextures)
                             ? static_cast<std::uint32_t>(computeImages)
