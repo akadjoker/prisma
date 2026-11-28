@@ -45,6 +45,11 @@ public:
     virtual void copyTexture(const TextureCopy& copy) = 0;
     virtual void copyBuffer(BufferHandle source, std::uint32_t sourceOffset,
             BufferHandle destination, std::uint32_t destinationOffset, std::uint32_t size) = 0;
+    // Writes value into every 32-bit word of the range. Offset and size are multiples of four
+    // and the call is not allowed inside a render pass; the filled data is visible to the shader
+    // reads and writes that follow.
+    virtual void fillBuffer(BufferHandle handle, std::uint32_t offset, std::uint32_t size,
+            std::uint32_t value) = 0;
     virtual void destroy(BufferHandle handle) = 0;
     virtual void destroy(ShaderHandle handle) = 0;
     virtual void destroy(PipelineHandle handle) = 0;

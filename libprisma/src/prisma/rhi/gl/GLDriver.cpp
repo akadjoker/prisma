@@ -1196,6 +1196,36 @@ public:
                 destinationOffset, size);
     }
 
+    void fillBuffer(BufferHandle handle, std::uint32_t offset, std::uint32_t size,
+            std::uint32_t value) override
+    {
+        GLBuffer* buffer = buffers_.get(handleCast<BufferSlot>(handle));
+        if (passActive_ || !buffer || size == 0 || offset % 4 != 0 || size % 4 != 0 ||
+                static_cast<std::uint64_t>(offset) + size > buffer->size)
+        {
+            log("fillBuffer: invalid buffer, offset or size not a multiple of four or out of "
+                "range, or called inside a render pass");
+            return;
+        }
+        if (buffer->stream && buffer->updatedFrame != frameNumber_)
+            rotateStreamBuffer(buffer, offset, size);
+#ifdef PRISMA_GLES
+        std::uint32_t words[256];
+        for (std::uint32_t& word: words) word = value;
+        const GLenum target = bindForEdit(*buffer);
+        for (std::uint32_t done = 0; done < size;)
+        {
+            const std::uint32_t bytes = size - done < sizeof(words) ? size - done : sizeof(words);
+            glBufferSubData(target, offset + done, bytes, words);
+            done += bytes;
+        }
+#else
+        glClearNamedBufferSubData(buffer->id, GL_R32UI, offset, size, GL_RED_INTEGER,
+                GL_UNSIGNED_INT, &value);
+#endif
+        if (caps_.compute) glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+    }
+
     SamplerHandle createSampler(const SamplerDesc& desc) override
     {
         GLSampler sampler;
